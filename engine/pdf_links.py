@@ -8,6 +8,7 @@ reused only when its visible raster region is exactly unchanged.
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -204,6 +205,24 @@ def capture_source(page):
                             for index, selected, whole in associations]
             records[id(paragraph)] = (chars, associations)
     info['source'] = records
+    # Copyright/index preservation moves original glyphs out of paragraphs.
+    # Keep their identity and complete state instead of relying on byte-exact
+    # raster equality (PDF serialization can round a coordinate by 0.0003 pt).
+    standalone = []
+    for index, link in enumerate(info['links']):
+        rect = link['from']
+        selected = []
+        for char in getattr(page, 'pdf_character', []):
+            if char.box is None or not _normal(char.char_unicode or ''):
+                continue
+            box = _rect(char, info['matrix'])
+            if (box.width > 0 and box.height > 0
+                    and rect.x0 - .1 <= (box.x0 + box.x1) / 2 <= rect.x1 + .1
+                    and (box & rect).get_area() >= box.get_area() * .2):
+                selected.append((char, deepcopy(char)))
+        if selected:
+            standalone.append((index, selected))
+    info['standalone'] = standalone
 
 
 def _render_page(self, page):
@@ -217,6 +236,15 @@ def capture_target(page):
     if info is None:
         return
     mapped = {}
+    standalone = {id(char): char for char in getattr(page, 'pdf_character', [])}
+    for index, selected in info.get('standalone', []):
+        # No text search or positional inference: every original selected glyph
+        # must still exist, with its text, font, glyph id and geometry unchanged.
+        if all(standalone.get(id(char)) is char and char == snapshot
+               for char, snapshot in selected):
+            rects = _line_rects([char for char, _ in selected], info['matrix'])
+            if rects:
+                mapped.setdefault(index, []).extend(rects)
     for paragraph in page.pdf_paragraph:
         record = info['source'].get(id(paragraph))
         if record is None:

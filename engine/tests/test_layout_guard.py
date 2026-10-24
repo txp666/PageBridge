@@ -1018,6 +1018,101 @@ class StructuredEntryTests(unittest.TestCase):
         self.assertEqual([id(c) for c in glyphs],[id(c) for c in after])
         self.assertEqual(len(guard._hanging_indents),3)
 
+    @staticmethod
+    def shift_row(row, dx):
+        for c in row:
+            c.box.x += dx; c.box.x2 += dx
+            c.visual_bbox.box.x += dx; c.visual_bbox.box.x2 += dx
+
+    def test_right_aligned_reference_labels_cross_digit_count_without_merging(self):
+        p=line_paragraph([f'{n}. Reference author and title' for n in (8,9,10,11)])
+        for comp,n in zip(p.pdf_paragraph_composition,(8,9,10,11)):
+            self.shift_row(comp.pdf_line.pdf_character,5*(2-len(str(n))))
+        glyphs=[c for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        fixture=page([]);fixture.pdf_paragraph=[p]
+        self.assertEqual(guard.split_structured_entries(self.finder,fixture),3)
+        self.assertEqual([p.unicode.split('.')[0] for p in fixture.pdf_paragraph],['8','9','10','11'])
+        self.assertEqual([v[1] for v in guard._hanging_indents.values()],[15,15,20,20])
+        after=[c for p in fixture.pdf_paragraph for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        self.assertEqual([id(c) for c in glyphs],[id(c) for c in after])
+
+    def test_drawn_gap_after_number_replaces_missing_unicode_space_for_detection(self):
+        from dataclasses import asdict
+        p=line_paragraph(['1.First step with detail','2.Second step with detail','3.Third step with detail'])
+        for comp in p.pdf_paragraph_composition:
+            self.shift_row(comp.pdf_line.pdf_character[2:],3)
+        glyphs=[c for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        before=[asdict(c) for c in glyphs]
+        fixture=page([]);fixture.pdf_paragraph=[p]
+        self.assertEqual(guard.split_structured_entries(self.finder,fixture),2)
+        after=[c for p in fixture.pdf_paragraph for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        self.assertEqual([id(c) for c in glyphs],[id(c) for c in after])
+        self.assertEqual(before,[asdict(c) for c in after])
+
+    def test_marker_requires_geometric_gap_and_a_shared_label_column(self):
+        for mode in ('no-gap','misaligned','decimal'):
+            p=line_paragraph(['1.First item','2.Second item'])
+            if mode=='misaligned':
+                for comp in p.pdf_paragraph_composition:self.shift_row(comp.pdf_line.pdf_character[2:],3)
+                self.shift_row(p.pdf_paragraph_composition[1].pdf_line.pdf_character,20)
+            elif mode=='decimal':p=line_paragraph(['1.4 is a measured value','2.5 is a measured value'])
+            fixture=page([]);fixture.pdf_paragraph=[p]
+            self.assertEqual(guard.split_structured_entries(self.finder,fixture),0,mode)
+            self.assertIs(fixture.pdf_paragraph[0],p)
+
+    def detached_letter_fixture(self):
+        p=line_paragraph(['Insert an input from another node,','continued detail, or','remove the selected input.'])
+        for comp in p.pdf_paragraph_composition:self.shift_row(comp.pdf_line.pdf_character,30)
+        markers=[]
+        for row,letter in ((0,'a'),(2,'b')):
+            x=10
+            for value,width in zip('('+letter+')',(3,5,3)):
+                c=character(value,ord(value),font_id='F2',x=x,y=500-row*14)
+                c.pdf_style.font_size=11
+                c.box.x2=x+width;c.visual_bbox.box.x2=x+width
+                c.box.y2=c.box.y+11;c.visual_bbox.box.y2=c.box.y+11
+                markers.append(c);x+=width
+        fixture=page(markers);fixture.pdf_paragraph=[p]
+        return fixture,p,markers
+
+    def test_detached_letter_labels_bind_to_exact_body_rows_and_keep_all_glyphs(self):
+        from dataclasses import asdict
+        fixture,p,markers=self.detached_letter_fixture()
+        glyphs=markers+[c for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        before={id(c):asdict(c) for c in glyphs}
+        self.assertEqual(guard.split_structured_entries(self.finder,fixture),1)
+        self.assertEqual(len(fixture.pdf_paragraph),2)
+        self.assertTrue(fixture.pdf_paragraph[0].unicode.startswith('(a)'))
+        self.assertIn('continued detail',fixture.pdf_paragraph[0].unicode)
+        self.assertTrue(fixture.pdf_paragraph[1].unicode.startswith('(b)'))
+        self.assertNotIn('remove',fixture.pdf_paragraph[0].unicode)
+        after=fixture.pdf_character+[c for p in fixture.pdf_paragraph for comp in p.pdf_paragraph_composition for c in comp.pdf_line.pdf_character]
+        self.assertEqual(before,{id(c):asdict(c) for c in after})
+        self.assertEqual(len(glyphs),len(after))
+        self.assertEqual(guard.snapshot()['restoredDetachedListMarkers'],2)
+        self.assertEqual(guard.split_structured_entries(self.finder,fixture),0)
+        self.assertEqual(guard.snapshot()['restoredDetachedListMarkers'],2)
+
+    def test_detached_labels_reject_missing_sequence_wrong_geometry_and_ambiguity(self):
+        import copy
+        for mode in ('single','nonconsecutive','font','size','baseline','gap','ambiguous','cross-paragraph'):
+            fixture,p,markers=self.detached_letter_fixture()
+            if mode=='single':fixture.pdf_character=markers[:3]
+            elif mode=='nonconsecutive':markers[4].char_unicode='c'
+            elif mode=='font':markers[4].pdf_style.font_id='Other'
+            elif mode=='size':markers[4].pdf_style.font_size=7
+            elif mode=='baseline':markers[4].box.y-=4
+            elif mode=='gap':self.shift_row(markers[3:],-40)
+            elif mode=='ambiguous':fixture.pdf_paragraph.append(copy.deepcopy(p))
+            elif mode=='cross-paragraph':
+                other=copy.copy(p);other.pdf_paragraph_composition=p.pdf_paragraph_composition[2:]
+                p.pdf_paragraph_composition=p.pdf_paragraph_composition[:2]
+                fixture.pdf_paragraph.append(other)
+            before=list(fixture.pdf_character)
+            self.assertEqual(guard.split_structured_entries(self.finder,fixture),0,mode)
+            self.assertEqual(fixture.pdf_character,before,mode)
+            self.assertEqual(guard.snapshot()['restoredDetachedListMarkers'],0,mode)
+
     def test_nonconsecutive_numbers_and_ordinary_prose_untouched(self):
         for texts in [['2 results increased','5 results decreased'],['2024 study reports facts','2025 study reports more'],['Body one','Body two']]:
             p=line_paragraph(texts);fixture=page([]);fixture.pdf_paragraph=[p]

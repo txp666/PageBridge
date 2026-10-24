@@ -79,6 +79,13 @@ services require HTTPS and a key. Supply the Base URL, not a full
 `/chat/completions` URL. Requests support a timeout of 10–600 seconds and
 concurrency of 1–8.
 
+The local Ollama preset disables presence penalties and caps each translation
+response at 8192 tokens (connection probes use 1024). Length-truncated or
+content-filtered responses are rejected before the upstream text adapter can
+discard their finish status. Local SDK timeout retries are disabled; explicit
+paragraph repair still runs. This is an output bound, not a document-wide time
+limit. Custom and online providers retain their normal SDK retry settings.
+
 Optional `provider` identifies a preset (`deepSeek`, `alibaba`, `siliconFlow`,
 `openAI`, `ollama`, `custom`). Known online presets must match their official
 endpoint; different regions or gateways use `custom`. Missing provider fields
@@ -128,6 +135,9 @@ metadata deliberately stay in the source language.
 restores supported URI and document-page links after reflow. It maps the source
 and translated halves of the bilingual file separately. Source rectangle
 coordinates are reused only when the visible region is proven unchanged.
+Original standalone glyphs retained for copyright/index content are tracked by
+object identity and complete state, so harmless PDF coordinate rounding does
+not drop their links.
 Ambiguous, unsupported or zero-area source annotations are counted separately;
 link counts alone do not establish that a hotspot or destination is correct.
 Internal destinations currently have page precision.

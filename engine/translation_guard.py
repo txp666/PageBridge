@@ -557,6 +557,13 @@ def _affirmed_wrong_term(output, term):
     return False
 
 
+def _network_rewiring_prose(ti):
+    """Identify a source prose term from its network/node context, not a name."""
+    prose = _prose_text(ti, ti.unicode)
+    return bool(re.search(r"(?<![A-Za-z0-9_])rewiring(?![A-Za-z0-9_])", prose)
+                and re.search(r"\b(?:networks?|nodes?|links?|synapses?|synaptic)\b", prose, re.I))
+
+
 def _ordinary_english_residuals(ti, output):
     """Flag source-attested prose, never guess that every Latin token is prose.
 
@@ -577,6 +584,11 @@ def _ordinary_english_residuals(ti, output):
                    "intrinsically experimentally theoretically resulting".split())
     source_words = set(re.findall(r"(?<![A-Za-z0-9_])[A-Za-z]+(?![A-Za-z0-9_])", source))
     residuals = set()
+    if _network_rewiring_prose(ti):
+        # A model can split this ordinary word across spaces/style runs; PDF
+        # line wrapping alone is not considered a formula/name exemption.
+        residuals.update(m[0] for m in re.finditer(
+            r"(?<![A-Za-z0-9_])re[ \t\r\n\-‐‑]*wiring(?![A-Za-z0-9_])", translated))
     for match in re.finditer(r"(?<![A-Za-z0-9_])[A-Za-z]+(?![A-Za-z0-9_])", translated):
         word = match[0]
         # Uppercase abbreviations and differently cased proper names are not
@@ -710,9 +722,50 @@ def _check_body_translation(translator, paragraph, ti, output):
             raise PlaceholderIntegrityError("scientific-identifier-changed")
 
 
-def _fixed_label_translation(translator, ti):
+def _short_prose_connector(paragraph):
+    """Prove a whole short connector is original baseline text, not math/code.
+
+    The default upstream five-character minimum skips standalone scientific
+    connectors such as "with" before a displayed definition. Only these exact
+    lowercase one-line words take this exception. No formula object is opened,
+    no small script is promoted, and the shared minimum-length setting stays.
+    """
+    if paragraph is None or getattr(paragraph, "vertical", False):
+        return None
+    label = str(getattr(paragraph, "layout_label", "")).lower().replace(" ", "_")
+    source = (getattr(paragraph, "unicode", "") or "").strip()
+    if label not in {"text", "plain_text"} or source not in {"with", "and"}:
+        return None
+    compositions = getattr(paragraph, "pdf_paragraph_composition", ())
+    if len(compositions) != 1:
+        return None
+    composition = compositions[0]
+    line = getattr(composition, "pdf_line", None)
+    if line is None or any(getattr(composition, field, None) is not None for field in (
+            "pdf_formula", "pdf_same_style_characters", "pdf_character", "pdf_same_style_unicode_characters")):
+        return None
+    chars = list(line.pdf_character)
+    base = getattr(paragraph, "pdf_style", None)
+    size = getattr(base, "font_size", None)
+    font = getattr(base, "font_id", None)
+    if not size or not font or "".join(c.char_unicode or "" for c in chars).strip() != source:
+        return None
+    if any(not c.pdf_style or c.pdf_style.font_id != font or not c.pdf_style.font_size
+           or abs(c.pdf_style.font_size - size) > size * 0.05 or c.box is None
+           or getattr(c, "vertical", False)
+           or getattr(c, "formula_layout_id", None) is not None for c in chars):
+        return None
+    if max(c.box.y for c in chars) - min(c.box.y for c in chars) > size * 0.1:
+        return None
+    return source
+
+
+def _fixed_label_translation(translator, ti, paragraph=None):
     if _formula(ti.placeholders) or not str(getattr(translator.translation_config, "lang_out", "")).lower().startswith("zh"):
         return None
+    connector = _short_prose_connector(paragraph)
+    if connector is not None and ti.unicode.strip() == connector and not ti.placeholders:
+        return {"with": "其中", "and": "且"}[connector]
     labels = {"articleinfo": "文章信息", "abstract": "摘要", "keywords": "关键词"}
     source = ti.unicode
     for placeholder in _rich(ti.placeholders):
@@ -1713,6 +1766,9 @@ def _contextual_term_hint(translator, ti):
         if _untranslated_numbered_labels(ti, ti.unicode):
             hints.append(" Translate numbered prose reference labels: Figure/Figures as 图, Table/Tables as 表, "
                          "Equation/Equations as 式, Section/Sections as 节, and Appendix/Appendices as 附录; retain each original number.")
+        if _network_rewiring_prose(ti):
+            hints.append(" Technical terminology: rewiring is the ordinary network operation 重连 or 重新连接 in this source. "
+                         "Translate it in context wherever it occurs; do not retain rewiring or split it into re wiring.")
         if re.search(r"\bgalvanically\s+isolated\b", prose, re.I):
             hints.append(" Technical terminology: galvanically isolated means 电气隔离. Translate this complete expression into Chinese, including the modifier.")
         if re.search(r"\bexclusively\b", prose, re.I):
@@ -1951,6 +2007,20 @@ def _guard_pre(self, paragraph, tracker, *args, **kwargs):
             result = (None, None)
         else:
             result = _originals["pre"](self, paragraph, tracker, *args, **kwargs)
+            if (result[0] is None and _short_prose_connector(paragraph) is not None
+                    and str(getattr(self.translation_config, "lang_out", "")).lower().startswith("zh")):
+                font_map = kwargs.get("page_font_map", args[0] if args else {})
+                xobj_maps = kwargs.get("xobj_font_map", args[1] if len(args) > 1 else {})
+                font_map = xobj_maps.get(getattr(paragraph, "xobj_id", None), font_map)
+                short_input = self.get_translate_input(paragraph, font_map, True)
+                if (short_input is not None and not short_input.placeholders
+                        and short_input.unicode.strip() == _short_prose_connector(paragraph)):
+                    tracker.set_input(short_input.unicode)
+                    tracker.set_placeholders(short_input.placeholders)
+                    tracker.set_original_placeholders(getattr(short_input, "original_placeholder_tokens", None))
+                    result = (short_input.unicode, short_input)
+                    with _lock:
+                        _counters["shortProseConnectorsPrepared"] += 1
         if result[0] is not None:
             if _preserve_publication_metadata(result[1], getattr(paragraph, "layout_label", None)):
                 with _lock:
@@ -1992,7 +2062,7 @@ def _guard_pre(self, paragraph, tracker, *args, **kwargs):
 
 def _guard_post(self, paragraph, tracker, ti, translated_text):
     _record_pending(paragraph)
-    fixed_label = _fixed_label_translation(self, ti)
+    fixed_label = _fixed_label_translation(self, ti, paragraph)
     candidate = fixed_label if fixed_label is not None else translated_text
     if fixed_label is not None:
         # A spaced Latin label may have a separate rich style for each letter.

@@ -121,6 +121,28 @@ class LinkTests(unittest.TestCase):
             self.assertEqual(links._mapped[0][0],[[90.,100.,105.,110.]])
         finally:links._pages.clear();links._pages.update(old)
 
+    def test_preserved_standalone_glyphs_need_original_identity_and_state(self):
+        from copy import deepcopy
+        for mutation in ('none', 'replace', 'text', 'move', 'remove'):
+            with self.subTest(mutation=mutation):
+                original = chars('Creative Commons')
+                page = SimpleNamespace(page_number=0, pdf_paragraph=[], pdf_character=original[:])
+                old = links._pages.copy()
+                try:
+                    links._pages[0] = {'matrix': pymupdf.Matrix(1,0,0,1,0,0),
+                        'links': [{'kind': pymupdf.LINK_URI, 'uri': 'https://a.test',
+                                   'from': pymupdf.Rect(9,9,91,21)}], 'source': {}}
+                    links.capture_source(page)
+                    if mutation == 'replace': page.pdf_character = deepcopy(original)
+                    if mutation == 'text': original[0].char_unicode = 'X'
+                    if mutation == 'move': original[0].box.x += 1
+                    if mutation == 'remove': page.pdf_character.pop()
+                    links.capture_target(page)
+                    self.assertEqual(bool(links._mapped[0]), mutation == 'none')
+                    if mutation == 'none': self.assertEqual(links._mapped[0][0], [[10.,10.,90.,20.]])
+                finally:
+                    links._pages.clear(); links._pages.update(old)
+
     def test_localized_figure_and_equation_hotspot_excludes_surrounding_prose(self):
         source=chars('See Fig. 3 for details')
         target=chars('详见图3了解详情',x=100)

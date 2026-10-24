@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import wraps
 import hashlib
 import html
 import importlib.metadata
@@ -41,6 +42,40 @@ class WorkerError(Exception):
     """Only fixed, non-secret messages should be constructed here."""
 
 
+def checked_completion_create(create):
+    """Do not let the upstream string-only adapter accept a partial response."""
+    @wraps(create)
+    def checked(*args, **kwargs):
+        response = create(*args, **kwargs)
+        if any(getattr(choice, 'finish_reason', None) in ('length', 'content_filter')
+               for choice in getattr(response, 'choices', [])):
+            raise ValueError('translation-response-incomplete')
+        return response
+    return checked
+
+
+def install_response_guard():
+    from pdf2zh_next.translator.translator_impl.openai import OpenAITranslator
+    original = OpenAITranslator.__init__
+    if getattr(original, '_pagebridge_checked', False):
+        return
+
+    @wraps(original)
+    def initialize(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        extra = self.options.get('extra_body', {})
+        local = urlsplit(str(self.client.base_url)).hostname in ('localhost', '127.0.0.1', '::1')
+        if local and extra.get('max_tokens') == 8192 and extra.get('presence_penalty') == 0:
+            # These two options are emitted only by our local Ollama preset.
+            # Repeating an identical timed-out deterministic request does not
+            # repair it; the paragraph guard owns the explicit repair retries.
+            self.client.max_retries = 0
+        completions = self.client.chat.completions
+        completions.create = checked_completion_create(completions.create)
+    initialize._pagebridge_checked = True
+    OpenAITranslator.__init__ = initialize
+
+
 def guarded_translate_wrapper(settings, *args):
     """Install the checked adapter inside the actual translation subprocess.
 
@@ -55,6 +90,7 @@ def guarded_translate_wrapper(settings, *args):
     original = _UPSTREAM_TRANSLATE_WRAPPER or high_level._translate_wrapper
     layout_guard.install()
     translation_guard.install()
+    install_response_guard()
     report_path = Path(settings.translation.output) / "translation-quality.json"
     file, progress_pipe, *remaining = args
     pdf_links.configure(file)
@@ -144,6 +180,10 @@ def provider_request_options(service, *, probe=False):
         # Qwen model defaults to 1.5). Translation must retain repeated numbers,
         # terms and formula markers instead of discouraging their recurrence.
         result["presence_penalty"] = 0
+        if not probe:
+            # A pathological paragraph must stop rather than consume the
+            # model's entire context window. A length finish is rejected above.
+            result["max_tokens"] = 8192
     if provider == "deepSeek":
         result["thinking"] = {"type": "disabled"}
     elif provider == "alibaba" and model in ("qwen-plus", "qwen-flash"):

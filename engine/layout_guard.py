@@ -14,7 +14,7 @@ import math
 import re
 import threading
 
-GUARD_VERSION = 11
+GUARD_VERSION = 12
 _lock = threading.RLock()
 _installed = False
 _original_process_page = None
@@ -567,8 +567,120 @@ def _guard_process_page(self, page):
     return result
 
 
-_ENTRY_NUMBER = re.compile(r'^\s*(\d{1,3})(?:[.)]|\])?\s+(?=[A-Za-z])')
+_ENTRY_NUMBER = re.compile(r'^\s*(\d{1,3})(?:([.)\]])\s*|\s+)(?=[A-Za-z])')
+_ENTRY_LETTER = re.compile(r'^\s*\(([a-z])\)\s*(?=[A-Za-z])')
 _ENTRY_AUTHOR = re.compile(r'^[^\W\d_][\w’\x27.\-]+(?:[ -][^\W\d_][\w’\x27.\-]+){0,2},\s+[A-Z](?:[.-][A-Z])*\.')
+
+
+def _entry_marker(row, letter=False):
+    """Read a marker only at a real glyph boundary with visible source spacing."""
+    text = ''.join(c.char_unicode for c in row)
+    match = (_ENTRY_LETTER if letter else _ENTRY_NUMBER).match(text)
+    if not match:
+        return None
+    offset, prefix = 0, []
+    for body in row:
+        if offset == match.end():
+            break
+        offset += len(body.char_unicode)
+        prefix.append(body)
+    else:
+        return None
+    if offset != match.end() or not prefix:
+        return None
+    visible = [c for c in prefix if c.char_unicode.strip()]
+    if not visible:
+        return None
+    first, last = visible[0], visible[-1]
+    size = first.pdf_style.font_size
+    # PDFs often contain a drawn gap after `1.` without a space character.
+    # A dot glued to the next word is not enough to infer a list boundary.
+    if body.box.x - last.box.x2 < size * .1:
+        return None
+    return dict(value=ord(match[1]) if letter else int(match[1]),
+                left=first.box.x, right=last.box.x2, body=body.box.x,
+                explicit=letter or bool(match[2]), size=size)
+
+
+def _aligned_entry_markers(markers):
+    """Accept left-aligned labels or right-aligned bibliography numbers."""
+    return bool(markers and (
+        max(m['left'] for m in markers) - min(m['left'] for m in markers) < 1 or
+        max(m['right'] for m in markers) - min(m['right'] for m in markers) < 1))
+
+
+def _restore_detached_list_markers(finder, page):
+    """Attach a paired `(a)`, `(b)` source run to its unique body rows.
+
+    Some layout boxes exclude labels and leave them in the original-glyph
+    layer. Require two or more sequential, same-column labels, one paragraph,
+    matching original font/size/baselines and a small clear horizontal gap.
+    Move the original glyph objects; never synthesize or rewrite a label.
+    """
+    from babeldoc.format.pdf.document_il import PdfLine, PdfParagraphComposition
+    rows_by_paragraph = [(p, _source_rows(p)) for p in page.pdf_paragraph
+                         if p.layout_label in {'plain text', 'text', 'reference'}]
+    candidates = []
+    raw = page.pdf_character
+    for index in range(len(raw) - 2):
+        chars = raw[index:index + 3]
+        if not (chars[0].char_unicode == '(' and chars[2].char_unicode == ')' and
+                isinstance(chars[1].char_unicode, str) and re.fullmatch(r'[a-z]', chars[1].char_unicode)):
+            continue
+        if any(not _finite_character(c) for c in chars):
+            continue
+        first = chars[0]
+        size = first.pdf_style.font_size
+        if any(c.pdf_style.font_id != first.pdf_style.font_id or
+               abs(c.pdf_style.font_size - size) > .02 or c.xobj_id != first.xobj_id or
+               abs(c.box.y - first.box.y) > size * .1 for c in chars):
+            continue
+        if any(not -.1 <= b.box.x - a.box.x2 <= size * .25 for a, b in zip(chars, chars[1:])):
+            continue
+        matches = []
+        for paragraph, rows in rows_by_paragraph:
+            if not rows or paragraph.xobj_id != first.xobj_id:
+                continue
+            for row_index, row in enumerate(rows):
+                body = next(c for c in row if c.char_unicode.strip())
+                if (not re.match(r'^[A-Za-z]', body.char_unicode) or
+                        body.pdf_style.font_id != first.pdf_style.font_id or
+                        abs(body.pdf_style.font_size - size) > .02 or
+                        abs(body.box.y - first.box.y) > size * .15 or
+                        not size * .5 <= body.box.x - chars[-1].box.x2 <= size * 3):
+                    continue
+                matches.append((paragraph, rows, row_index, body.box.x))
+        if len(matches) == 1:
+            paragraph, rows, row_index, body_x = matches[0]
+            candidates.append(dict(paragraph=paragraph, rows=rows, index=row_index,
+                                   chars=chars, value=ord(chars[1].char_unicode),
+                                   left=first.box.x, body=body_x, size=size))
+    moved = set()
+    for paragraph, rows in rows_by_paragraph:
+        group = sorted([c for c in candidates if c['paragraph'] is paragraph], key=lambda c: c['index'])
+        if (len(group) < 2 or group[0]['index'] != 0 or
+                len({c['index'] for c in group}) != len(group) or
+                any(b['value'] != a['value'] + 1 for a, b in zip(group, group[1:])) or
+                max(c['left'] for c in group) - min(c['left'] for c in group) >= 1 or
+                max(c['body'] for c in group) - min(c['body'] for c in group) >= 1 or
+                max(c['size'] for c in group) - min(c['size'] for c in group) > .02):
+            continue
+        ids = [id(char) for entry in group for char in entry['chars']]
+        if len(set(ids)) != len(ids) or moved.intersection(ids):
+            continue
+        for entry in group:
+            rows[entry['index']] = entry['chars'] + rows[entry['index']]
+        paragraph.pdf_paragraph_composition = [PdfParagraphComposition(pdf_line=PdfLine(pdf_character=row))
+                                               for row in rows]
+        for comp in paragraph.pdf_paragraph_composition:
+            finder.update_line_data(comp.pdf_line)
+        finder.update_paragraph_data(paragraph, update_unicode=True)
+        moved.update(ids)
+    if moved:
+        page.pdf_character = [c for c in raw if id(c) not in moved]
+        with _lock:
+            _counters['restoredDetachedListMarkers'] += len(moved) // 3
+    return len(moved) // 3
 
 
 def _source_rows(paragraph):
@@ -604,11 +716,12 @@ def _source_rows(paragraph):
 def split_structured_entries(finder, page):
     """Restore explicit list items and hanging bibliography entry boundaries.
 
-    Numbered lists require at least two consecutive source numbers aligned at
-    the same left edge. Bibliographies require repeated author/initial headers
-    and indented continuation rows. No page numbers or paper titles are used.
+    Numbered lists require consecutive source labels aligned at their left or
+    right edge. Bibliographies require repeated author/initial headers and
+    indented continuation rows. No page numbers or paper titles are used.
     """
     from babeldoc.format.pdf.document_il import PdfLine, PdfParagraphComposition
+    _restore_detached_list_markers(finder, page)
     result, splits, hanging = [], 0, 0
     for paragraph in page.pdf_paragraph:
         rows = _source_rows(paragraph)
@@ -619,17 +732,29 @@ def split_structured_entries(finder, page):
         starts = [next(c for c in row if c.char_unicode.strip()) for row in rows]
         left = min(c.box.x for c in starts)
         size = max(c.pdf_style.font_size for c in starts)
-        numeric = [(i, int(m[1])) for i, text in enumerate(texts)
-                   if (m := _ENTRY_NUMBER.match(text)) and abs(starts[i].box.x - left) < 1]
+        numeric = [(i, m) for i, row in enumerate(rows) if (m := _entry_marker(row))]
+        letters = [(i, m) for i, row in enumerate(rows) if (m := _entry_marker(row, letter=True))]
         authors = [i for i, text in enumerate(texts)
                    if _ENTRY_AUTHOR.match(text) and abs(starts[i].box.x - left) < 1]
         continuation = [c.box.x - left for c in starts if size * .5 <= c.box.x - left <= size * 3]
-        is_numbered = (len(numeric) >= 2 and all(b[1] == a[1] + 1 for a, b in zip(numeric, numeric[1:])))
+        is_numbered = (len(numeric) >= 2 and _aligned_entry_markers([m for _, m in numeric]) and
+                       all(b[1]['value'] == a[1]['value'] + 1 for a, b in zip(numeric, numeric[1:])))
+        is_lettered = (len(letters) >= 2 and _aligned_entry_markers([m for _, m in letters]) and
+                       all(b[1]['value'] == a[1]['value'] + 1 for a, b in zip(letters, letters[1:])))
         is_references = len(authors) >= 2 and continuation and bool(re.search(r'\b(?:19|20)\d{2}\b', ' '.join(texts)))
-        boundaries = ([i for i, _ in numeric] if is_numbered else authors if is_references else [])
+        boundaries = ([i for i, _ in numeric] if is_numbered else
+                      [i for i, _ in letters] if is_lettered else authors if is_references else [])
+        markers = dict(numeric if is_numbered else letters if is_lettered else [])
         # Already separated bullets still need their original hanging column.
         is_bullet = bool(re.match(r'^[•▪◦●]\s*', texts[0]))
-        if not boundaries and not is_bullet:
+        # A source item already separated by the layout detector still needs
+        # its hanging indentation. Require an explicit label and aligned body
+        # continuation rows, rather than treating an arbitrary leading number
+        # as a one-item list.
+        single_marker = _entry_marker(rows[0]) or _entry_marker(rows[0], letter=True)
+        is_single = bool(single_marker and single_marker['explicit'] and len(rows) > 1 and
+                         all(abs(c.box.x - single_marker['body']) < 1 for c in starts[1:]))
+        if not boundaries and not is_bullet and not is_single:
             result.append(paragraph)
             continue
         boundaries = sorted(set([0] + boundaries + [len(rows)]))
@@ -646,16 +771,10 @@ def split_structured_entries(finder, page):
             candidate_indents = [c.box.x - starts[start].box.x for c in starts[start + 1:end]
                                  if size * .4 <= c.box.x - starts[start].box.x <= size * 3]
             indent = min(candidate_indents) if candidate_indents else 0
-            if is_numbered and not indent:
-                marker = _ENTRY_NUMBER.match(texts[start])
+            if not indent:
+                marker = markers.get(start) or (single_marker if start == 0 and is_single else None)
                 if marker:
-                    marker_chars, offset = [], 0
-                    for char in rows[start]:
-                        offset += len(char.char_unicode)
-                        marker_chars.append(char)
-                        if offset >= marker.end():
-                            break
-                    indent = max(c.box.x2 for c in marker_chars) - starts[start].box.x
+                    indent = marker['body'] - starts[start].box.x
             if indent > 0 and indent < (item.box.x2 - item.box.x) * .3:
                 _hanging_indents[id(item)] = (item, indent)
                 hanging += 1
@@ -1242,5 +1361,6 @@ def snapshot():
                 "preservedTrailingEquationLines": _counters["preservedTrailingEquationLines"],
                 "preservedTrailingEquationGlyphs": _counters["preservedTrailingEquationGlyphs"],
                 "restoredStructuredEntryBoundaries": _counters["restoredStructuredEntryBoundaries"],
+                "restoredDetachedListMarkers": _counters["restoredDetachedListMarkers"],
                 "registeredHangingIndents": _counters["registeredHangingIndents"],
                 "rawDocumentTextStored": False}

@@ -269,5 +269,132 @@ class WorkerTests(unittest.TestCase):
                     process.wait()
 
 
+class ResponseBoundaryTests(unittest.TestCase):
+    def test_truncated_or_filtered_content_never_reaches_string_adapter(self):
+        from types import SimpleNamespace
+        for reason in ('length', 'content_filter', 'stop', None):
+            response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=reason,
+                message=SimpleNamespace(content='private partial document text'))])
+            checked = worker.checked_completion_create(lambda **kw: response)
+            if reason in ('length', 'content_filter'):
+                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
+                    checked(model='fixture')
+            else:
+                self.assertIs(checked(model='fixture'), response)
+
+    def test_client_guard_installs_once_and_only_local_preset_disables_sdk_retries(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pdf2zh_next.translator.translator_impl.openai import OpenAITranslator
+        for endpoint, extra, expected in [
+            ('http://127.0.0.1:11434/v1', {'max_tokens':8192, 'presence_penalty':0}, 0),
+            ('https://api.example/v1', {'max_tokens':8192, 'presence_penalty':0}, 2),
+            ('http://localhost:11434/v1', {}, 2),
+        ]:
+            response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='length')])
+            def initialize(self):
+                self.options = {'extra_body':extra}
+                self.client = SimpleNamespace(base_url=endpoint, max_retries=2,
+                    chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw:response)))
+            with patch.object(OpenAITranslator, '__init__', initialize):
+                worker.install_response_guard()
+                first = OpenAITranslator.__init__
+                worker.install_response_guard()
+                self.assertIs(OpenAITranslator.__init__, first)
+                instance = OpenAITranslator()
+                self.assertEqual(instance.client.max_retries, expected)
+                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
+                    instance.client.chat.completions.create(model='fixture')
+
+
+class SDKResponseBoundaryTests(unittest.TestCase):
+    @contextmanager
+    def translator(self, handler, kind='ollama'):
+        """Use the pinned provider and SDK, replacing only the HTTP transport."""
+        import httpx
+        from pdf2zh_next.translator.translator_impl import openai as provider
+        data = request()
+        data.update(sourceLanguage='en', targetLanguage='zh', pages=None)
+        data['service'].update(kind=kind, baseURL=(
+            'http://127.0.0.1:11434/v1' if kind == 'ollama'
+            else 'https://fixture.invalid/v1'))
+        settings = worker.build_settings(data, Path(tempfile.gettempdir()))
+        settings.validate_settings()
+        # Patch this provider's module reference, not httpx.Client globally:
+        # the SDK still validates and uses a real httpx.Client instance.
+        transport = httpx.MockTransport(handler)
+        http = SimpleNamespace(Limits=httpx.Limits, Client=lambda **kwargs:
+            httpx.Client(transport=transport, **kwargs))
+        original_init = provider.OpenAITranslator.__init__
+        with patch.object(provider, 'httpx', http), \
+             patch.object(provider.OpenAITranslator, '__init__', original_init):
+            worker.install_response_guard()
+            instance = provider.OpenAITranslator(settings, None)
+            try:
+                yield instance
+            finally:
+                instance.client.close()
+
+    def test_real_sdk_rejects_finished_json_marked_partial_in_plain_and_structured_requests(self):
+        import httpx
+        import translation_guard
+        calls = []
+        state = {'reason': 'length'}
+        content = '{"translation":"压力为 10 kPa，公式 {v1} 保持不变。"}'
+        def respond(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json={
+                'id': 'fixture', 'object': 'chat.completion', 'created': 0,
+                'model': 'fixture', 'choices': [{'index': 0,
+                    'finish_reason': state['reason'],
+                    'message': {'role': 'assistant', 'content': content}}]})
+        with self.translator(respond) as translator:
+            original_options = dict(translator.options)
+            schema = translation_guard._complete_translation_schema()
+            structured = translation_guard._structured_translation_engine(translator, schema)
+            self.assertIsNot(structured, translator)
+            self.assertIs(structured.client, translator.client)
+            self.assertIsNot(structured.options, translator.options)
+            for reason in ('length', 'content_filter'):
+                state['reason'] = reason
+                for engine in (translator, structured):
+                    with self.subTest(reason=reason, structured=engine is structured):
+                        with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
+                            engine.do_llm_translate('fixture scientific paragraph')
+                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
+                    translator.do_translate('fixture scientific paragraph')
+            # Compatible endpoints may omit a finish reason. Preserve that
+            # behavior and leave content validation to the paragraph guard.
+            for reason in ('stop', None):
+                state['reason'] = reason
+                self.assertEqual(translator.do_llm_translate('fixture paragraph'), content)
+            self.assertEqual(translator.options, original_options)
+            self.assertEqual(len(calls), 8)
+            self.assertNotIn('response_format', calls[0])
+            self.assertEqual(calls[1]['response_format'], schema)
+            self.assertEqual(calls[4]['response_format'], schema)
+            self.assertTrue(all(call['max_tokens'] == 8192 for call in calls))
+            self.assertTrue(all(call['presence_penalty'] == 0 for call in calls))
+
+    def test_real_sdk_timeout_attempt_count_is_one_for_ollama_and_three_for_custom(self):
+        import httpx
+        import openai
+        for kind, expected in (('ollama', 1), ('openai', 3)):
+            with self.subTest(kind=kind):
+                calls = []
+                def timeout(request):
+                    calls.append(json.loads(request.content))
+                    raise httpx.ReadTimeout('offline fixture timeout', request=request)
+                with self.translator(timeout, kind) as translator, \
+                     patch('openai._base_client.time.sleep', return_value=None):
+                    with self.assertRaises(openai.APITimeoutError):
+                        translator.do_llm_translate('fixture scientific paragraph')
+                self.assertEqual(len(calls), expected)
+                if kind == 'ollama':
+                    self.assertEqual(calls[0]['max_tokens'], 8192)
+                else:
+                    self.assertNotIn('max_tokens', calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()

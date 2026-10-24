@@ -76,15 +76,19 @@ class ProviderSettingsTests(unittest.TestCase):
                 engine = settings.translate_engine_settings
                 if kind == 'ollama':
                     self.assertEqual(engine.translate_engine_type, 'OpenAI')
-                    self.assertEqual(engine._openai_extra_body, {'presence_penalty': 0})
+                    self.assertEqual(engine._openai_extra_body, {'presence_penalty': 0, 'max_tokens': 8192})
                     self.assertEqual(engine.openai_reasoning_effort, 'none')
                     self.assertEqual(engine.openai_temperature, '0')
                     cloned = pickle.loads(pickle.dumps(settings))
-                    self.assertEqual(cloned.translate_engine_settings._openai_extra_body, {'presence_penalty': 0})
+                    self.assertEqual(cloned.translate_engine_settings._openai_extra_body, {'presence_penalty': 0, 'max_tokens': 8192})
                 else:
                     self.assertEqual(engine.translate_engine_type, 'OpenAICompatible')
                     self.assertIsNone(engine.openai_compatible_reasoning_effort)
                     self.assertIsNone(engine.openai_compatible_temperature)
+
+    def test_local_probe_keeps_smaller_output_limit(self):
+        service = worker.normalized_service({'kind': 'ollama', 'baseURL': 'http://localhost:11434', 'model': 'fixture'})
+        self.assertEqual(worker.provider_request_options(service, probe=True)['max_tokens'], 1024)
 
 if __name__ == "__main__":
     unittest.main()

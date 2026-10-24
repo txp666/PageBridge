@@ -57,6 +57,21 @@ def paragraph(ti):
                            pdf_style=ti.base_style, layout_label="text")
 
 
+def short_connector_fixture(text="with"):
+    base = PdfStyle(font_id="F5", font_size=8.9663)
+    chars = [PdfCharacter(char_unicode=c, pdf_character_id=ord(c), pdf_style=base,
+                          box=Box(58 + index * 4, 522, 62 + index * 4, 531))
+             for index, c in enumerate(text)]
+    ti = ILTranslator.TranslateInput(text, [], base)
+    para = paragraph(ti)
+    para.layout_label = "plain text"
+    para.vertical = False
+    para.xobj_id = None
+    para.debug_id = "source-connector"
+    para.pdf_paragraph_composition = [PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars))]
+    return ti, para
+
+
 def captured_rich_script_fixture(unit=False):
     """Minimal original glyphs from final source P14/P44 (no generated glyph IDs)."""
     fonts = {"C2_2": SimpleNamespace(name="DSIHYM+HelveticaWorld-Regular"),
@@ -972,6 +987,139 @@ class TranslationGuardTests(unittest.TestCase):
                 with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "untranslated-prose-fragment"):
                     guard._check_body_translation(translator(), paragraph(ti), ti, bad)
                 guard._check_body_translation(translator(), paragraph(ti), ti, good)
+
+    def test_source_network_rewiring_residue_retries_whole_paragraph(self):
+        ti = fixture()
+        ti.unicode = "The adaptive network uses a rewiring mechanism <style id='2'>and rewiring</style> changes {v1}."
+        good = "自适应网络采用重连机制<style id='2'>，重连</style>改变{v1}。"
+        bad = "自适应网络采用re wiring机制<style id='2'>，rewiring</style>改变{v1}。"
+        instance = translator([good])
+        para = paragraph(ti)
+        instance.post_translate_paragraph(para, ParagraphTranslateTracker(), ti, bad)
+        self.assertEqual(para.unicode, good)
+        self.assertEqual(len(instance.calls), 1)
+        self.assertIn("rewiring is the ordinary network operation 重连", instance.calls[0][0])
+        self.assertIs(next(c.pdf_formula for c in para.pdf_paragraph_composition if c.pdf_formula), ti.placeholders[0].formula)
+        for residual in ("rewiring", "re wiring", "re\nwiring", "re-wiring"):
+            with self.subTest(residual=residual), self.assertRaisesRegex(guard.PlaceholderIntegrityError, "untranslated-prose-fragment"):
+                guard._check_body_translation(instance, para, ti, "网络采用" + residual + "机制。")
+
+    def test_network_rewiring_gate_keeps_source_identifiers_and_nonprose(self):
+        opaque = FormulaPlaceholder(1, PdfFormula(pdf_character=[PdfCharacter(char_unicode=c) for c in "rewiring"]), "{v1}", r"\{v1\}")
+        for source, output, placeholders in (
+            ("Rewiring Networks developed this method.", "Rewiring Networks开发了此方法。", []),
+            ("The network uses the formula {v1}.", "该网络使用公式{v1}。", [opaque]),
+            ("The network data are at https://example.org/rewiring.", "网络数据位于https://example.org/rewiring。", []),
+            ("The network uses a rewiring_id identifier.", "网络使用rewiring_id标识符。", []),
+        ):
+            ti = ILTranslator.TranslateInput(source, placeholders, PdfStyle())
+            self.assertFalse(guard._network_rewiring_prose(ti))
+            guard._check_body_translation(translator(), paragraph(ti), ti, output)
+        ti = ILTranslator.TranslateInput("The network uses a rewiring mechanism.", [], PdfStyle())
+        for label in ("code", "formula", "reference"):
+            para = paragraph(ti)
+            para.layout_label = label
+            guard._check_body_translation(translator(), para, ti, "网络使用rewiring机制。")
+        instance = translator()
+        instance.translation_config.lang_out = "de"
+        guard._check_body_translation(instance, paragraph(ti), ti, "网络使用rewiring机制。")
+
+    def test_real_short_connectors_bypass_only_length_gate_and_translate(self):
+        for source, expected in (("with", "其中"), ("and", "且")):
+            ti, para = short_connector_fixture(source)
+            instance = translator()
+            instance.support_llm_translate = True
+            instance.translation_config.disable_rich_text_translate = False
+            instance.translation_config.min_text_length = 5
+            original_config = instance.translation_config
+            tracker = ParagraphTranslateTracker()
+            self.assertEqual(guard._originals["pre"](instance, para, tracker, {}, {}), (None, None))
+            text, prepared = instance.pre_translate_paragraph(para, tracker, {}, {})
+            self.assertEqual(text, source)
+            self.assertEqual(prepared.placeholders, [])
+            instance.post_translate_paragraph(para, tracker, prepared, source)
+            self.assertEqual(para.unicode, expected)
+            self.assertIs(instance.translation_config, original_config)
+            self.assertEqual(instance.translation_config.min_text_length, 5)
+            self.assertIs(para.pdf_paragraph_composition[0].pdf_same_style_unicode_characters.pdf_style, ti.base_style)
+            self.assertEqual(instance.calls, [])
+        self.assertEqual(guard.snapshot()["counters"]["shortProseConnectorsPrepared"], 2)
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 0)
+
+    def test_short_connector_exception_excludes_names_code_formulas_and_scripts(self):
+        for source in ("With", "AND", "And", "with:", "and/or", "with x", "In", "at"):
+            ti, para = short_connector_fixture(source)
+            self.assertIsNone(guard._short_prose_connector(para))
+            self.assertIsNone(guard._fixed_label_translation(translator(), ti, para))
+        for label in ("title", "code", "formula", "isolate_formula", "fallback_line", "reference"):
+            ti, para = short_connector_fixture()
+            para.layout_label = label
+            self.assertIsNone(guard._short_prose_connector(para))
+        ti, para = short_connector_fixture()
+        chars = para.pdf_paragraph_composition[0].pdf_line.pdf_character
+        para.pdf_paragraph_composition = [PdfParagraphComposition(pdf_formula=PdfFormula(pdf_character=chars))]
+        self.assertIsNone(guard._short_prose_connector(para))
+        for mutation in ("script", "baseline", "formula_layout", "vertical", "mismatched_text", "multiple_lines"):
+            ti, para = short_connector_fixture()
+            chars = para.pdf_paragraph_composition[0].pdf_line.pdf_character
+            if mutation == "script":
+                chars[0].pdf_style = PdfStyle(font_id="F5", font_size=5)
+            elif mutation == "baseline":
+                chars[0].box.y += 3
+            elif mutation == "formula_layout":
+                chars[0].formula_layout_id = 1
+            elif mutation == "vertical":
+                para.vertical = True
+            elif mutation == "mismatched_text":
+                para.unicode = "and"
+            elif mutation == "multiple_lines":
+                para.pdf_paragraph_composition *= 2
+            with self.subTest(mutation=mutation):
+                self.assertIsNone(guard._short_prose_connector(para))
+        ti, para = short_connector_fixture()
+        instance = translator()
+        instance.translation_config.lang_out = "fr"
+        self.assertIsNone(guard._fixed_label_translation(instance, ti, para))
+        with patch.dict(guard._originals, pre=lambda *a, **k: (None, None)):
+            self.assertEqual(instance.pre_translate_paragraph(para, ParagraphTranslateTracker(), {}, {}), (None, None))
+        formula_ti = ILTranslator.TranslateInput("with {v1}", fixture().placeholders[:1], ti.base_style)
+        self.assertIsNone(guard._fixed_label_translation(translator(), formula_ti, para))
+
+    def test_initial_transport_cutoff_stays_pending_until_complete_retry(self):
+        ti = fixture()
+        good = "流量 {v1}<style id='2'>速率</style>。"
+        instance = translator([ValueError("translation-response-incomplete"), good])
+        instance.support_llm_translate = True
+        instance.use_as_fallback = False
+        instance.translation_config.raise_if_cancelled = lambda: None
+        instance.generate_prompt_for_llm = lambda *args, **kwargs: "Translate: " + args[0]
+        para = paragraph(ti)
+        para.debug_id = "transport-cutoff"
+        original = para.pdf_paragraph_composition
+        with patch.dict(guard._originals, pre=lambda *args, **kwargs: (ti.unicode, ti)):
+            with self.assertLogs("babeldoc.format.pdf.document_il.midend.il_translator", level="ERROR"):
+                instance.translate_paragraph(para, SimpleNamespace(), pbar=SimpleNamespace(advance=lambda: None), tracker=ParagraphTranslateTracker(), page_font_map={}, xobj_font_map={})
+            self.assertEqual(len(instance.calls), 1)
+            self.assertEqual(para.unicode, ti.unicode)
+            self.assertIs(para.pdf_paragraph_composition, original)
+            self.assertEqual(guard.snapshot()["unresolvedCount"], 1)
+            instance.translate_paragraph(para, SimpleNamespace(), pbar=SimpleNamespace(advance=lambda: None), tracker=ParagraphTranslateTracker(), page_font_map={}, xobj_font_map={})
+        self.assertEqual(para.unicode, good)
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 0)
+        self.assertIs(next(c.pdf_formula for c in para.pdf_paragraph_composition if c.pdf_formula), ti.placeholders[0].formula)
+
+    def test_recovery_transport_cutoff_restores_source_and_fails_closed(self):
+        ti = fixture()
+        instance = translator([ValueError("translation-response-incomplete"), ValueError("translation-response-incomplete")])
+        para = paragraph(ti)
+        original = para.pdf_paragraph_composition
+        with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "unresolved-paragraph"):
+            instance.post_translate_paragraph(para, ParagraphTranslateTracker(), ti, "错误{v9}")
+        self.assertEqual(para.unicode, ti.unicode)
+        self.assertIs(para.pdf_paragraph_composition, original)
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 1)
+        self.assertIn("translation-request-failed", guard.snapshot()["unresolvedReasons"])
+        self.assertEqual(len(instance.calls), 2)
 
     def test_fragment_check_excludes_identifiers_formulas_names_and_metadata(self):
         formula = FormulaPlaceholder(1, PdfFormula(pdf_character=[PdfCharacter(char_unicode=c) for c in "galvanically"]), "{v1}", r"\{v1\}")
