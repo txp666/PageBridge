@@ -3,6 +3,12 @@ name: Release macOS
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish (for example v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,9 +29,12 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
       CLANG_MODULE_CACHE_PATH: /tmp/pagebridge-clang-cache
       SWIFT_MODULECACHE_PATH: /tmp/pagebridge-swift-cache
+      RELEASE_REF: ${{ inputs.tag || github.ref }}
+      WORKFLOW_COMMIT: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -42,29 +51,36 @@ jobs:
           xcrun --sdk macosx --show-sdk-version
           swift --version
           python3 - <<'PY'
-          import json, os, re, subprocess, urllib.error, urllib.request
+          import json, os, re, subprocess
           from pathlib import Path
           release = json.loads(Path('VERSION.json').read_text())
           config = json.loads(Path('update-config.json').read_text())
           version, build = release['version'], str(release['build'])
           assert re.fullmatch(r'\d+\.\d+\.\d+', version) and build.isdecimal() and int(build) > 0
-          assert os.environ['GITHUB_REF'] == 'refs/tags/v' + version, 'Tag must exactly match VERSION.json'
+          ref = os.environ['RELEASE_REF']
+          tag = ref.removeprefix('refs/tags/')
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Release ref must be a version tag'
+          assert tag == 'v' + version, 'Tag must exactly match VERSION.json'
           assert config['repository'] == os.environ['GITHUB_REPOSITORY'] == 'txp666/PageBridge'
-          tag_commit = subprocess.check_output(['git','rev-parse',os.environ['GITHUB_REF']+'^{commit}'], text=True).strip()
+          tag_commit = subprocess.check_output(['git','rev-parse','refs/tags/'+tag+'^{commit}'], text=True).strip()
           assert tag_commit == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
-          url = 'https://api.github.com/repos/' + config['repository'] + '/releases/tags/v' + version
-          try:
-              request = urllib.request.Request(url, headers={'User-Agent':'PageBridge-release/1', 'Authorization':'Bearer '+os.environ['GH_TOKEN']})
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  existing = json.load(response)
-          except urllib.error.HTTPError as error:
-              if error.code != 404: raise
+          # REST /releases/tags/{tag} does not find unpublished drafts. gh's
+          # draft-aware lookup gives the stable release ID endpoint instead.
+          found = subprocess.run(['gh','release','view',tag,'--repo',config['repository'],'--json','apiUrl'], capture_output=True, text=True)
+          if found.returncode:
+              assert 'release not found' in found.stderr.lower(), 'Release lookup failed: ' + found.stderr
           else:
+              api_url = json.loads(found.stdout)['apiUrl']
+              existing = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
               assert existing['draft'], 'Refusing to overwrite a published release. Publish a new version instead.'
+              assert existing['tag_name'] == tag, 'Draft tag differs'
               marker = '<!-- pagebridge-source:' + tag_commit + ' -->'
               assert existing['target_commitish'] == tag_commit and marker in existing['body'], 'Draft does not belong to this workflow and commit'
+          identity = dict(tag=tag, sourceCommit=tag_commit, workflowCommit=os.environ['WORKFLOW_COMMIT'], event=os.environ['GITHUB_EVENT_NAME'])
+          Path('validation/release/identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+          print(json.dumps(identity))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'version={version}\nbuild={build}\ntag=v{version}\n')
+              output.write(f'version={version}\nbuild={build}\ntag={tag}\n')
           PY
       - name: Install pinned uv bootstrap
         run: python3 -m pip install --target engine/.tools uv==0.9.17
@@ -124,18 +140,21 @@ jobs:
           marker = '<!-- pagebridge-source:' + commit + ' -->'
           notes = Path('validation/release/notes.md')
           notes.write_text(notes.read_text() + '\n' + marker + '\n')
-          found = subprocess.run(['gh','api','repos/'+repo+'/releases/tags/'+tag], capture_output=True, text=True)
+          found = subprocess.run(['gh','release','view',tag,'--repo',repo,'--json','apiUrl'], capture_output=True, text=True)
           if found.returncode == 0:
-              existing = json.loads(found.stdout)
-              assert existing['draft'] and existing['target_commitish'] == commit and marker in existing['body'], 'Refusing to modify an unrelated or published release'
+              api_url = json.loads(found.stdout)['apiUrl']
+              existing = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
+              assert existing['draft'] and existing['tag_name'] == tag and existing['target_commitish'] == commit and marker in existing['body'], 'Refusing to modify an unrelated or published release'
               subprocess.run(['gh','release','upload',tag,'--repo',repo,'--clobber',*assets], check=True)
               subprocess.run(['gh','release','edit',tag,'--repo',repo,'--title','PageBridge '+version,'--notes-file',str(notes)], check=True)
           else:
+              assert 'release not found' in found.stderr.lower(), 'Release lookup failed: ' + found.stderr
               # Create fails safely if a release appeared since the identity check.
               subprocess.run(['gh','release','create',tag,'--repo',repo,'--verify-tag','--draft','--target',commit,
                               '--title','PageBridge '+version,'--notes-file',str(notes),*assets], check=True)
+              api_url = json.loads(subprocess.check_output(['gh','release','view',tag,'--repo',repo,'--json','apiUrl'], text=True))['apiUrl']
           # A failed upload leaves a draft, never a partially populated public feed.
-          metadata = json.loads(subprocess.check_output(['gh','api','repos/'+repo+'/releases/tags/'+tag], text=True))
+          metadata = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
           assert metadata['draft'] and not metadata['prerelease']
           uploaded = {item['name']:item for item in metadata['assets']}
           assert set(uploaded) == {item['name'] for item in report['assets']}

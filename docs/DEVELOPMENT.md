@@ -156,3 +156,11 @@ CI 不传 `--account`，由 `create-appcast.py` 从环境中的 `SPARKLE_PRIVATE
 工作流配置存在不等于某次 CI 或发布已经成功；每次版本都应保存具体 Actions run、tag／commit、公开资产大小、SHA-256 和下载复核结果。
 
 CI 使用 `macos-15` 的 arm64 runner，明确选择 Xcode 16.4，并安装固定 uv 0.9.17，再按锁文件安装引擎。若上传中断，只有相同标签、相同提交且带本工作流来源标记的未发布 draft 可恢复；已公开发行不能覆盖。
+
+发布工作流修复后，可从 main 手动重跑已有版本标签，无需移动标签：
+
+```sh
+gh workflow run release.yml --ref main -f tag=v0.3.0
+```
+
+手动运行仍完整测试、构建和验证该标签的源码，并记录源码提交与工作流提交。只有同标签、同源码提交且带本工作流来源标记的 draft 可继续；已公开版本会被拒绝。草稿通过 `gh release view --json apiUrl` 定位，不能依赖只查已发布版本的 tag REST 端点。
