@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "collectedOn": "2026-10-24",
+  "purpose": "Original open-access sample PDFs. Opening a sample imports a private working copy; no translation or API call starts automatically.",
+  "papers": [
+    {
+      "id": "plos-1003285",
+      "title": "可复现计算研究十条建议",
+      "originalTitle": "Ten Simple Rules for Reproducible Computational Research",
+      "description": "短篇正文、分节标题与链接",
+      "file": "pdfs/reproducible-research.pdf",
+      "pages": 4,
+      "authors": [
+        "Geir Kjetil Sandve",
+        "Anton Nekrutenko",
+        "James Taylor",
+        "Eivind Hovig"
+      ],
+      "doi": "10.1371/journal.pcbi.1003285",
+      "sourceURL": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003285",
+      "pdfURL": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1003285&type=printable",
+      "license": "Creative Commons Attribution (publisher PDF does not specify version)",
+      "licenseURL": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003285",
+      "sha256": "35648a3880bdd8bf30e8212a3847b7bd35f504ee5ccbd1ad3856d206acd181db"
+    },
+    {
+      "id": "plos-1003833",
+      "title": "科学图表设计十条建议",
+      "originalTitle": "Ten Simple Rules for Better Figures",
+      "description": "短篇图文、彩色图表与图注",
+      "file": "pdfs/better-figures.pdf",
+      "pages": 7,
+      "authors": [
+        "Nicolas P. Rougier",
+        "Michael Droettboom",
+        "Philip E. Bourne"
+      ],
+      "doi": "10.1371/journal.pcbi.1003833",
+      "sourceURL": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003833",
+      "pdfURL": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1003833&type=printable",
+      "license": "CC0 1.0 Public Domain Dedication",
+      "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sha256": "95b6714aa1ce1e058475c9a807fa85e058bdaa5c3261e792dc5e8dfd9ae83ad6"
+    },
+    {
+      "id": "plos-0093090",
+      "title": "神经网络雪崩模型",
+      "originalTitle": "Avalanches in Self-Organized Critical Neural Networks: A Minimal Model for the Neural SOC Universality Class",
+      "description": "公式、图表与双栏排版",
+      "file": "pdfs/avalanches.pdf",
+      "pages": 8,
+      "authors": [
+        "Matthias Rybarsch",
+        "Stefan Bornholdt"
+      ],
+      "doi": "10.1371/journal.pone.0093090",
+      "sourceURL": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0093090",
+      "pdfURL": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0093090&type=printable",
+      "license": "Creative Commons Attribution (PDF does not specify a version); CC BY 4.0 in publisher-deposited Crossref license metadata",
+      "licenseURL": "https://creativecommons.org/licenses/by/4.0/",
+      "sha256": "bd0f16c4fa31c132edc404978d27cb06c7bfff3d86ed70f3039cd49ae07c4119"
+    },
+    {
+      "id": "plos-0000210",
+      "title": "风数据与自组织神经网络",
+      "originalTitle": "Wind Data Mining by Kohonen Neural Networks",
+      "description": "数值表格、矩阵与参考文献",
+      "file": "pdfs/wind-data-mining.pdf",
+      "pages": 11,
+      "authors": [
+        "José Fayos",
+        "Carolina Fayos"
+      ],
+      "doi": "10.1371/journal.pone.0000210",
+      "sourceURL": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000210",
+      "pdfURL": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0000210&type=printable",
+      "license": "Creative Commons Attribution (PDF does not specify a version); CC BY 4.0 in publisher-deposited Crossref license metadata",
+      "licenseURL": "https://creativecommons.org/licenses/by/4.0/",
+      "sha256": "460bce79c291ba6a8ee7db8f7c71b968fc2cf8f4bec43e935502d49e743abf5c"
+    },
+    {
+      "id": "plos-0028646",
+      "title": "基因网络与神经网络",
+      "originalTitle": "RegnANN: Reverse Engineering Gene Networks Using Artificial Neural Networks",
+      "description": "分段公式、长论文与图表",
+      "file": "pdfs/regnann.pdf",
+      "pages": 19,
+      "authors": [
+        "Marco Grimaldi",
+        "Roberto Visintainer",
+        "Giuseppe Jurman"
+      ],
+      "doi": "10.1371/journal.pone.0028646",
+      "sourceURL": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0028646",
+      "pdfURL": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0028646&type=printable",
+      "license": "Creative Commons Attribution (PDF does not specify a version); CC BY 4.0 in publisher-deposited Crossref license metadata",
+      "licenseURL": "https://creativecommons.org/licenses/by/4.0/",
+      "sha256": "cfaee06373a60c3a34e8b0d7beb29a5f5401f02dec769849131786db5d3fb6c0"
+    }
+  ]
+}

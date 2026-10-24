@@ -1,0 +1,13 @@
+{
+  "profile": "native-ollama-openai-v1",
+  "auditedEngineVersions": {"pdf2zh-next": "2.9.0", "babeldoc": "0.6.2"},
+  "supportedServices": ["ollama", "openai-compatible"],
+  "excludedDistributions": {
+    "web-interface": ["aiofiles", "annotated-doc", "fastapi", "ffmpy", "gradio", "gradio-client", "gradio-i18n", "gradio-pdf", "groovy", "langcodes", "language-data", "marisa-trie", "pydub", "python-multipart", "safehttpx", "semantic-version", "shellingham", "sse-starlette", "starlette", "typer", "tzdata", "uvicorn", "websockets"],
+    "unused-provider-sdk": ["azure-ai-translation-text", "azure-core", "deepl", "isodate", "ollama", "opentelemetry-api", "tencentcloud-sdk-python-common", "tencentcloud-sdk-python-tmt", "xinference-client"],
+    "development-tool": ["pip", "ruff"]
+  },
+  "testDirectoryPackages": ["scipy", "pandas", "onnx", "numpy", "sklearn", "networkx", "joblib", "regex", "fsspec", "freetype", "certifi"],
+  "runtimeDevelopmentPaths": ["include", "share/man", "lib/pkgconfig", "lib/python3.12/ensurepip", "lib/python3.12/idlelib", "lib/python3.12/tkinter", "lib/python3.12/turtledemo", "lib/python3.12/turtle.py", "lib/python3.12/lib2to3", "lib/python3.12/test", "lib/python3.12/site-packages/_virtualenv.py", "lib/python3.12/site-packages/_virtualenv.pth"],
+  "runtimeDevelopmentGlobs": ["lib/python3.12/lib-dynload/_tkinter*.so", "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*", "lib/libtcl*", "lib/libtk*", "bin/idle*", "bin/pip*", "bin/ruff", "bin/2to3*", "bin/*-config"]
+}

@@ -1,0 +1,8 @@
+.venv/
+.tools/
+.cache/
+.python/
+__pycache__/
+tests/__pycache__/
+.artifacts/
+runtime-info.json
