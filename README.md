@@ -120,7 +120,7 @@ python3 scripts/verify-bundle.py
 
 产物是 `dist/PageBridge.app`。完整测试、真实 PDF 验收与发布命令见[开发指南](docs/DEVELOPMENT.md)。版本来自 `VERSION.json`，build 必须递增；公开标签与资产不重打或覆盖。CI 执行 main／PR 测试，版本标签触发构建、签名、draft 资产核验和发布；具体结果见 [Actions](https://github.com/txp666/PageBridge/actions)。
 
-本轮 Swift 测试共 126 项，124 通过、2 项可选测试跳过；引擎 655 项单元测试在此前打包阶段通过。公开示例已验证文献搜索、站点验证、下载和去重打开，本次未重新执行全文模型翻译。CI 发布与 OTA 实测结果按[验证记录](docs/VERIFICATION.md)区分，不把历史验证当作本次新运行。
+本轮 Swift 测试共 129 项，127 通过、2 项可选测试跳过；引擎 655 项单元测试在此前打包阶段通过。公开示例已验证文献搜索、站点验证、下载和去重打开，本次未重新执行全文模型翻译。CI 发布与 OTA 实测结果按[验证记录](docs/VERIFICATION.md)区分，不把历史验证当作本次新运行。
 
 ## 文档与贡献
 

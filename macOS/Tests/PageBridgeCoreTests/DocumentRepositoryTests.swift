@@ -93,6 +93,13 @@ final class DocumentRepositoryTests: XCTestCase {
         let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
         try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
         try Data("PRIVATE-LOG".utf8).write(to: staging.appendingPathComponent("log.txt"))
+        let intendedDirectory = record.originalURL.deletingLastPathComponent()
+            .resolvingSymlinksInPath().standardizedFileURL.appendingPathComponent("diagnostics", isDirectory: true)
+        XCTAssertTrue(intendedDirectory.hasDirectoryPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: intendedDirectory.path))
+        // The resolved URL may lose its trailing slash before the directory
+        // exists; it must still denote the exact intended filesystem path.
+        XCTAssertEqual(intendedDirectory.resolvingSymlinksInPath().standardizedFileURL.path, intendedDirectory.path)
         let summary = try XCTUnwrap(repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
         XCTAssertEqual(summary.validatedParagraphs, 9)
         try FileManager.default.removeItem(at: staging)
@@ -136,5 +143,52 @@ final class DocumentRepositoryTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics"), withDestinationURL: outside)
         XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+    }
+
+    func testFailureDiagnosticsAcceptCanonicalLibraryAliasAndExistingDirectory() throws {
+        let actual = root.appendingPathComponent("actual-library", isDirectory: true)
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: true)
+        let alias = root.appendingPathComponent("library-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: actual)
+        let repository = try DocumentRepository(root: alias)
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        for _ in 0..<2 {
+            let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+            try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
+            XCTAssertNotNil(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        }
+        let directory = record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics", isDirectory: true)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 2)
+        XCTAssertTrue(directory.resolvingSymlinksInPath().path.hasPrefix(actual.resolvingSymlinksInPath().path + "/"))
+    }
+
+    func testFailureDiagnosticsRejectDanglingDirectorySymlink() throws {
+        let repository = try DocumentRepository(root: root.appendingPathComponent("library"))
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+        try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
+        let outside = root.appendingPathComponent("not-created", isDirectory: true)
+        let directory = record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: outside)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.path))
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: directory.path))
+    }
+
+    func testFailureDiagnosticsRejectSymlinkTargetWithoutChangingOutsideFile() throws {
+        let repository = try DocumentRepository(root: root.appendingPathComponent("library"))
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+        try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
+        let directory = record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let outside = root.appendingPathComponent("outside-keep.json")
+        let before = Data("KEEP-EXISTING-CONTENT".utf8)
+        try before.write(to: outside)
+        let target = directory.appendingPathComponent(attempt.uuidString + ".json")
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: outside)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        XCTAssertEqual(try Data(contentsOf: outside), before)
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: target.path))
     }
 }

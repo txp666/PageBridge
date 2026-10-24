@@ -76,12 +76,12 @@ public final class DocumentRepository {
         }
         let summary = try TranslationFailureSummary.decodeWorkerReport(Data(contentsOf: source))
         let directory = folder.appendingPathComponent("diagnostics", isDirectory: true)
-        guard directory.resolvingSymlinksInPath().standardizedFileURL == directory else {
+        guard isUnredirectedFilePath(directory) else {
             throw BridgeError.message("失败诊断目录不可用。")
         }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let target = directory.appendingPathComponent(attempt.uuidString + ".json")
-        guard target.resolvingSymlinksInPath().standardizedFileURL == target else {
+        guard isUnredirectedFilePath(target) else {
             throw BridgeError.message("失败诊断文件不可用。")
         }
         struct Record: Encodable {
@@ -95,6 +95,15 @@ public final class DocumentRepository {
                             recordedAt: Date(), summary: summary)
         try JSONEncoder().encode(record).write(to: target, options: .atomic)
         return summary
+    }
+    private func isUnredirectedFilePath(_ url: URL) -> Bool {
+        // Foundation can drop the trailing slash from an unresolved directory
+        // URL. That directory hint is not filesystem identity: compare absolute
+        // standardized paths while still rejecting redirected parents and all
+        // terminal symlinks, including dangling and self-referencing links.
+        url.isFileURL
+            && (try? fm.destinationOfSymbolicLink(atPath: url.path)) == nil
+            && url.resolvingSymlinksInPath().standardizedFileURL.path == url.standardizedFileURL.path
     }
     public func commit(result: WorkerEvent, document: DocumentRecord, attempt: UUID, staging: URL, service: ServiceConfiguration, sourceLanguage: String, targetLanguage: String, pages: String?) throws -> DocumentRecord {
         guard let mono = result.translatedPath, let dual = result.bilingualPath else { throw BridgeError.message("引擎没有返回完整的译文和双语 PDF。") }

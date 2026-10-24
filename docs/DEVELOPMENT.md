@@ -2,7 +2,7 @@
 
 当前版本为 **0.3.0 / build 12**。在既有阅读、批注、翻译及文档助手基础上，加入 OpenAlex 标题／关键词／DOI 检索、Sci-Hub／公开 PDF 来源选择、直接 DOI 打开和临时 WebKit 验证窗口。以下命令均从项目根目录执行。
 
-文献功能的实机验收已完成公开图表设计示例的搜索、站点验证、下载和去重打开。引入 Sparkle 更新器后的 Swift 测试共 **126 项，124 通过、2 项可选集成测试跳过**；引擎 655 项单元测试在此前本轮打包阶段通过。实际 CI 运行与最终包验收以 [GitHub Actions](https://github.com/txp666/PageBridge/actions)和[验证记录](VERIFICATION.md)为准，不能将本地编译结果当作 OTA 安装或 CI 发布已完成。
+文献功能的实机验收已完成公开图表设计示例的搜索、站点验证、下载和去重打开。引入 Sparkle 更新器后的 Swift 测试共 **129 项，127 通过、2 项可选集成测试跳过**；引擎 655 项单元测试在此前本轮打包阶段通过。实际 CI 运行与最终包验收以 [GitHub Actions](https://github.com/txp666/PageBridge/actions)和[验证记录](VERIFICATION.md)为准，不能将本地编译结果当作 OTA 安装或 CI 发布已完成。
 
 公开发行候选使用 build 12，取代先前仅在本机验证、不含 OTA 的 build 11。两者产物和哈希应分开记录；此前的安装包大小不适用于加入 Sparkle 后的新包。引擎模块未因更新器改变，本轮没有重新执行全文模型翻译。0.2.2 的 7 页复译与 116 页源解析影响回放继续作为历史证据保存。
 
@@ -154,3 +154,5 @@ CI 不传 `--account`，由 `create-appcast.py` 从环境中的 `SPARKLE_PRIVATE
 - 发布后用 `engine/.venv/bin/python scripts/verify-release.py --published --output validation/published-release-check.json` 检查公开 Release、全部下载文件哈希、ZIP 的 HTTP Range `206` 与 latest feed。配套项目源码和第三方源码应与该二进制同页提供，签名 feed 指向该版本的固定应用 ZIP URL。
 
 工作流配置存在不等于某次 CI 或发布已经成功；每次版本都应保存具体 Actions run、tag／commit、公开资产大小、SHA-256 和下载复核结果。
+
+CI 使用 `macos-15` 的 arm64 runner，明确选择 Xcode 16.4，并安装固定 uv 0.9.17，再按锁文件安装引擎。若上传中断，只有相同标签、相同提交且带本工作流来源标记的未发布 draft 可恢复；已公开发行不能覆盖。
