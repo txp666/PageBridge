@@ -311,6 +311,26 @@ def capture_source(page):
     info['standalone'] = standalone
 
 
+def has_source_links(page, paragraph):
+    """Read captured source associations before a paragraph ownership merge.
+
+    Exact paragraph identity is usual. Existing source repairs may have moved
+    original glyphs into another paragraph, so retain their selected-glyph
+    identity as well; never infer a link from target text or nearby geometry.
+    """
+    info = _pages.get(page.page_number)
+    if info is None:
+        return False
+    records = info.get('source', {})
+    record = records.get(id(paragraph))
+    if record is not None and record[1]:
+        return True
+    native_ids = {id(char) for char in _chars(paragraph)}
+    return any(id(chars[index]) in native_ids
+               for chars, associations in records.values()
+               for _, selected, _ in associations for index in selected)
+
+
 def _render_page(self, page):
     result = _original_render_page(self, page)
     capture_target(page)

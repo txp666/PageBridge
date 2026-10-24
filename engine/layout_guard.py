@@ -13,8 +13,9 @@ import copy
 import math
 import re
 import threading
+import unicodedata
 
-GUARD_VERSION = 16
+GUARD_VERSION = 21
 _lock = threading.RLock()
 _installed = False
 _original_process_page = None
@@ -25,11 +26,15 @@ _original_process_comma_formulas = None
 _original_should_split_formula = None
 _original_styles_process_page = None
 _original_layout_typesetting_units = None
+_original_find_optimal_scale_and_layout = None
 # Formula objects cannot be weak-referenced. Keep the exact source identity for
 # this single-document worker lifetime; never infer a binding from target text.
 _script_bindings = {}
 _hanging_indents = {}
 _rejoined_source_paragraphs = {}
+_paired_source_paragraphs = {}
+_source_overprint_words = {}
+_source_accented_names = {}
 _formula_context = threading.local()
 _counters = Counter()
 _TOC_TAIL = re.compile(r"\.{12,}[ \t]*([0-9]{1,4})[ \t]*$")
@@ -154,6 +159,9 @@ def repair_subscript_offsets(page):
 def _guard_styles_process_page(self, page):
     split_source_physical_lines(self, page)
     result = _original_styles_process_page(self, page)
+    bind_source_accented_names(self, page)
+    restore_source_reference_articles(self, page)
+    bind_source_overprinted_words(self, page)
     bind_source_subscript_indices(self, page)
     repair_subscript_offsets(page)
     repair_script_following_formula_offsets(page)
@@ -161,12 +169,314 @@ def _guard_styles_process_page(self, page):
     rejoin_source_column_sentence_tails(self, page)
     rejoin_source_column_orphan_heads(self, page)
     merge_source_bullet_prepositions(self, page)
+    merge_source_open_grammar_blocks(self, page)
+    merge_source_numbered_rule_titles(self, page)
+    rejoin_source_parenthetical_comparisons(self, page)
+    rejoin_source_column_short_heads(self, page)
+    rejoin_source_column_url_paths(self, page)
+    join_source_column_sentence_pairs(self, page)
     return result
 
 
 def source_sentence_was_rejoined(paragraph):
     """Identity marker for the translation guard's no-silent-skip check."""
     return _rejoined_source_paragraphs.get(id(paragraph)) is paragraph
+
+
+_LEXICAL_ACCENTS = frozenset({'´','¨','\u0301','\u0308','\u0307'})
+
+
+def _latin_letter(value):
+    return bool(len(value or '') == 1 and value.isalpha()
+                and 'LATIN' in unicodedata.name(value,''))
+
+def _native_accent(comp):
+    formula = comp.pdf_formula
+    if (formula is None or formula.pdf_curve or formula.pdf_form
+            or len(formula.pdf_character) != 1):
+        return None
+    char = formula.pdf_character[0]
+    return char if char.char_unicode in _LEXICAL_ACCENTS and _finite_character(char) else None
+
+def _replace_native_glyph_span(styler,comps,start,end,replacement):
+    """Replace only the original span's containers; never clone its glyphs."""
+    result=[];offset=0
+    for comp in comps:
+        native=_composition_characters(comp);stop=offset+len(native)
+        if stop<=start or offset>=end:
+            result.append(comp)
+        else:
+            if offset<start:
+                result.append(styler._create_same_style_composition(
+                    native[:start-offset],comp.pdf_same_style_characters.pdf_style))
+            if offset<=start<stop:
+                result.append(replacement)
+            if stop>end:
+                result.append(styler._create_same_style_composition(
+                    native[end-offset:],comp.pdf_same_style_characters.pdf_style))
+        offset=stop
+    return result
+
+def bind_source_accented_names(styler, page):
+    """Preserve an attested accented surname as one original-glyph unit.
+
+    Only author-list names or capitalized hyphenated names qualify. A lexical
+    accent must overlap one same-face baseline vowel; a true raised script,
+    formula, ordinary space, or ambiguous base makes the candidate ineligible.
+    No combining character, letter or parser space is created or removed.
+    """
+    from babeldoc.format.pdf.document_il import PdfFormula, PdfParagraphComposition
+    repaired = 0
+    for paragraph in page.pdf_paragraph:
+        if paragraph.vertical or paragraph.layout_label in {'formula','isolate_formula','equation','code'}:
+            continue
+        comps = paragraph.pdf_paragraph_composition
+        chars = [c for comp in comps for c in _composition_characters(comp)]
+        owners = [comp for comp in comps for _ in _composition_characters(comp)]
+        if not chars or len(set(map(id,chars))) != len(chars):
+            continue
+        raw = ''.join(c.char_unicode or '' for c in chars)
+        author_list = bool(re.match(r'^[^\W\d_][^,]{1,40},\s*(?:[A-Z]\.\s*){1,4}',raw))
+        year = re.search(r'\b(?:19|20)\d{2}\.',raw)
+        candidates = []
+        def lexical(index):
+            c, owner = chars[index], owners[index]
+            if owner.pdf_same_style_characters is not None and (_latin_letter(c.char_unicode) or c.char_unicode in '-‐‑'):
+                return True
+            if _native_accent(owner) is c:
+                return True
+            # The parser may add a blank before an accent which precedes its
+            # vowel in stream order. Its measured box overlaps that same vowel;
+            # a real word space never satisfies this condition.
+            if (owner.pdf_same_style_characters is not None and c.char_unicode == ' '
+                    and c.pdf_character_id is None and index+2 < len(chars)
+                    and _native_accent(owners[index+1]) is chars[index+1]
+                    and _latin_letter(chars[index+2].char_unicode)):
+                base = chars[index+2]
+                return c.box.x < base.box.x2 and c.box.x2 > base.box.x
+            return False
+        for at, owner in enumerate(owners):
+            if _native_accent(owner) is not chars[at]:
+                continue
+            start,end = at,at+1
+            while start and lexical(start-1):start-=1
+            while end < len(chars) and lexical(end):end+=1
+            if (start,end) in candidates:
+                continue
+            selected = chars[start:end]
+            letters = [c for c in selected if _latin_letter(c.char_unicode)]
+            marks = [c for c in selected if c.char_unicode in _LEXICAL_ACCENTS]
+            spelling = ''.join(c.char_unicode for c in selected if c.char_unicode not in _LEXICAL_ACCENTS and not c.char_unicode.isspace())
+            parts = re.split('[-‐‑]',spelling)
+            proper = (letters and len(letters)>=4 and all(len(s)>=3 and s[0].isupper()
+                      and all(_latin_letter(c) for c in s) and any(c.islower()for c in s) for s in parts))
+            tail = ''.join(c.char_unicode or '' for c in chars[end:end+12])
+            is_author = (author_list and year is not None and sum(len(c.char_unicode or '')for c in chars[:end])<year.start()
+                         and re.match(r',\s*(?:[A-Z]\.\s*){1,3}',tail))
+            if not proper or not marks or not (len(parts)>=2 or is_author):
+                continue
+            base = letters[0];size=base.pdf_style.font_size
+            normal = [c for c in selected if c.char_unicode not in _LEXICAL_ACCENTS and c.char_unicode.strip()]
+            if (any(not _finite_character(c) or c.formula_layout_id is not None
+                    or (c.xobj_id != paragraph.xobj_id and not (c.char_unicode == ' '
+                        and c.pdf_character_id is None and c.xobj_id is None))
+                    or not _definition_same_style(c.pdf_style,base.pdf_style)
+                    or (c.char_unicode.strip() and c.pdf_character_id is None) for c in selected)
+                    or any(abs(c.box.y-base.box.y)>.06*size for c in selected)
+                    or any(not -.12*size <= b.box.x-a.box.x2 <= .18*size for a,b in zip(normal,normal[1:]))):
+                continue
+            attachments = []
+            for mark in marks:
+                visual=mark.visual_bbox.box;center=(visual.x+visual.x2)/2
+                attached=[c for c in letters if c.char_unicode in 'aeiouyAEIOUYı'
+                          and c.box.x <= center <= c.box.x2
+                          and .45*size <= (visual.y+visual.y2)/2-c.box.y <= 1.1*size]
+                if len(attached)!=1:
+                    break
+                attachments.append(attached[0])
+            if len(attachments)!=len(marks):
+                continue
+            candidates.append((start,end))
+        if not candidates:
+            continue
+        for start,end in sorted(candidates,reverse=True):
+            selected=chars[start:end]
+            formula=PdfFormula(pdf_character=selected,x_offset=0,y_offset=0,x_advance=0)
+            styler.update_formula_data(formula)
+            baseline=next(c.box.y for c in selected if _latin_letter(c.char_unicode))
+            formula.y_offset=formula.box.y-baseline
+            comps=_replace_native_glyph_span(styler,comps,start,end,
+                PdfParagraphComposition(pdf_formula=formula))
+            # Only this creation site can certify a lexical native name. Keep
+            # both identity and a full immutable attribute snapshot; a later
+            # formula which merely resembles text must never gain permission.
+            _source_accented_names[id(formula)] = (
+                page, paragraph, formula, tuple(selected), copy.deepcopy(formula))
+            repaired+=1
+        paragraph.pdf_paragraph_composition=comps
+    if repaired:
+        with _lock:_counters['boundSourceAccentedNames']+=repaired
+    return repaired
+
+def source_native_accented_names(paragraph):
+    """Return only original binder-created groups still owned by their page."""
+    result=[]
+    for comp in paragraph.pdf_paragraph_composition:
+        formula=comp.pdf_formula
+        binding=_source_accented_names.get(id(formula))
+        if not binding:continue
+        page,owner,original,chars,state=binding
+        if (owner is not paragraph or formula is not original
+                or sum(p is paragraph for p in page.pdf_paragraph)!=1
+                or sum(c.pdf_formula is formula for c in paragraph.pdf_paragraph_composition)!=1
+                or len(chars)!=len(formula.pdf_character)
+                or any(a is not b for a,b in zip(chars,formula.pdf_character))
+                or formula!=state):
+            continue
+        result.append(binding)
+    return tuple(result)
+
+
+def _same_overprinted_letter(chars):
+    if len(chars)!=2 or chars[0] is chars[1]:return False
+    a,b=chars
+    return (all(_finite_character(c) and c.formula_layout_id is None
+                and c.pdf_character_id is not None for c in chars)
+            and re.fullmatch(r'[A-Za-z]',a.char_unicode or '')
+            and a.char_unicode==b.char_unicode and a.pdf_character_id==b.pdf_character_id
+            and a.box==b.box and a.visual_bbox==b.visual_bbox
+            and a.xobj_id==b.xobj_id and _definition_same_style(a.pdf_style,b.pdf_style))
+
+def _source_quote_pair(paragraph, quote):
+    # Original punctuation has a thin, high horizontal ink box. A genuine euro
+    # currency glyph has a tall ink body and cannot satisfy this shape proof.
+    if not _finite_character(quote) or quote.pdf_character_id is None:return False
+    size=quote.pdf_style.font_size;ink=quote.visual_bbox.box
+    if not (.15*size <= ink.x2-ink.x <= .4*size and 0 < ink.y2-ink.y <= .15*size
+            and .5*size <= ink.y-quote.box.y <= .9*size):return False
+    matches=[]
+    for co in paragraph.pdf_paragraph_composition:
+        f=co.pdf_formula
+        if f is None or len(f.pdf_character)!=1 or f.pdf_curve or f.pdf_form:continue
+        other=f.pdf_character[0]
+        if (other is not quote and _finite_character(other)
+                and other.char_unicode==quote.char_unicode and other.pdf_character_id==quote.pdf_character_id
+                and other.xobj_id==quote.xobj_id and _definition_same_style(other.pdf_style,quote.pdf_style)
+                and abs((other.visual_bbox.box.x2-other.visual_bbox.box.x)-(ink.x2-ink.x))<.02*size
+                and abs((other.visual_bbox.box.y2-other.visual_bbox.box.y)-(ink.y2-ink.y))<.02*size):
+            matches.append(other)
+    return len(matches)==1
+
+def source_native_overprint_words(paragraph):
+    binding=_source_overprint_words.get(id(paragraph))
+    if not binding or binding[0] is not paragraph:return ()
+    if tuple(id(c) for co in paragraph.pdf_paragraph_composition for c in _composition_characters(co))!=binding[1]:return ()
+    return binding[2]
+
+def bind_source_overprinted_words(styler,page):
+    """Keep native overprints, repairing only proven lexical container edges."""
+    from babeldoc.format.pdf.document_il import PdfFormula,PdfParagraphComposition
+    plain_page=' '.join(''.join(c.char_unicode or '' for c in co.pdf_same_style_characters.pdf_character)
+                       for q in page.pdf_paragraph for co in q.pdf_paragraph_composition if co.pdf_same_style_characters)
+    repaired=0
+    for paragraph in page.pdf_paragraph:
+        if paragraph.vertical or paragraph.layout_label not in {'text','plain text','plain_text'}:continue
+        comps=paragraph.pdf_paragraph_composition;bindings=[]
+        for index in range(len(comps)-2,-1,-1):
+            formula=comps[index].pdf_formula;right=comps[index+1].pdf_same_style_characters
+            if formula is None or formula.pdf_curve or formula.pdf_form or right is None:continue
+            native=formula.pdf_character;quote=native[0]if len(native)==3 else None
+            doubled=native[-2:]
+            if not _same_overprinted_letter(doubled) or len(native)not in(2,3):continue
+            raw=''.join(c.char_unicode or ''for c in right.pdf_character)
+            match=re.match(r'(?P<tail>[a-z][A-Za-z]{0,15})(?=[^A-Za-z]|$)',raw)
+            if not match:continue
+            tail=right.pdf_character[:len(match['tail'])]
+            if ''.join(c.char_unicode or ''for c in tail)!=match['tail']:continue
+            lead=doubled[0];size=lead.pdf_style.font_size
+            if (any(not _finite_character(c) or c.formula_layout_id is not None or c.pdf_character_id is None
+                    or c.xobj_id!=paragraph.xobj_id or abs(c.box.y-lead.box.y)>.03*size
+                    or abs(c.pdf_style.font_size-size)>.02
+                    or c.pdf_style.graphic_state!=lead.pdf_style.graphic_state for c in doubled+tail)
+                    or any(not -.03*size <= b.box.x-a.box.x2 <= .04*size for a,b in zip([lead]+tail,tail))):continue
+            word=lead.char_unicode+match['tail']
+            if not re.search(r'(?<![A-Za-z])'+re.escape(word)+r'(?![A-Za-z])',plain_page):continue
+            if quote is None:
+                if not (lead.char_unicode.isupper() and re.fullmatch(r'[A-Z][a-z]+[A-Z]{2,}',word)):continue
+                selected=native+tail
+                group=PdfFormula(pdf_character=selected,x_offset=0,y_offset=0,x_advance=0)
+                styler.update_formula_data(group);group.y_offset=group.box.y-lead.box.y
+                start=sum(len(_composition_characters(co))for co in comps[:index])
+                comps=_replace_native_glyph_span(styler,comps,start,start+len(selected),PdfParagraphComposition(pdf_formula=group))
+            else:
+                if (word not in {'we','they','he','she','it'} or not _source_quote_pair(paragraph,quote)
+                        or quote.xobj_id!=paragraph.xobj_id or quote.formula_layout_id is not None
+                        or not (lead.box.x <= (quote.visual_bbox.box.x+quote.visual_bbox.box.x2)/2 <= lead.box.x2)
+                        or not re.match(r'\s+[a-z]{2,}\s+[a-z]{2,}\s+',raw[len(match['tail']):])):continue
+                group=PdfFormula(pdf_character=[quote],x_offset=0,y_offset=0,x_advance=0)
+                styler.update_formula_data(group);group.y_offset=group.box.y-lead.box.y
+                comps[index:index+1]=[PdfParagraphComposition(pdf_formula=group),
+                    styler._create_same_style_composition(doubled,lead.pdf_style)]
+                bindings.append((lead.char_unicode+word,word))
+            repaired+=1
+        paragraph.pdf_paragraph_composition=comps
+        if bindings:
+            _source_overprint_words[id(paragraph)]=(paragraph,
+                tuple(id(c)for co in comps for c in _composition_characters(co)),tuple(bindings))
+    if repaired:
+        with _lock:_counters['repairedSourceOverprintedWords']+=repaired
+    return repaired
+
+def restore_source_reference_articles(styler, page):
+    """Restore a baseline article A in an explicitly dated reference subtitle."""
+    repaired=0
+    for paragraph in page.pdf_paragraph:
+        source=paragraph.unicode or ''
+        if (paragraph.vertical or not re.match(r'^[^\W\d_][^,]{1,40},\s*(?:[A-Z]\.\s*){1,4}',source)
+                or not re.search(r'\b(?:19|20)\d{2}\.',source)):
+            continue
+        comps=paragraph.pdf_paragraph_composition
+        for index in range(len(comps)-2,0,-1):
+            formula=comps[index].pdf_formula
+            left,right=comps[index-1].pdf_same_style_characters,comps[index+1].pdf_same_style_characters
+            if (formula is None or formula.pdf_curve or formula.pdf_form or left is None or right is None
+                    or not re.fullmatch(r'A\s*',''.join(c.char_unicode or '' for c in formula.pdf_character))
+                    or len(formula.pdf_character)>3):
+                continue
+            left_chars=[]
+            for previous in reversed(comps[:index]):
+                if previous.pdf_same_style_characters is None:break
+                left_chars[:0]=previous.pdf_same_style_characters.pdf_character
+            right_chars=[]
+            for following_comp in comps[index+1:]:
+                if following_comp.pdf_same_style_characters is None:break
+                right_chars.extend(following_comp.pdf_same_style_characters.pdf_character)
+            prior=''.join(c.char_unicode or '' for c in left_chars)
+            following=''.join(c.char_unicode or '' for c in right_chars)
+            if not re.search(r':\s*$',prior) or not re.match(r'\s*[a-z]{2,}\s+[a-z]{2,}\s+[a-z]{2,}',following):
+                continue
+            article=next(c for c in formula.pdf_character if c.char_unicode=='A')
+            first=next((c for c in right_chars if (c.char_unicode or '').strip()),None)
+            colon=next((c for c in reversed(left_chars)if (c.char_unicode or '').strip()),None)
+            if (first is None or colon is None or not all(_finite_character(c)for c in (article,first,colon))
+                    or article.pdf_character_id is None or article.formula_layout_id is not None
+                    or not _definition_same_style(article.pdf_style,first.pdf_style)
+                    or not _definition_same_style(article.pdf_style,colon.pdf_style)
+                    or len({article.xobj_id,first.xobj_id,colon.xobj_id,paragraph.xobj_id})!=1
+                    or abs(article.box.y-first.box.y)>.05*article.pdf_style.font_size
+                    or not 0 <= first.box.x-article.box.x2 <= .8*article.pdf_style.font_size
+                    or not -.05*article.pdf_style.font_size <= colon.box.y-article.box.y <= 1.6*article.pdf_style.font_size):
+                continue
+            replacements=[]
+            for char in formula.pdf_character:
+                # Preserve even the original parser-space style; the existing
+                # whitespace-only rich-style normalization handles its wrapper.
+                replacements.append(styler._create_same_style_composition([char],char.pdf_style))
+            comps[index:index+1]=replacements
+            repaired+=1
+    if repaired:
+        with _lock:_counters['restoredSourceReferenceArticles']+=repaired
+    return repaired
 
 
 def _source_body_box(paragraph):
@@ -426,8 +736,456 @@ def rejoin_source_column_orphan_heads(styler, page):
     return repaired
 
 
+def _flow_body_style(a, b):
+    """Same source body style, including one narrowly equivalent black fill.
+
+    The final PDF ``0 0 0 rg`` overrides preceding non-stroking colors. Only
+    those color operators may differ, with the same named graphics state.
+    No opacity, clipping, transformation, stroke, or text operator is ignored.
+    """
+    if (not a or not b or a.font_id != b.font_id
+            or any(not isinstance(v,(int,float)) or not math.isfinite(v) or v <= 0
+                   for v in (a.font_size,b.font_size))
+            or abs(a.font_size-b.font_size) > .02):
+        return False
+    def graphics(style):
+        value=getattr(style.graphic_state,'passthrough_per_char_instruction',None)
+        if value is None:return ''
+        if isinstance(value,str):return value
+        # Lazy PDF state caches on rendering/equality. Inspect an independent
+        # copy so proving source equality does not mutate any native glyph.
+        from babeldoc.format.pdf.document_il.frontend.il_creater_active_support import LazyPassthroughInstruction,PassthroughSnapshot
+        if not isinstance(value,LazyPassthroughInstruction):return None
+        if value._value is not None:return value._value
+        clone=copy.copy(value)
+        if isinstance(value.snapshot,PassthroughSnapshot):
+            # Snapshot nodes are immutable; only its render cache is mutable.
+            clone.snapshot=copy.copy(value.snapshot);clone.snapshot._render_cache={}
+        elif not isinstance(value.snapshot,tuple):return None
+        return str(clone)
+    ga,gb=graphics(a),graphics(b)
+    if ga is None or gb is None:return False
+    if ga==gb:return True
+    def black(value):
+        match = re.fullmatch(r'\s*(/[A-Za-z][A-Za-z0-9]* gs)\s+'
+            r'(?:(?:/[A-Za-z][A-Za-z0-9]* cs\s+[0-9.]+ scn|0 0 0 0 k)\s+)*0 0 0 rg\s*', value)
+        return match[1] if match else None
+    return black(ga) is not None and black(ga) == black(gb)
+
+
+def _flow_ending(text):
+    for kind,pattern in (
+            ('hyphen',r'\b[a-z]{3,24}-$'),
+            ('infinitive',r'\bto$'),
+            ('noun',r'\b(?:a|an|the) (?:given|specified|learned|trained|observed|resulting|selected)$')):
+        match=re.search(pattern,text or '')
+        if match:return kind,match[0]
+    return None
+
+
+def _flow_head_phrase(left, right):
+    """Bounded source grammar for a short sentence-final ordinary prose head.
+
+    Complete only a hyphenated word, an infinitive with a definite object,
+    or a determiner/adjective noun phrase (including an explicit year-period
+    adjunct). This is not a general paragraph/sentence merger.
+    """
+    l,r=left.unicode or '',right.unicode or '';ending=_flow_ending(l)
+    if not ending:return None
+    kind=ending[0]
+    if kind=='hyphen':
+        head=re.match(r'[a-z]{2,24}(?: or [a-z]{2,24}(?: [a-z]{2,24})?)?\.(?=\s+[A-Z])',r)
+    elif kind=='infinitive':
+        head=re.match(r'(?:form|build|create|produce|obtain|complete|construct|determine|derive|calculate|estimate|describe|represent|generate) the [a-z]{2,24}(?: [a-z]{2,24}){0,2}\.(?=\s+[A-Z])',r)
+    else:
+        head=re.match(r'(?:[a-z]{3,24}|[A-Z][A-Z0-9]{1,7}, (?:considering|during|over) the [12][0-9]{3}[–-][0-9]{2,4} period)\.(?=\s+[A-Z])',r)
+    if (not head or len(head[0])>56 or len(head[0])*4>len(l)
+            or any(l.count(x)!=l.count(y)for x,y in ('()','[]','{}'))):return None
+    return head[0]
+
+
+def _flow_text_key(text):
+    # Source paragraph normalization may turn a native spacing diaeresis into
+    # its combining equivalent. This read-only comparison never changes a
+    # glyph or formula; the moved boundary still needs an exact ASCII match.
+    return _definition_compact(unicodedata.normalize('NFKD',text or ''))
+
+
+def _flow_column_pairs(page,minimum_height=4):
+    """Adjacent bottom-left/top-right body paragraphs, with actual columns.
+
+    A differently styled full-width title/metadata block entirely above the
+    column area is not part of the column flow. A spanning body in the area,
+    a later left body, or an earlier right body always blocks the repair.
+    """
+    bodies=[(p,_source_body_box(p))for p in page.pdf_paragraph]
+    def overlap(a,b):return max(0,min(a[2],b[2])-max(a[0],b[0]))/min(a[2]-a[0],b[2]-b[0])
+    for (left,a),(right,b) in zip(bodies,bodies[1:]):
+        if (not a or not b or left.xobj_id != 0 or right.xobj_id != 0
+                or right.first_line_indent is not False
+                or not _flow_body_style(left.pdf_style,right.pdf_style)):
+            continue
+        size=a[4]
+        if (not .5*size <= b[0]-a[2] <= 8*size
+                or not .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18
+                or a[3]-a[1] < minimum_height*size):
+            continue
+        same=[(p,g)for p,g in bodies if g and _flow_body_style(p.pdf_style,left.pdf_style)]
+        ls=[g for p,g in same if overlap(a,g)>=.8]
+        rs=[g for p,g in same if overlap(b,g)>=.8]
+        if not ls or not rs:continue
+        top=max(max(g[3]for g in ls),max(g[3]for g in rs))
+        if (any(overlap(a,g)>=.2 and overlap(b,g)>=.2 for p,g in same)
+                or abs(max(g[3]for g in ls)-max(g[3]for g in rs))>3*size
+                or min(max(g[3]for g in ls)-min(g[1]for g in ls),max(g[3]for g in rs)-min(g[1]for g in rs))<8*size
+                or any(g[1]<a[1]-.3*size for p,g in bodies if g and overlap(a,g)>=.8)
+                or any(g[3]>b[3]+.3*size for p,g in bodies if g and overlap(b,g)>=.8
+                       and not(overlap(a,g)>=.2 and g[1]>top))
+                or any(g[1]<top and g[3]>a[1] and overlap(a,g)>=.2 and overlap(b,g)>=.2
+                       for p,g in bodies if g)):
+            continue
+        yield left,right
+
+
+def _flow_page_pair(left_page,right_page):
+    """Adjacent pages, right-column last body followed by left-column first."""
+    lb=getattr(getattr(left_page,'mediabox',None),'box',None)
+    rb=getattr(getattr(right_page,'mediabox',None),'box',None)
+    if (right_page.page_number != left_page.page_number+1 or not lb or lb!=rb
+            or any(not isinstance(v,(int,float))or not math.isfinite(v) for v in (lb.x,lb.y,lb.x2,lb.y2))):return None
+    ls=[(p,_source_body_box(p))for p in left_page.pdf_paragraph];ls=[(p,b)for p,b in ls if b]
+    rs=[(p,_source_body_box(p))for p in right_page.pdf_paragraph];rs=[(p,b)for p,b in rs if b]
+    if not ls or not rs:return None
+    left,a=ls[-1];right,b=rs[0];size=a[4];width=lb.x2-lb.x
+    if (left.xobj_id!=0 or right.xobj_id!=0 or right.first_line_indent is not False
+            or not _flow_body_style(left.pdf_style,right.pdf_style)
+            or not .85<=(a[2]-a[0])/(b[2]-b[0])<=1.18
+            or a[0]<lb.x+.45*width or b[0]>lb.x+.2*width
+            or a[1]>lb.y+.15*(lb.y2-lb.y) or b[3]<lb.y+.8*(lb.y2-lb.y)
+            or a[3]-a[1]<4*size
+            or any(g[1]<a[1]-.2*size for p,g in ls if p is not left)
+            or any(g[3]>b[3]+.2*size for p,g in rs if p is not right)
+            or not any(g[2]<a[0]-.5*size and abs((g[2]-g[0])-(a[2]-a[0]))<2*size for p,g in ls)
+            or not any(g[0]>b[2]+.5*size and abs((g[2]-g[0])-(b[2]-b[0]))<2*size for p,g in rs)):
+        return None
+    # The exact source resource is required. Page-sampled ascent/descent and
+    # character metrics may differ; they are not PDF font resource identity.
+    af=[f for f in left_page.pdf_font if f.font_id==left.pdf_style.font_id]
+    bf=[f for f in right_page.pdf_font if f.font_id==right.pdf_style.font_id]
+    if len(af)!=1 or len(bf)!=1:return None
+    names=('font_id','xref_id','name','encoding_length','bold','italic','monospace','serif')
+    if (not isinstance(af[0].xref_id,int) or af[0].xref_id<=0
+            or any(getattr(af[0],n,None)!=getattr(bf[0],n,None)for n in names)):
+        return None
+    return left,right
+
+
+def _rejoin_source_flow_head(styler,left,right):
+    """Rehome one source-proven single-line head; never alter native glyphs."""
+    config=getattr(styler,'translation_config',None)
+    if config is None or getattr(config,'skip_translation',False):return False
+    fragment=_flow_head_phrase(left,right)
+    if not fragment or not left.debug_id or not right.debug_id:return False
+    remainder=right.unicode[len(fragment):].lstrip()
+    if (len(remainder)<max(24,getattr(config,'min_text_length',0))
+            or len(re.findall(r'[A-Za-z]{2,}',remainder))<5
+            or not left.pdf_paragraph_composition or not right.pdf_paragraph_composition):return False
+    tail=left.pdf_paragraph_composition[-1].pdf_same_style_characters
+    first=right.pdf_paragraph_composition[0].pdf_same_style_characters
+    if (not tail or not first or not tail.pdf_character or not first.pdf_character
+            or not _flow_body_style(tail.pdf_style,left.pdf_style)
+            or not _flow_body_style(first.pdf_style,right.pdf_style)
+            or _flow_text_key(''.join(c.char_unicode or''for c in _definition_chars(left)))!=_flow_text_key(left.unicode)
+            or _flow_text_key(''.join(c.char_unicode or''for c in _definition_chars(right)))!=_flow_text_key(right.unicode)):
+        return False
+    # A plain trailing run must prove the same incomplete grammar. Formula
+    # tokens or similarly spelled native math glyphs cannot establish a join.
+    raw_tail=''.join(c.char_unicode or''for c in tail.pdf_character)
+    ending=_flow_ending(left.unicode)[1]
+    if not _definition_compact(raw_tail).endswith(_definition_compact(ending)):return False
+    moved=[];raw=''
+    for c in first.pdf_character:
+        if len(_definition_compact(raw))>=len(_definition_compact(fragment)):break
+        moved.append(c);raw+=c.char_unicode or''
+    kept=first.pdf_character[len(moved):]
+    following=next((c for c in kept if(c.char_unicode or'').strip()),None)
+    previous=next((c for c in reversed(tail.pdf_character)if(c.char_unicode or'').strip()),None)
+    if (not moved or not kept or not previous or not following
+            or _definition_compact(raw)!=_definition_compact(fragment)):return False
+    size=left.pdf_style.font_size
+    visible=[c for c in moved if(c.char_unicode or'').strip()]
+    if not visible:return False
+    baseline=visible[0].box.y if visible[0].box else None
+    def ordinary(c,style):
+        return (_finite_character(c) and c.formula_layout_id is None
+                and _flow_body_style(c.pdf_style,style)
+                and (c.xobj_id==0 and c.pdf_character_id is not None
+                     or c.xobj_id is None and c.pdf_character_id is None and c.char_unicode==' '))
+    ending_chars=[];ending_raw=''
+    for c in reversed(tail.pdf_character):
+        if len(_definition_compact(ending_raw))>=len(_definition_compact(ending)):break
+        ending_chars.insert(0,c);ending_raw=(c.char_unicode or'')+ending_raw
+    if (_definition_compact(ending_raw)!=_definition_compact(ending)
+            or any(not ordinary(c,left.pdf_style)for c in ending_chars)):
+        return False
+    if (baseline is None or not ordinary(previous,left.pdf_style)or not ordinary(following,right.pdf_style)
+            or any(not ordinary(c,right.pdf_style) or not re.fullmatch(r'[A-Za-z0-9, .–-]+',c.char_unicode or'')
+                   or abs(c.box.y-baseline)>.1*size for c in moved)
+            or abs(visible[0].box.x-right.box.x)>.5*size
+            or abs(visible[0].box.y2-right.box.y2)>.5*size
+            or abs(previous.box.x2-left.box.x2)>size
+            or any(not -.1*size<=y.box.x-x.box.x2<=1.2*size for x,y in zip(visible,visible[1:]))):
+        return False
+    # Retain every existing source space on the right, and keep all coordinates
+    # and original objects. Only the ownership of the complete head changes.
+    moved_run,kept_run=copy.copy(first),copy.copy(first)
+    moved_run.pdf_character=moved;kept_run.pdf_character=kept
+    for run in (moved_run,kept_run):
+        run.box=copy.copy(first.box)
+        if run.box:
+            run.box.x=min(c.box.x for c in run.pdf_character);run.box.y=min(c.box.y for c in run.pdf_character)
+            run.box.x2=max(c.box.x2 for c in run.pdf_character);run.box.y2=max(c.box.y2 for c in run.pdf_character)
+    moved_comp,kept_comp=copy.copy(right.pdf_paragraph_composition[0]),copy.copy(right.pdf_paragraph_composition[0])
+    moved_comp.pdf_same_style_characters=moved_run;kept_comp.pdf_same_style_characters=kept_run
+    left.pdf_paragraph_composition.append(moved_comp);right.pdf_paragraph_composition[0]=kept_comp
+    separator=''if left.unicode.endswith('-')else' '
+    left.unicode=left.unicode.rstrip()+separator+fragment;right.unicode=remainder
+    _rejoined_source_paragraphs[id(left)]=left;_rejoined_source_paragraphs[id(right)]=right
+    return True
+
+
+def rejoin_source_column_short_heads(styler,page):
+    repaired=sum(_rejoin_source_flow_head(styler,l,r)for l,r in _flow_column_pairs(page))
+    if repaired:
+        with _lock:_counters['rejoinedSourceColumnShortHeads']+=repaired
+    return repaired
+
+
+def rejoin_source_page_short_heads(translator,docs):
+    repaired=0
+    for left_page,right_page in zip(docs.page,docs.page[1:]):
+        pair=_flow_page_pair(left_page,right_page)
+        if pair is not None:repaired+=_rejoin_source_flow_head(translator,*pair)
+    if repaired:
+        with _lock:_counters['rejoinedSourcePageShortHeads']+=repaired
+    return repaired
+
+
+def _paired_source_binding(paragraph):
+    record=_paired_source_paragraphs.get(id(paragraph))
+    return record if record and record['left']is paragraph else None
+
+
+def join_source_column_sentence_pairs(styler,page):
+    """One pure source sentence, two adjacent two-line column fragments.
+
+    The complete source is translated once. The consumed partner remains as
+    an empty reserved target box; the paired typesetter never expands either
+    box. This path cannot contain formulas, citations, URLs or rich styles.
+    """
+    config=getattr(styler,'translation_config',None)
+    if config is None or getattr(config,'skip_translation',False):return 0
+    repaired=0
+    for left,right in _flow_column_pairs(page,minimum_height=1):
+        if _paired_source_binding(left)or _paired_source_binding(right):continue
+        a,b=left.unicode or'',right.unicode or''
+        if (not re.search(r'\b(?:the|this|that|a|an) (?:new|same|other|selected|proposed|original|learned|trained)$',a)
+                or not re.match(r'[a-z]{2,24}s\b',b)
+                or not re.search(r'\b(?:are|were|is|was)\b',b)
+                or not b.endswith('.') or any(ch in a for ch in '.!?')
+                or any(ch in b[:-1]for ch in '.!?')
+                or any(ch in a+b for ch in '[]{}()<>:/@')
+                or not 60<=len(a)<=180 or not 60<=len(b)<=180
+                or len(a+b)>340 or len(a+b)<getattr(config,'min_text_length',0)
+                or not re.fullmatch(r'[A-Za-z0-9 ,;–-]+',a)
+                or not re.fullmatch(r'[A-Za-z0-9 ,;–-]+\.',b)):
+            continue
+        # Source links were captured after paragraph finding, before Styles.
+        # A whole-link association must not expand to newly joined text.
+        import pdf_links
+        if pdf_links.has_source_links(page,left) or pdf_links.has_source_links(page,right):
+            continue
+        lc,rc=_plain_source_characters(left),_plain_source_characters(right)
+        size=left.pdf_style.font_size
+        if (not lc or not rc or not _definition_same_style(left.pdf_style,right.pdf_style)
+                or any(not 1.8*size<=p.box.y2-p.box.y<=3*size for p in (left,right))):continue
+        def lines(cs):
+            ys=[]
+            for c in cs:
+                if not(c.char_unicode or'').strip():continue
+                if not any(abs(c.box.y-y)<=.15*size for y in ys):ys.append(c.box.y)
+            return ys
+        if len(lines(lc))!=2 or len(lines(rc))!=2:continue
+        # No source glyph is created, dropped, edited or duplicated. The same
+        # adjacent reading-order sequence becomes one logical paragraph.
+        record=dict(left=left,right=right,page=page,boxes=(copy.copy(left.box),copy.copy(right.box)),
+                    styles=(copy.copy(left.pdf_style),copy.copy(right.pdf_style)),
+                    sourceText=a+' '+b,sourceGlyphs=tuple(lc+rc))
+        left.pdf_paragraph_composition.extend(right.pdf_paragraph_composition)
+        left.unicode=a.rstrip()+' '+b.lstrip()
+        right.pdf_paragraph_composition=[];right.unicode=''
+        _paired_source_paragraphs[id(left)]=record
+        _rejoined_source_paragraphs[id(left)]=left
+        repaired+=1
+    if repaired:
+        with _lock:_counters['pairedSourceColumnSentences']+=repaired
+    return repaired
+
+
+class _PairedUnitTracker:
+    """Keep input-unit indices while using the existing line-break engine."""
+    def __init__(self,unit,number,indices):self.unit,self.number,self.indices=unit,number,indices
+    def __getattr__(self,name):return getattr(self.unit,name)
+    def relocate(self,x,y,scale):
+        result=self.unit.relocate(x,y,scale);self.indices[id(result)]=self.number;return result
+
+
+def _layout_paired_source_units(self,units,record,scale,line_skip,use_english_line_break):
+    if not units or any(u.formular or u.char or u.unicode is None for u in units):
+        raise ValueError('Paired source flow requires translated plain Unicode units')
+    left,right=record['left'],record['right'];boxes=record['boxes']
+    if (left.box!=boxes[0] or right.box!=boxes[1]
+            or right.pdf_paragraph_composition or right.unicode
+            or left.pdf_style!=record['styles'][0] or right.pdf_style!=record['styles'][1]):
+        raise ValueError('Paired source target box or ownership changed')
+    laid=[];offset=0
+    for n,box in enumerate(boxes):
+        # Reserve one glyph width for upstream's hanging punctuation; every
+        # rendered glyph must still lie within the actual original rectangle.
+        inner=copy.copy(box);inner.x2-=max(u.width for u in units[offset:])*scale
+        local=copy.copy(left if n==0 else right)
+        if n:local.first_line_indent=False
+        indices={};tracked=[_PairedUnitTracker(u,i,indices)for i,u in enumerate(units[offset:],offset)]
+        output,unused_fit=_original_layout_typesetting_units(self,tracked,inner,scale,line_skip,local,use_english_line_break)
+        if not output:return [],False
+        accepted=[];next_offset=len(units)
+        for unit in output:
+            b=unit.box
+            if not(box.x-.001<=b.x<=b.x2<=box.x2+.001 and box.y-.001<=b.y<=b.y2<=box.y2+.001):
+                next_offset=indices[id(unit)];break
+            accepted.append(unit)
+        if not accepted:return [],False
+        # Current upstream returns all units (including overflow) or [],False.
+        # If a compatible backend instead returns only a fitted prefix, the
+        # False flag cannot prove which next source unit to flow. Retry scale
+        # rather than treating that prefix as a complete output or dropping it.
+        if not unused_fit and next_offset==len(units):return [],False
+        laid.extend(accepted);offset=next_offset
+        if offset==len(units):break
+    if offset<len(units):return [],False
+    source=''.join(u.unicode for u in units)
+    target=''.join(u.unicode for u in laid)
+    if _definition_compact(source)!=_definition_compact(target):
+        raise ValueError('Paired flow dropped or reordered translated Unicode')
+    return laid,True
+
+
+def _guard_find_optimal_scale_and_layout(self,paragraph,page,typesetting_units,
+        initial_scale=1.0,use_english_line_break=True,apply_layout=False):
+    record=_paired_source_binding(paragraph)
+    if record is None:
+        return _original_find_optimal_scale_and_layout(self,paragraph,page,typesetting_units,
+            initial_scale,use_english_line_break,apply_layout)
+    if record['page']is not page:
+        raise ValueError('Paired source paragraph belongs to another page')
+    # Never invoke upstream's paragraph expansion or 10% fallback. A complete
+    # sentence that cannot fit its two source boxes is an explicit failure.
+    floor=max(.75,7.0/paragraph.pdf_style.font_size)
+    scales=[min(1.0,max(floor,initial_scale))-i*.025 for i in range(11)]
+    for scale in scales:
+        if scale<floor-.0001:continue
+        laid,fits=_layout_paired_source_units(self,typesetting_units,record,scale,
+            1.5 if self.is_cjk else 1.3,use_english_line_break)
+        if not fits:continue
+        if apply_layout:
+            from babeldoc.format.pdf.document_il import PdfParagraphComposition
+            rendered=[]
+            for unit in laid:
+                chars,curves,forms=unit.render()
+                if curves or forms or not chars:raise ValueError('Unexpected object in paired plain-text flow')
+                for c in chars:
+                    b=c.box
+                    if not any(box.x-.001<=b.x<=b.x2<=box.x2+.001 and box.y-.001<=b.y<=b.y2<=box.y2+.001 for box in record['boxes']):
+                        raise ValueError('Paired translation rendered outside its original boxes')
+                    rendered.append(PdfParagraphComposition(pdf_character=c))
+            paragraph.pdf_paragraph_composition=rendered;paragraph.scale=scale
+        return scale,laid if apply_layout else None
+    raise ValueError('Complete translated sentence does not fit its two original boxes at readable size')
+
+
 def _definition_compact(text):
     return ''.join((text or '').split())
+
+
+def rejoin_source_column_url_paths(styler, page):
+    """Rehome an original URI path split at a proven body-column boundary.
+
+    Only an HTTP(S) URI ending at a slash plus a short native slash-delimited
+    path and terminal period qualify. The right paragraph keeps its next full
+    sentence and target box. No URI, glyph or clickable annotation is invented.
+    """
+    config=getattr(styler,'translation_config',None)
+    if config is None or getattr(config,'skip_translation',False):return 0
+    all_chars=list(page.pdf_character)+[c for p in page.pdf_paragraph for c in _definition_chars(p)]
+    counts=Counter(map(id,all_chars));repaired=0
+    for left,right in _flow_column_pairs(page):
+        uri=re.search(r'\bhttps?://[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::[0-9]{2,5})?/(?:[A-Za-z0-9._~-]+/)*$',left.unicode or '')
+        path=re.match(r'(?:[A-Za-z0-9_~-]+/){1,8}\.(?=\s+[A-Z])',right.unicode or '')
+        if not uri or not path or len(path[0])>64 or len(path[0])*3>len(left.unicode):continue
+        rest=right.unicode[path.end():].lstrip()
+        if len(rest)<max(24,getattr(config,'min_text_length',0))or len(re.findall(r'[A-Za-z]{2,}',rest))<6:continue
+        def ordinary(p):
+            if not p.debug_id or len(p.pdf_paragraph_composition)!=1 or any(not co.pdf_same_style_characters for co in p.pdf_paragraph_composition):return None
+            cs=_definition_chars(p)
+            if (not cs or _definition_compact(''.join(c.char_unicode or''for c in cs))!=_definition_compact(p.unicode)
+                    or any(not _finite_character(c)or c.formula_layout_id is not None
+                           or not _flow_body_style(c.pdf_style,p.pdf_style)
+                           or not isinstance(c.char_unicode,str)
+                           or counts[id(c)]!=1
+                           or (c.char_unicode.strip()and(c.pdf_character_id is None or c.xobj_id!=0))for c in cs)):
+                return None
+            return cs
+        lc,rc=ordinary(left),ordinary(right)
+        if not lc or not rc:continue
+        tail=left.pdf_paragraph_composition[-1].pdf_same_style_characters
+        first=right.pdf_paragraph_composition[0].pdf_same_style_characters
+        if not _definition_same_style(tail.pdf_style,first.pdf_style):continue
+        if not _definition_compact(''.join(c.char_unicode or''for c in tail.pdf_character)).endswith(uri[0]):continue
+        raw='';moved=[]
+        for c in first.pdf_character:
+            if len(raw)>=len(path[0]):break
+            moved.append(c);raw+=c.char_unicode or''
+        kept=first.pdf_character[len(moved):]
+        if raw!=path[0]or not kept:continue
+        size=left.pdf_style.font_size;baseline=moved[0].box.y
+        previous=next((c for c in reversed(lc)if(c.char_unicode or'').strip()),None)
+        if (not previous or abs(previous.box.x2-left.box.x2)>size
+                or any(abs(c.box.y-baseline)>.1*size for c in moved)
+                or abs(moved[0].box.x-right.box.x)>.5*size
+                or abs(moved[0].box.y2-right.box.y2)>.5*size
+                or any(not (-.2 if b is moved[-1] and b.char_unicode=='.' else -.1)*size
+                           <=b.box.x-a.box.x2<=1.2*size
+                           or b.box.x<a.box.x or b.box.x2<a.box.x2
+                       for a,b in zip(moved,moved[1:]))):continue
+        # One native same-style run is retained. Upstream's one-run input
+        # uses the proven paragraph Unicode, avoiding a synthetic whitespace
+        # at the original column jump inside this single URI.
+        tail.pdf_character.extend(moved)
+        if tail.box:
+            tail.box=copy.copy(tail.box)
+            tail.box.x=min(c.box.x for c in tail.pdf_character);tail.box.y=min(c.box.y for c in tail.pdf_character)
+            tail.box.x2=max(c.box.x2 for c in tail.pdf_character);tail.box.y2=max(c.box.y2 for c in tail.pdf_character)
+        first.pdf_character=kept
+        if first.box:
+            first.box=copy.copy(first.box)
+            first.box.x=min(c.box.x for c in kept);first.box.y=min(c.box.y for c in kept)
+            first.box.x2=max(c.box.x2 for c in kept);first.box.y2=max(c.box.y2 for c in kept)
+        left.unicode+=path[0];right.unicode=rest
+        _rejoined_source_paragraphs[id(left)]=left;_rejoined_source_paragraphs[id(right)]=right
+        repaired+=1
+    if repaired:
+        with _lock:_counters['rejoinedSourceColumnURLPaths']+=repaired
+    return repaired
 
 
 def _definition_same_style(a,b):
@@ -439,6 +1197,269 @@ def _definition_same_style(a,b):
 def _definition_chars(paragraph):
     return [c for comp in paragraph.pdf_paragraph_composition
             for c in _composition_characters(comp)]
+
+
+def _open_grammar_native(paragraph, fonts, *, title, reference=None):
+    """Source-native prose with attested equivalent subset faces and fill."""
+    if (paragraph.vertical or not paragraph.box or not paragraph.pdf_style
+            or not paragraph.pdf_paragraph_composition):
+        return None
+    reference = reference or paragraph.pdf_style
+    def face(style):
+        font = fonts.get(style.font_id) if style else None
+        if not font or not font.name or font.xref_id is None:
+            return None
+        return (re.sub(r'^[A-Z]{6}\+', '', font.name), font.bold, font.italic, font.monospace, font.serif)
+    expected = face(reference)
+    if expected is None:
+        return None
+    chars = []
+    for comp in paragraph.pdf_paragraph_composition:
+        if sum(getattr(comp, field, None) is not None for field in (
+                'pdf_line', 'pdf_formula', 'pdf_character', 'pdf_same_style_characters',
+                'pdf_same_style_unicode_characters')) != 1:
+            return None
+        if comp.pdf_same_style_characters:
+            native = comp.pdf_same_style_characters.pdf_character
+        elif (title and comp.pdf_formula is not None and not comp.pdf_formula.pdf_curve
+              and not comp.pdf_formula.pdf_form and len(comp.pdf_formula.pdf_character) == 1
+              and comp.pdf_formula.pdf_character[0].char_unicode == '+'):
+            # A source-written plus inside a proper name remains the identical
+            # opaque formula object; do not flatten or recreate its glyph.
+            native = comp.pdf_formula.pdf_character
+        else:
+            return None
+        for char in native:
+            style = char.pdf_style
+            if (not _finite_character(char) or not isinstance(char.char_unicode, str)
+                    or char.formula_layout_id is not None
+                    or face(style) != expected or style.graphic_state != reference.graphic_state
+                    or abs(style.font_size-reference.font_size) > .02
+                    or char.xobj_id != paragraph.xobj_id
+                    or (char.char_unicode.strip() and char.pdf_character_id is None)):
+                return None
+        chars.extend(native)
+    if (not chars or len(set(map(id,chars))) != len(chars)
+            or _definition_compact(''.join(c.char_unicode for c in chars)) != _definition_compact(paragraph.unicode)):
+        return None
+    return chars
+
+
+def merge_source_open_grammar_blocks(styler, page):
+    """Join same-column native blocks where by/of leaves grammar unfinished.
+
+    Retain every original run, formula and font resource; only paragraph
+    ownership and its union target box change. Headings require a short proper
+    name continuation; body paragraphs cannot contain any formula composition.
+    """
+    config = getattr(styler, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    fonts = {f.font_id:f for f in page.pdf_font}
+    if len(fonts) != len(page.pdf_font):
+        return 0
+    paragraphs = list(page.pdf_paragraph)
+    all_chars = list(page.pdf_character) + [c for p in paragraphs for co in p.pdf_paragraph_composition
+                                           for c in _composition_characters(co)]
+    counts = Counter(map(id,all_chars))
+    removed, merged = set(), 0
+    for left, right in zip(paragraphs,paragraphs[1:]):
+        title = left.layout_label == 'title'
+        if (id(left) in removed or left.layout_label != right.layout_label
+                or left.layout_label not in {'title','plain text','text'}
+                or left.xobj_id != right.xobj_id
+                or not re.search(r'\s(?:by|of)$',left.unicode or '')
+                or any(token in (left.unicode or '')+(right.unicode or '') for token in ('`','<code','</code'))):
+            continue
+        if title:
+            if (not re.fullmatch(r'[A-Z][A-Za-z]+(?:[ -][A-Za-z]{2,}){0,10} (?:by|of)',left.unicode)
+                    or not re.fullmatch(r'[A-Z][A-Za-z]{2,}(?:[ +&-][A-Z][A-Za-z]{2,}){0,7}',right.unicode or '')):
+                continue
+        elif (len(re.findall(r'[A-Za-z]{2,}',left.unicode)) < 8
+              or len(re.findall(r'[A-Za-z]{2,}',right.unicode or '')) < 8):
+            continue
+        lc = _open_grammar_native(left,fonts,title=title)
+        rc = _open_grammar_native(right,fonts,title=title,reference=left.pdf_style)
+        if not lc or not rc or any(counts[id(c)] != 1 for c in lc+rc):
+            continue
+        size = left.pdf_style.font_size
+        a,b = left.box,right.box
+        if (any(not isinstance(v,(int,float)) or not math.isfinite(v)
+                for v in (a.x,a.y,a.x2,a.y2,b.x,b.y,b.x2,b.y2))
+                or min(a.x2-a.x,b.x2-b.x,a.y2-a.y,b.y2-b.y) <= 0
+                or abs(a.x-b.x) > .2*size or b.y2 >= a.y2
+                or (not title and not .8 <= (b.x2-b.x)/(a.x2-a.x) <= 1.2)
+                or (title and b.x2-a.x2 > 2*size)):
+            continue
+        end = next(c for c in reversed(lc) if c.char_unicode.strip())
+        start = next(c for c in rc if c.char_unicode.strip())
+        if not .9*size <= end.box.y-start.box.y <= 1.6*size:
+            continue
+        box = copy.copy(a)
+        box.x=min(a.x,b.x);box.y=min(a.y,b.y);box.x2=max(a.x2,b.x2);box.y2=max(a.y2,b.y2)
+        if (box.y2-box.y > (3.5 if title else 15)*size
+                or any(p is not left and p is not right and p.box
+                       and min(p.box.x2,box.x2)>max(p.box.x,box.x)
+                       and min(p.box.y2,box.y2)>max(p.box.y,box.y) for p in paragraphs)):
+            continue
+        left.pdf_paragraph_composition = list(left.pdf_paragraph_composition)+list(right.pdf_paragraph_composition)
+        left.unicode = left.unicode.rstrip()+' '+right.unicode.lstrip()
+        left.box = box
+        _rejoined_source_paragraphs[id(left)] = left
+        removed.add(id(right));merged += 1
+    if removed:
+        page.pdf_paragraph = [p for p in page.pdf_paragraph if id(p) not in removed]
+        with _lock:
+            _counters['mergedSourceOpenGrammarBlocks'] += merged
+    return merged
+
+
+def _plain_source_characters(paragraph):
+    """Ordinary source runs only, including already present parser spaces."""
+    if (paragraph.vertical or not paragraph.box or not paragraph.pdf_style
+            or not paragraph.debug_id or paragraph.xobj_id != 0
+            or any(not isinstance(v,(int,float)) or not math.isfinite(v)
+                   for v in (paragraph.box.x,paragraph.box.y,paragraph.box.x2,paragraph.box.y2))
+            or paragraph.box.x2 <= paragraph.box.x or paragraph.box.y2 <= paragraph.box.y
+            or not paragraph.pdf_paragraph_composition
+            or any(not c.pdf_same_style_characters for c in paragraph.pdf_paragraph_composition)):
+        return None
+    characters = _definition_chars(paragraph)
+    if (not characters or _definition_compact(paragraph.unicode) != _definition_compact(
+            ''.join(c.char_unicode or '' for c in characters))
+            or any(not _finite_character(c) or c.formula_layout_id is not None
+                   or not _definition_same_style(c.pdf_style, paragraph.pdf_style)
+                   or not re.fullmatch(r"[A-Za-z0-9 ,:;.'()\-]+", c.char_unicode or '')
+                   or (c.char_unicode.strip() and (c.pdf_character_id is None or c.xobj_id != 0))
+                   for c in characters)):
+        return None
+    return characters
+
+
+def merge_source_numbered_rule_titles(styler, page):
+    """Reunite an explicit numbered Rule heading split into adjacent title boxes.
+
+    A single column, native face/style, aligned starts and regular line spacing
+    prove the group. Keep every glyph and use only the original boxes' union.
+    No body text or new numbered heading is consumed.
+    """
+    config = getattr(styler, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    paragraphs, result, merged, index = page.pdf_paragraph, [], 0, 0
+    while index < len(paragraphs):
+        first = paragraphs[index]
+        if (first.layout_label != 'title'
+                or not re.match(r'^Rule\s*\d{1,3}:\s+[A-Z]', first.unicode or '')):
+            result.append(first); index += 1; continue
+        original = _plain_source_characters(first)
+        if not original:
+            result.append(first); index += 1; continue
+        group, all_chars, following = [first], list(original), index + 1
+        size = first.pdf_style.font_size
+        while following < len(paragraphs) and len(group) < 4:
+            candidate = paragraphs[following]
+            native = _plain_source_characters(candidate)
+            if (candidate.layout_label != 'title' or not native
+                    or re.match(r'^(?:Rule\s*)?\d+[.:)]', candidate.unicode)
+                    or not re.match(r'^[A-Z][A-Za-z]', candidate.unicode)
+                    or not _definition_same_style(first.pdf_style, candidate.pdf_style)
+                    or abs(first.box.x-candidate.box.x) > .15*size
+                    or candidate.box.x2-first.box.x2 > 2*size):
+                break
+            previous_y = next(c.box.y for c in reversed(all_chars) if c.char_unicode.strip())
+            next_y = next(c.box.y for c in native if c.char_unicode.strip())
+            if not .9*size <= previous_y-next_y <= 1.6*size:
+                break
+            group.append(candidate); all_chars.extend(native); following += 1
+        if len(group) == 1:
+            result.append(first); index += 1; continue
+        box = copy.copy(first.box)
+        box.x=min(p.box.x for p in group); box.y=min(p.box.y for p in group)
+        box.x2=max(p.box.x2 for p in group); box.y2=max(p.box.y2 for p in group)
+        if (box.y2-box.y > 6*size or box.x2-box.x < 6*size
+                or any(p.box and not any(p is item for item in group)
+                       and min(p.box.x2,box.x2)>max(p.box.x,box.x)
+                       and min(p.box.y2,box.y2)>max(p.box.y,box.y) for p in paragraphs)):
+            result.append(first); index += 1; continue
+        run = copy.copy(first.pdf_paragraph_composition[0].pdf_same_style_characters)
+        run.pdf_character = all_chars; run.box = copy.copy(box)
+        composition = copy.copy(first.pdf_paragraph_composition[0])
+        composition.pdf_same_style_characters = run
+        first.unicode = ' '.join(p.unicode.strip() for p in group)
+        first.pdf_paragraph_composition = [composition]; first.box = box
+        _rejoined_source_paragraphs[id(first)] = first
+        result.append(first); index = following; merged += 1
+    if merged:
+        page.pdf_paragraph = result
+        with _lock: _counters['mergedSourceNumberedRuleTitles'] += merged
+    return merged
+
+
+def rejoin_source_parenthetical_comparisons(styler, page):
+    """Complete one ordinary parenthetical comparison across adjacent columns.
+
+    Only a single-line ``than to ...).`` head can move. Same body style proves
+    column bounds; differently styled full-width authors/affiliations do not
+    define those bounds. The existing general column-pair test is unchanged.
+    Both target paragraph boxes stay intact, as do all original glyphs.
+    """
+    config = getattr(styler, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):return 0
+    repaired = 0
+    for left, right in zip(page.pdf_paragraph, page.pdf_paragraph[1:]):
+        a,b = _source_body_box(left),_source_body_box(right)
+        ending = re.search(r'\(or at least (?:(?:much|far) )?more [a-z]{3,24}$',left.unicode or '')
+        head = re.match(r'than to [a-z]+(?: [a-z]+){1,10}\)\.(?=\s+[A-Z])',right.unicode or '')
+        if not a or not b or not ending or not head:continue
+        lc,rc = _plain_source_characters(left),_plain_source_characters(right)
+        if (not lc or not rc
+                or not _definition_same_style(left.pdf_style,right.pdf_style)
+                or right.first_line_indent is not False
+                or left.unicode.count('(')-left.unicode.count(')') != 1
+                or any(left.unicode[:ending.start()].count(x)!=left.unicode[:ending.start()].count(y)
+                       for x,y in ('()','[]','{}'))
+                or len(head[0])>80 or len(right.unicode[head.end():].strip())<getattr(config,'min_text_length',5)):
+            continue
+        size=a[4]
+        if not (.5*size <= b[0]-a[2] <= 8*size and .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18):continue
+        eligible=[(p,_source_body_box(p))for p in page.pdf_paragraph
+                  if _source_body_box(p)and _definition_same_style(p.pdf_style,left.pdf_style)]
+        def overlap(x,y):return max(0,min(x[2],y[2])-max(x[0],y[0]))/min(x[2]-x[0],y[2]-y[0])
+        ls=[g for p,g in eligible if overlap(a,g)>=.8];rs=[g for p,g in eligible if overlap(b,g)>=.8]
+        if (any(overlap(a,g)>=.2 and overlap(b,g)>=.2 for _,g in eligible)
+                or any(g[1]<a[1]-.3*size for g in ls)
+                or any(g[3]>b[3]+.3*size for g in rs)
+                or abs(max(g[3]for g in ls)-max(g[3]for g in rs))>2*size
+                or abs(min(g[1]for g in ls)-min(g[1]for g in rs))>3*size
+                or min(max(g[3]for g in ls)-min(g[1]for g in ls),max(g[3]for g in rs)-min(g[1]for g in rs))<8*size):continue
+        # Do not cross any formula/container or partial native glyph boundary.
+        first=right.pdf_paragraph_composition[0].pdf_same_style_characters
+        moved=[];raw=''
+        for c in first.pdf_character:
+            if len(_definition_compact(raw))>=len(_definition_compact(head[0])):break
+            moved.append(c);raw+=c.char_unicode or ''
+        kept=first.pdf_character[len(moved):]
+        if (not moved or not kept or _definition_compact(raw)!=_definition_compact(head[0])
+                or any(abs(c.box.y-moved[0].box.y)>.1*size for c in moved)
+                or abs(moved[0].box.x-b[0])>.5*size
+                or abs(moved[0].box.y2-b[3])>.5*size
+                or any(not -.1*size<=y.box.x-x.box.x2<=1.2*size for x,y in zip(moved,moved[1:]))):continue
+        moved_run,kept_run=copy.copy(first),copy.copy(first)
+        moved_run.pdf_character=moved;kept_run.pdf_character=kept
+        for run in (moved_run,kept_run):
+            run.box=copy.copy(first.box)
+            run.box.x=min(c.box.x for c in run.pdf_character);run.box.y=min(c.box.y for c in run.pdf_character)
+            run.box.x2=max(c.box.x2 for c in run.pdf_character);run.box.y2=max(c.box.y2 for c in run.pdf_character)
+        moved_comp,kept_comp=copy.copy(right.pdf_paragraph_composition[0]),copy.copy(right.pdf_paragraph_composition[0])
+        moved_comp.pdf_same_style_characters=moved_run;kept_comp.pdf_same_style_characters=kept_run
+        left.pdf_paragraph_composition.append(moved_comp);right.pdf_paragraph_composition[0]=kept_comp
+        left.unicode=left.unicode.rstrip()+' '+head[0];right.unicode=right.unicode[head.end():].lstrip()
+        _rejoined_source_paragraphs[id(left)]=left;_rejoined_source_paragraphs[id(right)]=right
+        repaired+=1
+    if repaired:
+        with _lock:_counters['rejoinedSourceParentheticalComparisons']+=repaired
+    return repaired
 
 
 def _research_body_style(a, b):
@@ -1399,6 +2420,7 @@ def _guard_process_page(self, page):
         preserve_copyright_blocks(page)
         merge_caption_closers(self, page)
         merge_caption_fragments(self, page)
+        merge_source_terminal_punctuation(self, page)
         merge_source_year_range_fragments(self, page)
         preserve_trailing_equations(self, page)
         preserve_toc_leaders(self, page)
@@ -1816,11 +2838,21 @@ def merge_caption_fragments(finder, page):
     """
     removed = set()
     for body in page.pdf_paragraph:
-        if (body.vertical or body.layout_label not in {'figure_caption', 'table_caption'}
+        # A detector can label a numbered caption as a table footnote. Open
+        # only its tiny detached word ending, never arbitrary footnote bodies
+        # or a prefix candidate inferred from nearby text.
+        first_line = (body.pdf_paragraph_composition[0].pdf_line
+                      if body.pdf_paragraph_composition else None)
+        numbered_footnote = (body.layout_label == 'table_footnote' and first_line is not None
+                            and bool(re.match(r'^\s*(?:Fig(?:ure)?\.?|Table)\s+\d+[a-z]?[.:]\s+[A-Z]',
+                                              ''.join(c.char_unicode or '' for c in first_line.pdf_character), re.I)))
+        if (body.vertical or (body.layout_label not in {'figure_caption', 'table_caption'} and not numbered_footnote)
                 or not body.pdf_paragraph_composition
                 or any(c.pdf_line is None for c in body.pdf_paragraph_composition)):
             continue
         for side in ('prefix', 'suffix'):
+            if numbered_footnote and side == 'prefix':
+                continue
             comp = body.pdf_paragraph_composition[0 if side == 'prefix' else -1]
             info = _physical_line(comp.pdf_line)
             if not info:
@@ -1851,11 +2883,16 @@ def merge_caption_fragments(finder, page):
                 last = candidate[1][-1] if side == 'prefix' else anchor
                 first = anchor if side == 'prefix' else candidate[1][0]
                 size = anchor.pdf_style.font_size
+                # A visibly measured word space must not be reinterpreted as a
+                # detached suffix solely because the block starts Figure/Table.
+                maximum_gap = size * (.08 if numbered_footnote else .6 if side == 'prefix' and complete_prefix else .3)
                 if (any((c.pdf_style.font_id != anchor.pdf_style.font_id and not (side == 'prefix' and complete_prefix))
                         or abs(c.pdf_style.font_size - size) > .02
                         or abs(c.box.y - anchor.box.y) > size * .1
                         or c.xobj_id != anchor.xobj_id for c in candidate[1])
-                        or not -.25 <= first.box.x - last.box.x2 <= size * (.6 if side == 'prefix' and complete_prefix else .3)):
+                        or not -.25 <= first.box.x - last.box.x2 <= maximum_gap
+                        or numbered_footnote and any(c.formula_layout_id is not None
+                                                   for c in (anchor, *candidate[1]))):
                     continue
                 candidates.append((fragment, candidate[0]))
             if len(candidates) != 1:
@@ -1872,6 +2909,65 @@ def merge_caption_fragments(finder, page):
         page.pdf_paragraph = [p for p in page.pdf_paragraph if id(p) not in removed]
         with _lock:
             _counters['mergedCaptionFragments'] += len(removed)
+    return len(removed)
+
+
+def merge_source_terminal_punctuation(finder, page):
+    """Attach one source period/comma touching the preceding prose word.
+
+    The original single glyph must be the immediate next paragraph and share
+    its predecessor's native baseline, font, size and XObject. No other source
+    glyph may occupy its visual position; numbers, formulas, separate lines,
+    captions and arbitrary punctuation sequences never qualify.
+    """
+    paragraphs = list(page.pdf_paragraph)
+    all_chars = list(page.pdf_character) + [c for p in paragraphs for co in p.pdf_paragraph_composition
+                                           for c in _composition_characters(co)]
+    occurrences = Counter(map(id, all_chars))
+    removed = set()
+    for body, fragment in zip(paragraphs, paragraphs[1:]):
+        if (id(body) in removed or body.vertical or fragment.vertical
+                or body.layout_label not in {'text', 'plain text'}
+                or fragment.layout_label not in {'text', 'plain text', 'fallback_line'}
+                or body.xobj_id != fragment.xobj_id
+                or len(fragment.pdf_paragraph_composition) != 1
+                or not body.pdf_paragraph_composition
+                or any(co.pdf_line is None for co in body.pdf_paragraph_composition)
+                or len(re.findall(r'[A-Za-z]{2,}', body.unicode or '')) < 4):
+            continue
+        line = body.pdf_paragraph_composition[-1].pdf_line
+        left = _physical_line(line)
+        right = _physical_line(fragment.pdf_paragraph_composition[0].pdf_line)
+        if not left or not right or len(right[0]) != 1:
+            continue
+        marker, anchor = right[0][0], left[1][-1]
+        tail = re.search(r'[a-z]{3,}$', ''.join(c.char_unicode for c in left[0]))
+        size = anchor.pdf_style.font_size
+        if (not tail or marker.char_unicode not in {'.', ','}
+                or marker.pdf_character_id is None or anchor.pdf_character_id is None
+                or marker.formula_layout_id is not None or anchor.formula_layout_id is not None
+                or marker.pdf_style.font_id != anchor.pdf_style.font_id
+                or abs(marker.pdf_style.font_size-size) > .02
+                or marker.xobj_id != anchor.xobj_id or marker.xobj_id != body.xobj_id
+                or abs(marker.box.y-anchor.box.y) > .05*size
+                or not -.03*size <= marker.box.x-anchor.box.x2 <= .08*size
+                or occurrences[id(marker)] != 1 or occurrences[id(anchor)] != 1):
+            continue
+        visual = marker.visual_bbox.box
+        if any(c is not marker and c is not anchor and _finite_character(c)
+               and (c.char_unicode or '').strip() and c.xobj_id == marker.xobj_id
+               and abs(c.box.y-marker.box.y) <= .1*size
+               and c.visual_bbox.box.x < visual.x2 and c.visual_bbox.box.x2 > visual.x
+               for c in all_chars):
+            continue
+        line.pdf_character.append(marker)
+        finder.update_line_data(line)
+        finder.update_paragraph_data(body, update_unicode=True)
+        removed.add(id(fragment))
+    if removed:
+        page.pdf_paragraph = [p for p in page.pdf_paragraph if id(p) not in removed]
+        with _lock:
+            _counters['mergedSourceTerminalPunctuation'] += len(removed)
     return len(removed)
 
 
@@ -2237,6 +3333,7 @@ def install():
     global _original_process_translatable_formulas, _original_is_translatable_formula
     global _original_process_comma_formulas, _original_should_split_formula
     global _original_styles_process_page, _original_layout_typesetting_units
+    global _original_find_optimal_scale_and_layout
     with _lock:
         if _installed:
             return
@@ -2259,6 +3356,8 @@ def install():
         StylesAndFormulas.should_split_formula = _guard_should_split_formula
         _original_styles_process_page = StylesAndFormulas.process_page
         StylesAndFormulas.process_page = _guard_styles_process_page
+        _original_find_optimal_scale_and_layout = Typesetting._find_optimal_scale_and_layout
+        Typesetting._find_optimal_scale_and_layout = _guard_find_optimal_scale_and_layout
         _original_layout_typesetting_units = Typesetting._layout_typesetting_units
         Typesetting._layout_typesetting_units = _guard_layout_typesetting_units
         _original_process_page = ParagraphFinder.process_page
@@ -2270,6 +3369,9 @@ def snapshot():
     with _lock:
         return {"guardVersion": GUARD_VERSION, "guardInstalled": _installed,
                 "repairedSubscriptOffsets": _counters['repairedSubscriptOffsets'],
+                "boundSourceAccentedNames": _counters['boundSourceAccentedNames'],
+                "repairedSourceOverprintedWords": _counters['repairedSourceOverprintedWords'],
+                "restoredSourceReferenceArticles": _counters['restoredSourceReferenceArticles'],
                 "repairedScriptFollowingFormulaOffsets": _counters['repairedScriptFollowingFormulaOffsets'],
                 "registeredScriptBindings": _counters['registeredScriptBindings'],
                 "restoredPhysicalLineBreaks": _counters['restoredPhysicalLineBreaks'],
@@ -2279,6 +3381,12 @@ def snapshot():
                 "rejoinedSourcePageDefinitionHeads": _counters['rejoinedSourcePageDefinitionHeads'],
                 "rejoinedSourceColumnSentenceTails": _counters['rejoinedSourceColumnSentenceTails'],
                 "rejoinedSourceColumnOrphanHeads": _counters['rejoinedSourceColumnOrphanHeads'],
+                "rejoinedSourceColumnURLPaths": _counters["rejoinedSourceColumnURLPaths"],
+                "rejoinedSourceColumnShortHeads": _counters['rejoinedSourceColumnShortHeads'],
+                "pairedSourceColumnSentences": _counters['pairedSourceColumnSentences'],
+                "rejoinedSourcePageShortHeads": _counters['rejoinedSourcePageShortHeads'],
+                "mergedSourceNumberedRuleTitles": _counters['mergedSourceNumberedRuleTitles'],
+                "rejoinedSourceParentheticalComparisons": _counters['rejoinedSourceParentheticalComparisons'],
                 "legacyMathFontMatches": _counters['legacyMathFontMatches'],
                 "preservedLegacySymbolFormulas": _counters['preservedLegacySymbolFormulas'],
                 "preservedLegacyCommaFormulas": _counters['preservedLegacyCommaFormulas'],
@@ -2295,6 +3403,8 @@ def snapshot():
                 "preservedIndexReferenceLines": _counters["preservedIndexReferenceLines"],
                 "mergedCaptionClosers": _counters["mergedCaptionClosers"],
                 "mergedCaptionFragments": _counters["mergedCaptionFragments"],
+                "mergedSourceTerminalPunctuation": _counters['mergedSourceTerminalPunctuation'],
+                "mergedSourceOpenGrammarBlocks": _counters['mergedSourceOpenGrammarBlocks'],
                 "mergedSourceYearRanges": _counters["mergedSourceYearRanges"],
                 "preservedTrailingEquationParagraphs": _counters["preservedTrailingEquationParagraphs"],
                 "preservedTrailingEquationLines": _counters["preservedTrailingEquationLines"],

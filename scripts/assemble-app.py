@@ -57,6 +57,7 @@ shutil.copytree(Path(info["sitePackages"]), packages, dirs_exist_ok=True, symlin
 print("Pruning unused web UI, provider SDKs and development resources…", flush=True)
 profile_report = prune_runtime(runtime, profile, info["versions"])
 (engine / "bundle-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
+(ROOT / "validation").mkdir(parents=True, exist_ok=True)
 (ROOT / "validation" / (app.stem + "-bundle-profile.json")).write_text(json.dumps(profile_report, indent=2) + "\n")
 for relative in ["worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py", "pyproject.toml", "uv.lock"]:
     shutil.copy2(ROOT / "engine" / relative, engine / relative)
