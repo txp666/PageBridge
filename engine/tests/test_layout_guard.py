@@ -1217,5 +1217,98 @@ class CaptionFragmentTests(unittest.TestCase):
         self.assertEqual(guard.merge_caption_fragments(object.__new__(ParagraphFinder),f),1)
 
 
+class SourceYearRangeFragmentTests(unittest.TestCase):
+    def setUp(self):
+        guard._counters.clear()
+
+    def fixture(self, start='1980', end='97', dash='–'):
+        left = line_paragraph(['We compare observations over (' + start], size=9)
+        middle = line_paragraph([dash], label='title', size=9)
+        right = line_paragraph([end + ') for these samples',
+                                'The remaining source paragraph continues unchanged.'], size=9)
+        for p, previous in ((middle, left), (right, middle)):
+            chars = p.pdf_paragraph_composition[0].pdf_line.pdf_character
+            previous_chars = previous.pdf_paragraph_composition[0].pdf_line.pdf_character
+            offset = previous_chars[-1].box.x2 - chars[0].box.x
+            for c in chars:
+                c.box.x += offset; c.box.x2 += offset
+                c.visual_bbox.box.x += offset; c.visual_bbox.box.x2 += offset
+        fixture = page([])
+        fixture.pdf_paragraph = [left, middle, right]
+        return fixture, left, middle, right
+
+    def glyphs(self, fixture):
+        return list(fixture.pdf_character) + [c for p in fixture.pdf_paragraph
+            for comp in p.pdf_paragraph_composition for c in guard._composition_characters(comp)]
+
+    def test_original_year_range_glyphs_join_and_body_compositions_remain_identical(self):
+        for start, end, dash in (('1980', '97', '–'), ('2001', '2020', '-')):
+            with self.subTest(start=start, end=end):
+                f, left, middle, right = self.fixture(start, end, dash)
+                formula = PdfFormula(pdf_character=[character('x', 120)])
+                right.pdf_paragraph_composition.append(PdfParagraphComposition(pdf_formula=formula))
+                preserved_compositions = right.pdf_paragraph_composition[:]
+                before = self.glyphs(f)
+                properties = {id(c): {slot: getattr(c, slot) for slot in c.__slots__} for c in before}
+                self.assertEqual(guard.merge_source_year_range_fragments(object.__new__(ParagraphFinder), f), 1)
+                self.assertEqual(f.pdf_paragraph, [right])
+                self.assertIn('(' + start + dash + end + ')', right.unicode)
+                self.assertTrue(all(a is b for a, b in zip(preserved_compositions, right.pdf_paragraph_composition)))
+                self.assertIs(right.pdf_paragraph_composition[-1].pdf_formula, formula)
+                after = self.glyphs(f)
+                self.assertEqual([id(c) for c in before], [id(c) for c in after])
+                for c in after:
+                    for slot, value in properties[id(c)].items():
+                        self.assertIs(getattr(c, slot), value)
+                self.assertEqual(guard.merge_source_year_range_fragments(object.__new__(ParagraphFinder), f), 0)
+        self.assertEqual(guard.snapshot()['mergedSourceYearRanges'], 2)
+
+    def test_nonadjacent_or_unproven_source_ranges_are_untouched(self):
+        for mode in ('baseline', 'font', 'size', 'xobject', 'gap', 'overlap', 'missing-glyph',
+                     'formula-layout', 'vertical', 'no-opener', 'no-closer', 'not-year',
+                     'reverse-year', 'wrong-label', 'multiple-prefix-lines', 'intervening-paragraph',
+                     'unrelated-glyph', 'duplicate-glyph', 'formula-dash', 'wrong-order', 'no-dash'):
+            with self.subTest(mode=mode):
+                f, left, middle, right = self.fixture()
+                symbol = middle.pdf_paragraph_composition[0].pdf_line.pdf_character[0]
+                first = right.pdf_paragraph_composition[0].pdf_line.pdf_character
+                if mode == 'baseline': symbol.box.y -= 2
+                elif mode == 'font': symbol.pdf_style.font_id = 'other'
+                elif mode == 'size': symbol.pdf_style.font_size = 7
+                elif mode == 'xobject': symbol.xobj_id = 4
+                elif mode == 'gap': symbol.box.x += 3
+                elif mode == 'overlap': symbol.box.x -= 3
+                elif mode == 'missing-glyph': symbol.pdf_character_id = None
+                elif mode == 'formula-layout': symbol.formula_layout_id = 3
+                elif mode == 'vertical': middle.vertical = True
+                elif mode == 'no-opener': left.pdf_paragraph_composition[0].pdf_line.pdf_character[-5].char_unicode = '['
+                elif mode == 'no-closer': first[2].char_unicode = ']'
+                elif mode == 'not-year': left.pdf_paragraph_composition[0].pdf_line.pdf_character[-4].char_unicode = 'x'
+                elif mode == 'reverse-year': first[0].char_unicode = '7'
+                elif mode == 'wrong-label': right.layout_label = 'table_caption'
+                elif mode == 'multiple-prefix-lines': left.pdf_paragraph_composition.append(line_paragraph(['Other row.']).pdf_paragraph_composition[0])
+                elif mode == 'intervening-paragraph': f.pdf_paragraph.insert(2, line_paragraph(['An intervening unrelated entry.']))
+                elif mode == 'unrelated-glyph': f.pdf_character.append(character('q', 113, font_id='F2', x=symbol.box.x, y=symbol.box.y))
+                elif mode == 'duplicate-glyph': f.pdf_character.append(symbol)
+                elif mode == 'formula-dash': middle.pdf_paragraph_composition = [PdfParagraphComposition(pdf_formula=PdfFormula(pdf_character=[symbol]))]
+                elif mode == 'wrong-order': f.pdf_paragraph = [left, right, middle]
+                elif mode == 'no-dash': f.pdf_paragraph.remove(middle)
+                before_paragraphs = f.pdf_paragraph[:]
+                before = [id(c) for c in self.glyphs(f)]
+                self.assertEqual(guard.merge_source_year_range_fragments(object.__new__(ParagraphFinder), f), 0)
+                self.assertEqual(f.pdf_paragraph, before_paragraphs)
+                self.assertEqual([id(c) for c in self.glyphs(f)], before)
+
+    def test_real_process_page_calls_range_repair_before_source_link_capture(self):
+        f, left, middle, right = self.fixture()
+        finder = object.__new__(ParagraphFinder)
+        with patch.object(guard, '_original_process_page', lambda self, page: None), \
+             patch('pdf_links.capture_source') as capture:
+            guard._guard_process_page(finder, f)
+        capture.assert_called_once_with(f)
+        self.assertEqual(f.pdf_paragraph, [right])
+        self.assertIn('(1980–97)', right.unicode)
+
+
 if __name__ == "__main__":
     unittest.main()

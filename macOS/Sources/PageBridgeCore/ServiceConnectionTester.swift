@@ -147,7 +147,7 @@ public enum ServiceConnectionError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .noModels: return "未找到可用的对话模型。可选择预设模型或在高级设置中填写模型 ID。"
+        case .noModels: return "未找到可用的对话模型。可选择预设模型，或在“模型”菜单中选择“手动输入模型 ID…”。"
         case .missingKey: return "请先填写 API Key。"
         case .invalidKey: return "API Key 中不能包含换行，请检查粘贴的密钥是否完整。"
         case .invalidResponse: return "服务返回的内容不是预期的兼容 JSON 响应。请检查协议和 Base URL。"

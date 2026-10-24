@@ -128,7 +128,7 @@ struct ContentView: View {
                     Image(systemName: "gearshape").font(.system(size: 18))
                     Text("翻译服务").font(.subheadline)
                     Spacer(minLength: 4)
-                    Text(model.activeService?.kind.title ?? "设置")
+                    Text(model.activeService?.provider.title ?? "设置")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                 }

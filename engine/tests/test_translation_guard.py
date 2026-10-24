@@ -1085,6 +1085,88 @@ class TranslationGuardTests(unittest.TestCase):
         formula_ti = ILTranslator.TranslateInput("with {v1}", fixture().placeholders[:1], ti.base_style)
         self.assertIsNone(guard._fixed_label_translation(translator(), formula_ti, para))
 
+    def test_short_connectors_are_translated_before_real_batch_page_filter(self):
+        from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import ILTranslatorLLMOnly
+        from babeldoc.format.pdf.document_il.midend.il_translator import DocumentTranslateTracker
+        connectors = [short_connector_fixture(word)[1] for word in ("with", "and")]
+        # Full-document formula/style parsing changes the second source line to
+        # same-style original glyphs before the production batch length filter.
+        run = connectors[1].pdf_paragraph_composition[0].pdf_line
+        connectors[1].pdf_paragraph_composition = [PdfParagraphComposition(
+            pdf_same_style_characters=PdfSameStyleCharacters(pdf_style=connectors[1].pdf_style,
+                                                            pdf_character=run.pdf_character))]
+        formula = PdfFormula(pdf_character=[PdfCharacter(char_unicode="x"), PdfCharacter(char_unicode="=")])
+        equation = SimpleNamespace(unicode="x=", layout_label="formula", vertical=False, debug_id="equation",
+            pdf_paragraph_composition=[PdfParagraphComposition(pdf_formula=formula)])
+        source_body = short_connector_fixture("The original network text remains pending.")[1]
+        page = SimpleNamespace(pdf_paragraph=connectors + [equation, source_body], pdf_font=[], pdf_xobject=[])
+        docs = SimpleNamespace(page=[page])
+        engine = translator()
+        engine.support_llm_translate = True
+        engine.translation_config.min_text_length = 5
+        engine.translation_config.disable_rich_text_translate = False
+        engine.translation_config.raise_if_cancelled = lambda: None
+        context = SimpleNamespace(first_paragraph=None, recent_title_paragraph=None)
+        engine.translation_config.shared_context_cross_split_part = context
+        batch = object.__new__(ILTranslatorLLMOnly)
+        batch.il_translator = engine
+        batch.translation_config = engine.translation_config
+        batch.shared_context_cross_split_part = context
+        batch.mid = 0
+        batch.calc_token_count = len
+        submissions = []
+        executor = SimpleNamespace(submit=lambda function, *args, **kwargs: submissions.append(args[0]))
+        def upstream(self, document):
+            self.process_page(page, executor, SimpleNamespace(advance=lambda *args: None),
+                              DocumentTranslateTracker().new_page(), executor, set())
+        with patch.dict(guard._originals, batch_translate=upstream):
+            batch.translate(docs)
+        self.assertEqual([p.unicode for p in connectors], ["其中", "且"])
+        self.assertEqual([[p.unicode for p in item.paragraphs] for item in submissions], [[source_body.unicode]])
+        self.assertIs(equation.pdf_paragraph_composition[0].pdf_formula, formula)
+        self.assertEqual(guard.snapshot()["counters"]["shortProseConnectorsBeforeBatch"], 2)
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 0)
+        self.assertEqual(engine.calls, [])
+        self.assertEqual(engine.translation_config.min_text_length, 5)
+
+    def test_batch_short_connector_preprocessing_respects_other_targets(self):
+        from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import ILTranslatorLLMOnly
+        _, para = short_connector_fixture()
+        batch = object.__new__(ILTranslatorLLMOnly)
+        batch.translation_config = SimpleNamespace(lang_out="fr")
+        docs = SimpleNamespace(page=[SimpleNamespace(pdf_paragraph=[para])])
+        observed = []
+        with patch.dict(guard._originals, batch_translate=lambda self, value: observed.append(value)):
+            batch.translate(docs)
+        self.assertEqual(para.unicode, "with")
+        self.assertEqual(observed, [docs])
+        self.assertEqual(guard.snapshot()["preparedParagraphs"], 0)
+
+    def test_complete_journal_footers_preserve_source_date_roles_and_formula_objects(self):
+        values = ((1, " 2014 | "), (2, "9 | "), (3, "4 | "))
+        placeholders = [FormulaPlaceholder(index, PdfFormula(pdf_character=[PdfCharacter(char_unicode=c) for c in text]),
+                                           f"{{v{index}}}", rf"\{{v{index}\}}") for index, text in values]
+        ti = ILTranslator.TranslateInput("April{v1}Volume {v2}Issue {v3}e93090", placeholders, PdfStyle())
+        para = paragraph(ti)
+        para.layout_label = "abandon"
+        original = para.pdf_paragraph_composition
+        self.assertTrue(guard._preserve_publication_metadata(ti, para.layout_label))
+        with patch.dict(guard._originals, pre=lambda *a, **k: (ti.unicode, ti)):
+            self.assertEqual(translator().pre_translate_paragraph(para, ParagraphTranslateTracker(), {}, {}), (None, None))
+        self.assertIs(para.pdf_paragraph_composition, original)
+        self.assertEqual([p.formula.pdf_character[0].char_unicode for p in placeholders], [" ", "9", "4"])
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 0)
+        for source in ("April 2014 | Volume 9 | Issue 4 | e93090", "October2026|Volume12|Issue10|e1001111"):
+            self.assertTrue(guard._preserve_publication_metadata(ILTranslator.TranslateInput(source, [], PdfStyle())))
+
+    def test_journal_footer_preservation_requires_complete_metadata_shape(self):
+        footer = "April 2014 | Volume 9 | Issue 4 | e93090"
+        for source in ("We read " + footer, footer + " and discuss the network.", footer.replace("April", "Results"),
+                       footer.replace("Volume 9 | Issue 4", "Issue 4 | Volume 9"), footer.replace("e93090", "RegnANN"),
+                       "April 2014 describes Volume 9 and Issue 4 in this article."):
+            with self.subTest(source=source):
+                self.assertFalse(guard._preserve_publication_metadata(ILTranslator.TranslateInput(source, [], PdfStyle())))
+
     def test_initial_transport_cutoff_stays_pending_until_complete_retry(self):
         ti = fixture()
         good = "流量 {v1}<style id='2'>速率</style>。"
@@ -1292,6 +1374,18 @@ class TranslationGuardTests(unittest.TestCase):
         self.assertEqual(out, ordinary)
 
 
+    def test_populated_wind_classes_mean_sample_counts(self):
+        text = "Table 6 shows the number of days per class and the adjustment, which is better for the most populated classes."
+        ti = ILTranslator.TranslateInput(text, [], PdfStyle())
+        engine = translator()
+        self.assertIn("样本数最多的类别", guard._contextual_term_hint(engine, ti))
+        guard._check_body_translation(engine, paragraph(ti), ti, "表6显示每类天数及调整，对于样本数最多的类别效果更好。")
+        for bad in ("表6显示每类天数及调整，对于最富有的类效果更好。", "表6显示每类天数及调整，对于最流行的类效果更好。"):
+            with self.subTest(output=bad), self.assertRaisesRegex(guard.PlaceholderIntegrityError, "populated-class-mistranslated"):
+                guard._check_body_translation(engine, paragraph(ti), ti, bad)
+        other = ILTranslator.TranslateInput("The most populated classes of people have a larger average wealth.", [], PdfStyle())
+        self.assertNotIn("sample counts", guard._contextual_term_hint(engine, other))
+
     def test_source_scientific_identifiers_cannot_be_changed_or_recast_as_counts(self):
         ti = ILTranslator.TranslateInput("The 5BLC predictor uses BLC6 and p53 with V0 for the 3rd trial.", [], PdfStyle())
         good = "5BLC预测器使用BLC6和p53，并在第三次试验中使用V0。"
@@ -1300,6 +1394,156 @@ class TranslationGuardTests(unittest.TestCase):
                     good.replace('p53', ''), good + '使用V0。'):
             with self.subTest(bad=bad), self.assertRaisesRegex(guard.PlaceholderIntegrityError, 'scientific-identifier-changed'):
                 guard._check_body_translation(translator(), paragraph(ti), ti, bad)
+
+    def test_formula_boundaries_do_not_invent_scientific_identifiers(self):
+        formulas = [FormulaPlaceholder(i, PdfFormula(pdf_character=[PdfCharacter(char_unicode="i")]),
+                                       f"{{v{i}}}", rf"\{{v{i}\}}") for i in (1, 2)]
+        ti = ILTranslator.TranslateInput("The 5BLC{v1}of the network and 5BLC{v2}shows the model result.", formulas, PdfStyle())
+        good = "网络的5BLC{v1}和5BLC{v2}展示模型结果。"
+        self.assertEqual(guard._prose_scientific_identifiers(ti, ti.unicode), {"5BLC": 2})
+        guard._check_body_translation(translator(), paragraph(ti), ti, good)
+        for bad in (good.replace("5BLC", "BLC", 1), good.replace("5BLC", "6BLC", 1), good + "5BLC"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(guard.PlaceholderIntegrityError, "scientific-identifier-changed"):
+                guard._check_body_translation(translator(), paragraph(ti), ti, bad)
+        # A contiguous source identifier is still literal; only an actual
+        # opaque formula boundary creates a separator in the analysis view.
+        named = ILTranslator.TranslateInput("The model 5BLCshows uses model5BLC of the network.", [], PdfStyle())
+        self.assertEqual(guard._prose_scientific_identifiers(named, named.unicode), {"5BLCshows": 1, "model5BLC": 1})
+        with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "scientific-identifier-changed"):
+            guard._check_body_translation(translator(), paragraph(named), named, "模型5BLC使用网络的model5BLC。")
+        styled = fixture()
+        styled.unicode = "The model 5<style id='2'>BLC</style> uses {v1}."
+        self.assertEqual(guard._prose_scientific_identifiers(styled, styled.unicode), {"5BLC": 1})
+
+    def test_joined_numbered_figure_lists_have_explicit_reference_grammar(self):
+        for source, output in (("Figures 3and 4", "图3和4"), ("Figures 13and14", "图13和14"),
+                               ("Tables 13 and14", "表13和14"), ("Equations 3.1and 3.2", "式3.1和3.2")):
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            with self.subTest(source=source):
+                self.assertEqual(guard._prose_scientific_identifiers(ti, ti.unicode), {})
+                self.assertEqual(guard._prose_numeric_literals(ti, ti.unicode), guard._prose_numeric_literals(ti, output))
+                guard._check_body_translation(translator(), paragraph(ti), ti, output)
+        for source in ("The identifier 3and is measured.", "Figure Eight uses 3and4.", "Figures 3and 4BLC are names."):
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            self.assertTrue(guard._prose_scientific_identifiers(ti, ti.unicode), source)
+        ti = ILTranslator.TranslateInput("Figures 13and14", [], PdfStyle())
+        with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "prose-numeric-literal-changed"):
+            guard._check_body_translation(translator(), paragraph(ti), ti, "图13和15")
+
+    def test_joined_caption_numbers_require_initial_label_period_and_title(self):
+        captions = (
+            ("Table1. Distribution of the 27 LC wind classes inLondon, along 50 years.",
+             "表1. 伦敦27类LC风在50年间的分布。"),
+            ("Figure16. Distribution of the wind classes.", "图16. 风类别的分布。"),
+            ("Fig.2. Distribution of the wind classes.", "图2. 风类别的分布。"),
+            ("  Table27. Distribution of the wind classes.", "表27. 风类别的分布。"),
+            ("Fig.12. Distribution of the wind classes.", "图12. 风类别的分布。"),
+        )
+        for source, output in captions:
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            with self.subTest(source=source):
+                self.assertEqual(guard._prose_scientific_identifiers(ti, source), {})
+                self.assertEqual(guard._prose_numeric_literals(ti, source),
+                                 guard._prose_numeric_literals(ti, output))
+                guard._check_body_translation(translator(), paragraph(ti), ti, output)
+        for source in ("Table1 gene expression is measured.", "Figure16 protein is measured.",
+                       "NotTable1. Distribution of classes.", "Table1B. Distribution of classes.",
+                       "The Table1. Distribution is measured.", "Table1.Distribution of classes.",
+                       "Table1.", "Table1. 27 classes are measured.",
+                       "Table1.5 Distribution of classes.", "Table1: Distribution of classes.",
+                       "Measurements\nTable1. Distribution of classes."):
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            with self.subTest(identifier=source):
+                self.assertEqual(guard._joined_prose_number_spans(source), [])
+                self.assertTrue(guard._prose_scientific_identifiers(ti, source))
+                numbers = " ".join(guard._prose_numeric_literals(ti, source).elements())
+                with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "scientific-identifier-changed"):
+                    guard._check_body_translation(translator(), paragraph(ti), ti, "类别分布已测量。" + numbers)
+        for source, output in (captions[1], captions[3], captions[4]):
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            for bad in (re.sub(r"\d+", "99", output, count=1), re.sub(r"\d+", "", output, count=1)):
+                with self.subTest(source=source, bad=bad), self.assertRaisesRegex(
+                        guard.PlaceholderIntegrityError, "prose-numeric-literal-changed"):
+                    guard._check_body_translation(translator(), paragraph(ti), ti, bad)
+
+    def test_joined_source_caption_labels_cannot_remain_english_in_output(self):
+        for source, good, bad_labels in (
+                ("Table1. Distribution of the wind classes.", "表1. 风类别分布。", ("Table1", "Table 1", "table1")),
+                ("Figure16. Distribution of the wind classes.", "图16. 风类别分布。", ("Figure16", "Figure 16", "Fig.16", "Fig. 16")),
+                ("Fig.2. Distribution of the wind classes.", "图2. 风类别分布。", ("Fig.2", "Fig. 2", "Figure2", "Figure 2"))):
+            ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+            para = paragraph(ti)
+            para.layout_label = "table_caption" if source.startswith("Table") else "figure_caption"
+            with self.subTest(source=source):
+                self.assertTrue(guard._untranslated_numbered_labels(ti, source))
+                self.assertFalse(guard._untranslated_numbered_labels(ti, good))
+                guard._check_body_translation(translator(), para, ti, good)
+            for label in bad_labels:
+                bad = label + ". 风类别分布。"
+                with self.subTest(residual=bad):
+                    self.assertTrue(guard._untranslated_numbered_labels(ti, bad))
+                    with self.assertRaisesRegex(guard.PlaceholderIntegrityError, "untranslated-prose-fragment"):
+                        guard._check_body_translation(translator(), para, ti, bad)
+        named = ILTranslator.TranslateInput("Table1 gene expression is measured.", [], PdfStyle())
+        good = "Table1基因表达已测量。"
+        self.assertFalse(guard._untranslated_numbered_labels(named, good))
+        guard._check_body_translation(translator(), paragraph(named), named, good)
+        caption = ILTranslator.TranslateInput("Table1. Distribution of the wind classes.", [], PdfStyle())
+        for unrelated in ("Table16", "Table1Gene", "modelTable1", "Table1.5", "Figure1"):
+            self.assertFalse(guard._untranslated_numbered_labels(caption, unrelated + "的类别分布。"), unrelated)
+        for ambiguous in ("Table1.Distribution of classes.", "The Table1. Distribution is measured.",
+                          "Measurements\nTable1. Distribution of classes."):
+            ti = ILTranslator.TranslateInput(ambiguous, [], PdfStyle())
+            self.assertFalse(guard._untranslated_numbered_labels(ti, "Table1类别分布。"), ambiguous)
+
+    def test_month_first_publication_dates_remain_complete_source_metadata(self):
+        source = "Received October 10, 2006; Accepted January 17, 2007; Published February 14, 2007"
+        ti = ILTranslator.TranslateInput(source, [], PdfStyle())
+        para = paragraph(ti)
+        original = para.pdf_paragraph_composition
+        self.assertTrue(guard._preserve_publication_metadata(ti))
+        with patch.dict(guard._originals, pre=lambda *a, **k: (source, ti)):
+            self.assertEqual(translator().pre_translate_paragraph(para, ParagraphTranslateTracker(), {}, {}), (None, None))
+        self.assertEqual(para.unicode, source)
+        self.assertIs(para.pdf_paragraph_composition, original)
+        self.assertEqual(guard.snapshot()["unresolvedCount"], 0)
+        for extra in (" and we measured 10 days.", " discusses the network."):
+            self.assertFalse(guard._preserve_publication_metadata(ILTranslator.TranslateInput(source + extra, [], PdfStyle())))
+        self.assertFalse(guard._preserve_publication_metadata(ILTranslator.TranslateInput("Published October data were measured for 10 days in 2006.", [], PdfStyle())))
+
+    def test_class_day_count_inversion_requires_original_small_i_and_explicit_roles(self):
+        base = PdfStyle(font_id="F3", font_size=8.9663)
+        formulas = []
+        for index, face in ((1, "F6"), (2, "F3")):
+            chars = [PdfCharacter(char_unicode="i", pdf_character_id=105,
+                                  pdf_style=PdfStyle(font_id=face, font_size=5.9768))]
+            formulas.append(FormulaPlaceholder(index, PdfFormula(pdf_character=chars), f"{{v{index}}}", rf"\{{v{index}\}}"))
+        formulas.extend(FormulaPlaceholder(index, PdfFormula(pdf_character=[PdfCharacter(char_unicode="=")]),
+                                          f"{{v{index}}}", rf"\{{v{index}\}}") for index in (3, 4))
+        source = "{v3} In a time series of N days with n{v1}days per LC{v2}class, the probability is {v4}."
+        ti = ILTranslator.TranslateInput(source, formulas, base)
+        output = "{v3}在N天的时间序列中，若每类LC{v2}的天数为n{v1}，则概率为{v4}。"
+        self.assertIn("每类LC{v2}的天数为n{v1}", guard._contextual_term_hint(translator(), ti))
+        self.assertTrue(guard._safe_scientific_role_permutation(ti, source, output))
+        self.assertEqual(guard.normalize_output(ti, output), output)
+        parsed = translator().parse_translate_output(ti, output)
+        self.assertEqual([c.pdf_formula for c in parsed if c.pdf_formula],
+                         [formulas[2].formula, formulas[1].formula, formulas[0].formula, formulas[3].formula])
+        for bad in (output.replace("LC{v2}", "LC"), output.replace("LC{v2}", "n{v2}"),
+                    output.replace("n{v1}", "LC{v1}"), output.replace("天数", "频率"),
+                    output.replace("{v1}", "{swap}").replace("{v2}", "{v1}").replace("{swap}", "{v2}"),
+                    output.replace("{v3}", "").replace("，则", "{v3}，则"), output + "{v2}"):
+            with self.subTest(bad=bad):
+                self.assertFalse(guard._safe_scientific_role_permutation(ti, source, bad))
+                with self.assertRaises(guard.PlaceholderIntegrityError):
+                    guard.normalize_output(ti, bad)
+        for changed_source in (source.replace("n{v1}", "N{v1}"), source.replace("LC{v2}", "lc{v2}"),
+                               source.replace("days per", "days divided by")):
+            self.assertFalse(guard._safe_scientific_role_permutation(ti, changed_source, output))
+        for char, size in (("j", 5.9768), ("i", 8.9663), ("i+1", 5.9768)):
+            formulas[0].formula.pdf_character[0].char_unicode = char
+            formulas[0].formula.pdf_character[0].pdf_style.font_size = size
+            self.assertFalse(guard._safe_scientific_role_permutation(ti, source, output))
 
     def test_pdf_joined_prose_numbers_are_counts_not_scientific_identifiers(self):
         ti = ILTranslator.TranslateInput('The 1975–94training period has 74 days in1975–94 with 5BLC and p53.', [], PdfStyle())

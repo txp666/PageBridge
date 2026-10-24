@@ -123,6 +123,21 @@ Recovery retains source context and original formula objects. Only narrowly
 proved source relations permit reordering; a plausible-looking model answer is
 not enough. Unresolved content blocks publication.
 
+At a source-proven two-column continuation, the guard supplies bounded,
+read-only prose context before batch scheduling. It takes only the continuous
+source edge before the first formula or after the last formula; it never
+removes a formula and joins the text around it. Ambiguous reading order,
+geometry or glyph/text mapping disables that context. Context does not change
+paragraph boundaries or authorize importing neighboring formulas or numbers.
+
+Source-proven standalone `with` and `and` connectors are handled before the
+upstream minimum-length filter can skip them. Complete journal footers and
+publication-date metadata remain in their original form. During whole-paragraph
+recovery, numeric literals become opaque tokens only when the source grammar
+proves the supported two-group comparison with an elided second verb. Other
+counts and years remain visible to the model. Restored output still passes the
+numeric multiplicity guard; tokens and role hints do not prove semantic fidelity.
+
 `layout_guard.py` uses source glyphs and geometry to protect source-proven
 subscripts, superscripts, squared/cubed units, legacy mathematical fonts,
 list markers, contents/index structure and copyright metadata. Lists that were
@@ -130,6 +145,11 @@ merged by extraction can be separated using their original line structure;
 hanging indentation is handled during typesetting. Ambiguous glyphs are not
 replaced with invented text. Some source structures, diagram fragments and
 metadata deliberately stay in the source language.
+
+A year range incorrectly split into three adjacent source paragraphs can be
+rejoined only when the original line shares its baseline, font, size and
+XObject, and its glyph adjacency is unambiguous. The repair retains original
+glyph objects and their order; it does not synthesize a missing year or dash.
 
 `pdf_links.py` captures source-to-target paragraph/line relationships and
 restores supported URI and document-page links after reflow. It maps the source

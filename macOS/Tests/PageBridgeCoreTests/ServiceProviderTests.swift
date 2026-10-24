@@ -17,6 +17,9 @@ final class ServiceProviderTests: XCTestCase {
         let id = UUID()
         for (endpoint, kind, expected) in [
             ("https://api.deepseek.com/v1/", "openai", ServiceProvider.deepSeek),
+            ("https://dashscope.aliyuncs.com/compatible-mode/v1", "openai", .alibaba),
+            ("https://api.siliconflow.cn/v1", "openai", .siliconFlow),
+            ("https://api.openai.com/v1", "openai", .openAI),
             ("https://api.deepseek.com.proxy.example/v1", "openai", .custom),
             ("https://custom.example/team/v1", "openai", .custom),
             ("http://localhost:11435/custom/api", "ollama", .ollama)

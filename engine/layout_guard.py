@@ -14,7 +14,7 @@ import math
 import re
 import threading
 
-GUARD_VERSION = 12
+GUARD_VERSION = 13
 _lock = threading.RLock()
 _installed = False
 _original_process_page = None
@@ -558,6 +558,7 @@ def _guard_process_page(self, page):
         preserve_copyright_blocks(page)
         merge_caption_closers(self, page)
         merge_caption_fragments(self, page)
+        merge_source_year_range_fragments(self, page)
         preserve_trailing_equations(self, page)
         preserve_toc_leaders(self, page)
         split_structured_entries(self, page)
@@ -1024,6 +1025,86 @@ def merge_caption_fragments(finder, page):
     return len(removed)
 
 
+def merge_source_year_range_fragments(finder, page):
+    """Restore a source line split around a separately detected year-range dash.
+
+    Only three consecutive source paragraphs may participate: a one-line prose
+    prefix ending in '(YYYY', one original dash glyph, and a body paragraph
+    beginning with 'YY)' or 'YYYY)'. The entire boundary line must share its
+    baseline, face, size and XObject; every range glyph must touch its next
+    neighbor within a fraction of a space. No text/glyph is created, sorted or
+    guessed, and the remainder of the body keeps its existing compositions.
+    """
+    paragraphs = list(page.pdf_paragraph)
+    page_chars = list(page.pdf_character)
+    page_chars.extend(c for p in paragraphs for comp in p.pdf_paragraph_composition
+                      for c in _composition_characters(comp))
+    occurrences = Counter(id(c) for c in page_chars)
+    removed, merged = set(), 0
+    for left, separator, right in zip(paragraphs, paragraphs[1:], paragraphs[2:]):
+        if (any(id(p) in removed or p.vertical for p in (left, separator, right))
+                or left.layout_label not in {'plain text', 'text'}
+                or right.layout_label != left.layout_label
+                or separator.layout_label not in {'plain text', 'text', 'title', 'fallback_line'}
+                or len(left.pdf_paragraph_composition) != 1
+                or len(separator.pdf_paragraph_composition) != 1
+                or not right.pdf_paragraph_composition
+                or len({p.xobj_id for p in (left, separator, right)}) != 1):
+            continue
+        line_parts = [_physical_line(p.pdf_paragraph_composition[0].pdf_line)
+                      for p in (left, separator, right)]
+        if any(info is None for info in line_parts):
+            continue
+        first, middle, last = [info[0] for info in line_parts]
+        left_text = ''.join(c.char_unicode for c in first)
+        right_text = ''.join(c.char_unicode for c in last)
+        opening = re.search(r'\(([12]\d{3})$', left_text)
+        closing = re.match(r'(\d{2}|[12]\d{3})\)\s*[A-Za-z]', right_text)
+        if (not opening or not closing or len(re.findall(r'[A-Za-z]{2,}', left_text[:opening.start()])) < 3
+                or len(middle) != 1 or middle[0].char_unicode not in {'–', '-'}):
+            continue
+        start_year, ending = int(opening[1]), closing[1]
+        end_year = int(ending) if len(ending) == 4 else start_year // 100 * 100 + int(ending)
+        if not start_year <= end_year <= start_year + 100:
+            continue
+        range_chars = first[-5:] + middle + last[:len(ending) + 1]
+        if ''.join(c.char_unicode for c in range_chars) != opening[0] + middle[0].char_unicode + ending + ')':
+            continue  # The range must map one-to-one to original glyphs.
+        anchor = middle[0]
+        size = anchor.pdf_style.font_size
+        boundary_chars = first + middle + last
+        visible = [c for c in boundary_chars if c.char_unicode.strip()]
+        if (any(c.pdf_style.font_id != anchor.pdf_style.font_id
+                or abs(c.pdf_style.font_size - size) > .02
+                or abs(c.box.y - anchor.box.y) > size * .05
+                or c.xobj_id != anchor.xobj_id or c.xobj_id != left.xobj_id
+                or c.formula_layout_id is not None for c in visible)
+                or any(c.pdf_character_id is None or len(c.char_unicode) != 1
+                       or c.box.x2 <= c.box.x or occurrences[id(c)] != 1 for c in range_chars)
+                or any(not -size * .03 <= b.box.x - a.box.x2 <= size * .12
+                       for a, b in zip(range_chars, range_chars[1:]))):
+            continue
+        member_ids = {id(c) for c in boundary_chars}
+        if (len(member_ids) != len(boundary_chars)
+                or any(_finite_character(c) and isinstance(c.char_unicode, str) and c.char_unicode.strip()
+                       and id(c) not in member_ids and c.xobj_id == anchor.xobj_id
+                       and abs(c.box.y - anchor.box.y) <= size * .25
+                       and c.box.x < range_chars[-1].box.x2 and c.box.x2 > range_chars[0].box.x
+                       for c in page_chars)):
+            continue  # An intervening/overprinted source glyph makes adjacency ambiguous.
+        line = right.pdf_paragraph_composition[0].pdf_line
+        line.pdf_character = boundary_chars
+        finder.update_line_data(line)
+        finder.update_paragraph_data(right, update_unicode=True)
+        removed.update((id(left), id(separator)))
+        merged += 1
+    if merged:
+        page.pdf_paragraph = [p for p in page.pdf_paragraph if id(p) not in removed]
+        with _lock:
+            _counters['mergedSourceYearRanges'] += merged
+    return merged
+
+
 _LINE_SI_UNIT = re.compile(r'(?:[pnumkMGTμµ]?(?:Ω|F|H|V|A|W|Hz|s|m|J|K))\Z')
 
 
@@ -1357,6 +1438,7 @@ def snapshot():
                 "preservedIndexReferenceLines": _counters["preservedIndexReferenceLines"],
                 "mergedCaptionClosers": _counters["mergedCaptionClosers"],
                 "mergedCaptionFragments": _counters["mergedCaptionFragments"],
+                "mergedSourceYearRanges": _counters["mergedSourceYearRanges"],
                 "preservedTrailingEquationParagraphs": _counters["preservedTrailingEquationParagraphs"],
                 "preservedTrailingEquationLines": _counters["preservedTrailingEquationLines"],
                 "preservedTrailingEquationGlyphs": _counters["preservedTrailingEquationGlyphs"],
