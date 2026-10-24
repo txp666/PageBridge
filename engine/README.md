@@ -5,12 +5,12 @@ uses the official `pdf2zh_next.high_level.do_translate_async_stream` API;
 Swift owns import, Keychain, scheduling, cancellation deadlines, the PDFKit
 reader and export. The browser prototype is not part of this runtime.
 
-The current source targets **0.1.4, under validation**. The frozen v8 candidate
-passed 359 Python tests and offline validation replays of four actual paragraphs
-on 2026-10-24. All five complete documents are being translated serially and
-still require full review. The preceding v6 full Wind run rejected four
-paragraphs and published no accepted output. See
-[the verification record](../docs/VERIFICATION.md) for current results.
+The current source targets **0.1.4, under validation**. Acceptance covers five
+complete documents (112 source pages) using the same frozen runtime and local
+model. Unit tests, targeted model probes and saved-response replays are recorded
+separately from full PDF and packaged-app acceptance. See
+[the verification record](../docs/VERIFICATION.md) for current results and pending
+checks.
 
 ## Locked runtime
 

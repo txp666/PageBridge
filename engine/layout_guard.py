@@ -14,7 +14,7 @@ import math
 import re
 import threading
 
-GUARD_VERSION = 15
+GUARD_VERSION = 16
 _lock = threading.RLock()
 _installed = False
 _original_process_page = None
@@ -154,10 +154,12 @@ def repair_subscript_offsets(page):
 def _guard_styles_process_page(self, page):
     split_source_physical_lines(self, page)
     result = _original_styles_process_page(self, page)
+    bind_source_subscript_indices(self, page)
     repair_subscript_offsets(page)
     repair_script_following_formula_offsets(page)
     register_script_bindings(page)
     rejoin_source_column_sentence_tails(self, page)
+    rejoin_source_column_orphan_heads(self, page)
     return result
 
 
@@ -303,6 +305,279 @@ def rejoin_source_column_sentence_tails(styler, page):
     if repaired:
         with _lock:
             _counters['rejoinedSourceColumnSentenceTails'] += repaired
+    return repaired
+
+
+def rejoin_source_column_orphan_heads(styler, page):
+    """Complete an explicit ``both ...s.`` across two source columns.
+
+    Move only the short, ordinary source noun ending the sentence, retaining
+    its glyphs and both paragraph boxes. A footer may occur between the body
+    paragraphs in the parser stream only when it lies wholly below them.
+    This is not a general cross-column sentence merger.
+    """
+    from babeldoc.format.pdf.document_il.utils.layout_helper import is_same_style
+
+    config = getattr(styler, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    minimum = getattr(config, 'min_text_length', 0)
+    def same_body_style(x, y):
+        if (not x or not y or x.font_id != y.font_id
+                or abs(x.font_size-y.font_size) > .02):
+            return False
+        if is_same_style(x,y):
+            return True
+        # Some PDFs vary an unused stroke width between filled black text
+        # runs. No other differing color/graphics operator qualifies here.
+        def black_fill(style):
+            commands = getattr(style.graphic_state, 'passthrough_per_char_instruction', '') or ''
+            return bool(re.search(r'(?<!\S)0 0 0 (?:rg|sc)(?!\S)', commands)
+                        and re.fullmatch(r'(?:(?:0 0 0 (?:rg|RG|sc)|[0-9]+(?:\.[0-9]+)? w)\s*)+', commands))
+        return black_fill(x) and black_fill(y)
+    repaired = 0
+    paragraphs = page.pdf_paragraph
+    for index, left in enumerate(paragraphs):
+        a = _source_body_box(left)
+        if not a or not re.search(r'\bboth\s*$', left.unicode or ''):
+            continue
+        following = index + 1
+        while (following < len(paragraphs)
+               and paragraphs[following].layout_label == 'abandon'
+               and paragraphs[following].box
+               and paragraphs[following].box.y2 < a[1]):
+            following += 1
+        if following >= len(paragraphs):
+            continue
+        right = paragraphs[following]
+        b = _source_body_box(right)
+        match = re.match(r'(?P<head>[a-z]{2,25}(?:\s+[a-z]{2,25}){0,2}s)\.\s+(?=[A-Z])',
+                         right.unicode or '')
+        if (not b or not match or not left.debug_id or not right.debug_id
+                or right.first_line_indent is not False
+                or left.xobj_id != right.xobj_id
+                or not same_body_style(left.pdf_style, right.pdf_style)):
+            continue
+        size = a[4]
+        if (not .5*size <= b[0]-a[2] <= 8*size
+                or not .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18
+                or abs(a[1]-b[1]) > 3*size
+                or b[3]-b[1] < 8*size
+                or len(right.unicode[match.end():]) < minimum):
+            continue
+        # Prove bottom-left to top-right among same-style body paragraphs;
+        # full-width abstracts in another font are not part of either column.
+        same = [(p, _source_body_box(p)) for p in paragraphs
+                if _source_body_box(p) and same_body_style(p.pdf_style, left.pdf_style)]
+        def overlaps(g, box):
+            return max(0, min(g[2], box[2])-max(g[0], box[0])) / min(g[2]-g[0], box[2]-box[0])
+        lc = [g for p,g in same if overlaps(g,a) >= .8]
+        rc = [g for p,g in same if overlaps(g,b) >= .8]
+        if (any(overlaps(g,a) >= .2 and overlaps(g,b) >= .2 for p,g in same)
+                or any(g[1] < a[1]-.3*size for g in lc)
+                or any(g[3] > b[3]+.3*size for g in rc)
+                or abs(max(g[3] for g in lc)-b[3]) > 3*size):
+            continue
+        if not left.pdf_paragraph_composition or not right.pdf_paragraph_composition:
+            continue
+        last = left.pdf_paragraph_composition[-1].pdf_same_style_characters
+        first = right.pdf_paragraph_composition[0].pdf_same_style_characters
+        if not last or not first or not last.pdf_character or not first.pdf_character:
+            continue
+        if (not same_body_style(last.pdf_style, left.pdf_style)
+                or not same_body_style(first.pdf_style, left.pdf_style)
+                or not re.search(r'\bboth\s*$', ''.join(c.char_unicode or '' for c in last.pdf_character))):
+            continue
+        raw = ''.join(c.char_unicode or '' for c in first.pdf_character)
+        if raw != match['head'] + '.' or len(right.pdf_paragraph_composition) < 3:
+            continue
+        # Reuse the existing separating space, rather than inventing a source
+        # glyph. Space-only style runs can use a different PDF font/size.
+        separator_comp = right.pdf_paragraph_composition[1]
+        separator = separator_comp.pdf_same_style_characters
+        if (not separator or not separator.pdf_character
+                or any(not c.char_unicode or c.char_unicode.strip()
+                       or not _finite_character(c) or c.formula_layout_id is not None
+                       for c in separator.pdf_character)):
+            continue
+        moved = first.pdf_character
+        visible = [c for c in moved if c.char_unicode.strip()]
+        if (not visible or any(not _finite_character(c) or c.formula_layout_id is not None
+                or not re.fullmatch(r'[A-Za-z. ]+', c.char_unicode or '')
+                or not same_body_style(c.pdf_style, left.pdf_style)
+                or (c.xobj_id != right.xobj_id and not (c.xobj_id is None and c.pdf_character_id is None and c.char_unicode == ' '))
+                for c in moved)
+                or abs(visible[0].box.x-b[0]) > .5*size
+                or abs(visible[0].box.y2-b[3]) > .5*size
+                or any(abs(c.box.y-visible[0].box.y) > .1*size for c in visible)
+                or any(not -.1*size <= y.box.x-x.box.x2 <= 1.2*size for x,y in zip(visible, visible[1:]))):
+            continue
+        left.pdf_paragraph_composition.extend([separator_comp, right.pdf_paragraph_composition[0]])
+        right.pdf_paragraph_composition = right.pdf_paragraph_composition[2:]
+        left.unicode = left.unicode.rstrip() + ' ' + match['head'] + '.'
+        right.unicode = right.unicode[match.end():].lstrip()
+        _rejoined_source_paragraphs[id(left)] = left
+        _rejoined_source_paragraphs[id(right)] = right
+        repaired += 1
+    if repaired:
+        with _lock:
+            _counters['rejoinedSourceColumnOrphanHeads'] += repaired
+    return repaired
+
+
+def _definition_compact(text):
+    return ''.join((text or '').split())
+
+
+def _definition_same_style(a,b):
+    return bool(a and b and a.font_id==b.font_id and a.graphic_state==b.graphic_state
+                and isinstance(a.font_size,(int,float)) and isinstance(b.font_size,(int,float))
+                and abs(a.font_size-b.font_size)<=.02)
+
+
+def _definition_chars(paragraph):
+    return [c for comp in paragraph.pdf_paragraph_composition
+            for c in _composition_characters(comp)]
+
+
+def _page_definition_pair(left_page, right_page):
+    if right_page.page_number != left_page.page_number + 1:
+        return None
+    lb = getattr(getattr(left_page, 'mediabox', None), 'box', None)
+    rb = getattr(getattr(right_page, 'mediabox', None), 'box', None)
+    if (not lb or not rb or lb != rb
+            or any(not isinstance(v, (int,float)) or not math.isfinite(v)
+                   for v in (lb.x,lb.y,lb.x2,lb.y2))):
+        return None
+    left_bodies = [(p,_source_body_box(p)) for p in left_page.pdf_paragraph]
+    right_bodies = [(p,_source_body_box(p)) for p in right_page.pdf_paragraph]
+    left_bodies = [(p,b) for p,b in left_bodies if b]
+    right_bodies = [(p,b) for p,b in right_bodies if b]
+    if not left_bodies or not right_bodies:
+        return None
+    left,a = left_bodies[-1];right,b = right_bodies[0]
+    size=max(a[4],b[4]);width=lb.x2-lb.x
+    if (left.xobj_id != 0 or right.xobj_id != 0 or right.first_line_indent is not False
+            or not left.debug_id or not right.debug_id
+            or abs(a[4]-b[4])>.02 or not _definition_same_style(left.pdf_style,right.pdf_style)
+            or not .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18
+            or a[0] < lb.x+.45*width or b[0] > lb.x+.2*width
+            or a[1] > lb.y+.15*(lb.y2-lb.y)
+            or any(g[1]<a[1]-.2*size for p,g in left_bodies if p is not left)
+            or any(g[3]>b[3]+.2*size for p,g in right_bodies if p is not right)):
+        return None
+    # Genuine two-column geometry, not unrelated boxed text at two page edges.
+    if (not any(g[2]<a[0]-.5*size and abs((g[2]-g[0])-(a[2]-a[0]))<2*size for _,g in left_bodies)
+            or not any(g[0]>b[2]+.5*size and abs((g[2]-g[0])-(b[2]-b[0]))<2*size for _,g in right_bodies)):
+        return None
+    return left,right
+
+
+def rejoin_source_page_definition_heads(translator, docs):
+    """Complete a counted-ratio definition with a source-proven short noun.
+
+    Exact scope: last body in the right column of one page; first body in the
+    left column of the immediately next page; a single unclosed plain-text
+    '(the ratio of the number of ... to the square/cube of the number of'
+    followed by one ordinary lowercase plural noun, '),', and an example.
+    This never merges paragraphs, moves formulas or changes fonts/coordinates.
+    """
+    from babeldoc.format.pdf.document_il import PdfParagraphComposition
+    config=getattr(translator,'translation_config',None)
+    if config is None or getattr(config,'skip_translation',False):return 0
+    minimum=getattr(config,'min_text_length',0)
+    repaired=0
+    for left_page,right_page in zip(docs.page,docs.page[1:]):
+        pair=_page_definition_pair(left_page,right_page)
+        if pair is None:continue
+        left,right=pair
+        ending=re.search(r'\(the ratio of the number of [a-z]{3,24} to the (?:square|cube) of the number of\s*$',left.unicode)
+        head=re.match(r'([a-z]{2,23}s\),)(?=\s+e\.g\.:?\s)',right.unicode)
+        if not ending or not head:continue
+        prefix=left.unicode[:ending.start()]
+        if prefix.count('(')!=prefix.count(')'):continue
+        fragment=head[1];remainder=right.unicode[len(fragment):].lstrip()
+        if len(remainder)<minimum or len(left.unicode)<minimum:continue
+        # The definition suffix is one pure prose composition. Formula
+        # characters elsewhere in the paragraph play no role in this proof.
+        if not left.pdf_paragraph_composition or not right.pdf_paragraph_composition:continue
+        tail=left.pdf_paragraph_composition[-1].pdf_same_style_characters
+        first=right.pdf_paragraph_composition[0].pdf_same_style_characters
+        if not tail or not first or not tail.pdf_character or not first.pdf_character:continue
+        if (not _definition_same_style(tail.pdf_style,left.pdf_style) or not _definition_same_style(first.pdf_style,right.pdf_style)
+                or _definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(left)))!=_definition_compact(left.unicode)
+                or _definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(right)))!=_definition_compact(right.unicode)):
+            continue
+        raw=''.join(c.char_unicode or '' for c in tail.pdf_character)
+        start=raw.rfind('(')
+        suffix=raw[start:]
+        if (start<0 or _definition_compact(suffix)!=_definition_compact(ending[0])
+                or not re.fullmatch(r'[A-Za-z( ]+',suffix)):
+            continue
+        # Every non-space glyph in the complete source definition is ordinary
+        # body text; a mislabeled run cannot smuggle a formula into this join.
+        offset=0;definition_chars=[]
+        for c in tail.pdf_character:
+            if offset>=start:definition_chars.append(c)
+            offset+=len(c.char_unicode or '')
+        if (not definition_chars or definition_chars[0].char_unicode!='('
+                or any(not _finite_character(c) or c.formula_layout_id is not None
+                       or c.pdf_character_id is None or c.xobj_id!=0
+                       or not _definition_same_style(c.pdf_style,left.pdf_style)
+                       for c in definition_chars if (c.char_unicode or '').strip())):
+            continue
+        # Exact native glyph boundaries, no partial ligature or generated space.
+        moved=[];assembled=''
+        for char in first.pdf_character:
+            if len(assembled)>=len(fragment):break
+            moved.append(char);assembled+=char.char_unicode or ''
+        if assembled!=fragment or len(moved)!=len(fragment):continue
+        kept=first.pdf_character[len(moved):]
+        following=next((c for c in kept if (c.char_unicode or '').strip()),None)
+        previous=next((c for c in reversed(tail.pdf_character) if (c.char_unicode or '').strip()),None)
+        if following is None or previous is None:continue
+        size=left.pdf_style.font_size;baseline=moved[0].box.y if moved[0].box else None
+        if (baseline is None or any(not _finite_character(c) or c.formula_layout_id is not None
+                or c.pdf_character_id is None or c.xobj_id!=0 or not _definition_same_style(c.pdf_style,right.pdf_style)
+                or not re.fullmatch(r'[a-z),]',c.char_unicode or '')
+                or abs(c.box.y-baseline)>.1*size for c in moved)
+                or not _finite_character(previous) or not _finite_character(following)
+                or previous.formula_layout_id is not None or following.formula_layout_id is not None
+                or abs(moved[0].box.x-right.box.x)>.2*size
+                or abs(moved[0].box.y2-right.box.y2)>.2*size
+                or any(not -.1*size<=b.box.x-a.box.x2<=.2*size for a,b in zip(moved,moved[1:]))
+                or abs(following.box.y-baseline)>.1*size
+                or not -.1*size<=following.box.x-moved[-1].box.x2<=1.2*size
+                or abs(previous.box.x2-left.box.x2)>size):
+            continue
+        # Same ID is not sufficient across pages. Require the exact PDF font
+        # resource, encoding and complete recorded font metrics to agree.
+        source_fonts={f.font_id:f for f in right_page.pdf_font}
+        target_fonts={f.font_id:f for f in left_page.pdf_font}
+        font=source_fonts.get(right.pdf_style.font_id)
+        if (font is None or len([f for f in right_page.pdf_font if f.font_id==font.font_id])!=1
+                or len([f for f in left_page.pdf_font if f.font_id==font.font_id])!=1
+                or not isinstance(font.xref_id,int) or font.xref_id<=0
+                or target_fonts.get(font.font_id)!=font):
+            continue
+        moved_run,kept_run=copy.copy(first),copy.copy(first)
+        moved_run.pdf_character=moved;kept_run.pdf_character=kept
+        for run in (moved_run,kept_run):
+            run.box=copy.copy(first.box)
+            if run.box:
+                run.box.x=min(c.box.x for c in run.pdf_character)
+                run.box.y=min(c.box.y for c in run.pdf_character)
+                run.box.x2=max(c.box.x2 for c in run.pdf_character)
+                run.box.y2=max(c.box.y2 for c in run.pdf_character)
+        left.pdf_paragraph_composition.append(PdfParagraphComposition(pdf_same_style_characters=moved_run))
+        right.pdf_paragraph_composition[0]=PdfParagraphComposition(pdf_same_style_characters=kept_run)
+        left.unicode=left.unicode.rstrip()+' '+fragment
+        right.unicode=remainder
+        _rejoined_source_paragraphs[id(left)]=left
+        _rejoined_source_paragraphs[id(right)]=right
+        repaired+=1
+    if repaired:
+        with _lock:_counters['rejoinedSourcePageDefinitionHeads']+=repaired
     return repaired
 
 
@@ -809,6 +1084,68 @@ def bind_source_formula_fragments(styler, page):
     return descriptors + decimals
 
 
+def bind_source_subscript_indices(styler, page):
+    """Rejoin a native two-index subscript split around an ordinary comma.
+
+    Only base/index, comma and second index on one source line qualify. The
+    small glyphs must be contiguous, equally sized and lowered together. All
+    original glyph objects, graphics and positions remain unchanged.
+    """
+    from babeldoc.format.pdf.document_il import PdfParagraphComposition
+    repaired = 0
+    for paragraph in page.pdf_paragraph:
+        if paragraph.vertical:
+            continue
+        comps = paragraph.pdf_paragraph_composition
+        index = 0
+        while index + 2 < len(comps):
+            left, middle, right = (comps[index].pdf_formula,
+                                  comps[index+1].pdf_same_style_characters,
+                                  comps[index+2].pdf_formula)
+            index += 1
+            if (left is None or middle is None or right is None
+                    or left.pdf_curve or left.pdf_form or right.pdf_curve or right.pdf_form
+                    or left.line_id is None or left.line_id != right.line_id
+                    or left.y_offset or right.y_offset
+                    or len(left.pdf_character) != 2 or len(middle.pdf_character) != 1):
+                continue
+            base, first = left.pdf_character
+            comma = middle.pdf_character[0]
+            visible = [c for c in right.pdf_character if (c.char_unicode or '').strip()]
+            if len(visible) != 1 or right.pdf_character[0] is not visible[0]:
+                continue
+            second = visible[0]
+            native = [base, first, comma, second]
+            if (any(not _finite_character(c) or c.vertical
+                    or c.xobj_id != paragraph.xobj_id or c.formula_layout_id is not None
+                    or c.pdf_character_id is None or c.render_order is None for c in native)
+                    or not all(re.fullmatch('[A-Za-z]', c.char_unicode or '') for c in (base,first,second))
+                    or comma.char_unicode != ','):
+                continue
+            big, small = base.pdf_style.font_size, first.pdf_style.font_size
+            if (not .6 <= small/big <= .8
+                    or not -.4*big <= first.box.y-base.box.y <= -.12*big
+                    or any(abs(c.pdf_style.font_size-small) > .02 or abs(c.box.y-first.box.y) > .02
+                           for c in (comma,second))
+                    or not base.pdf_style.font_id == first.pdf_style.font_id == second.pdf_style.font_id
+                    or any(c.pdf_style.graphic_state != base.pdf_style.graphic_state for c in native)
+                    or not -.15*big <= first.box.x-base.box.x2 <= .2*big
+                    or any(not -.02 <= b.box.x-a.box.x2 <= .15*small for a,b in zip(native[1:],native[2:]))
+                    or any(b.render_order != a.render_order+1 for a,b in zip(native,native[1:]))
+                    or any(c.char_unicode != ' ' or c.pdf_character_id is not None or c.xobj_id is not None
+                           for c in right.pdf_character[1:])):
+                continue
+            merged = copy.copy(left)
+            merged.pdf_character = left.pdf_character + middle.pdf_character + right.pdf_character
+            styler.update_formula_data(merged)
+            comps[index-1:index+2] = [PdfParagraphComposition(pdf_formula=merged)]
+            repaired += 1
+    if repaired:
+        with _lock:
+            _counters['boundSourceSubscriptIndices'] += repaired
+    return repaired
+
+
 def _guard_should_split_formula(self, formula):
     if id(formula) in getattr(_formula_context, 'encoded_commas', ()):
         return False
@@ -1072,8 +1409,14 @@ def split_structured_entries(finder, page):
         is_lettered = (len(letters) >= 2 and _aligned_entry_markers([m for _, m in letters]) and
                        all(b[1]['value'] == a[1]['value'] + 1 for a, b in zip(letters, letters[1:])))
         is_references = len(authors) >= 2 and continuation and bool(re.search(r'\b(?:19|20)\d{2}\b', ' '.join(texts)))
+        bullet_rows = [i for i,text in enumerate(texts) if re.match(r'^[•▪◦●]\s*\S', text)]
+        is_bulleted = (len(bullet_rows) >= 2
+                       and max(starts[i].box.x for i in bullet_rows)-min(starts[i].box.x for i in bullet_rows) < 1
+                       and len({starts[i].char_unicode for i in bullet_rows}) == 1
+                       and max(starts[i].pdf_style.font_size for i in bullet_rows)-min(starts[i].pdf_style.font_size for i in bullet_rows) <= .02)
         boundaries = ([i for i, _ in numeric] if is_numbered else
-                      [i for i, _ in letters] if is_lettered else authors if is_references else [])
+                      [i for i, _ in letters] if is_lettered else
+                      bullet_rows if is_bulleted else authors if is_references else [])
         markers = dict(numeric if is_numbered else letters if is_lettered else [])
         # Already separated bullets still need their original hanging column.
         is_bullet = bool(re.match(r'^[•▪◦●]\s*', texts[0]))
@@ -1757,7 +2100,10 @@ def snapshot():
                 "restoredPhysicalLineBreaks": _counters['restoredPhysicalLineBreaks'],
                 "boundSourceFormulaDescriptors": _counters['boundSourceFormulaDescriptors'],
                 "boundSourceFormulaDecimals": _counters['boundSourceFormulaDecimals'],
+                "boundSourceSubscriptIndices": _counters['boundSourceSubscriptIndices'],
+                "rejoinedSourcePageDefinitionHeads": _counters['rejoinedSourcePageDefinitionHeads'],
                 "rejoinedSourceColumnSentenceTails": _counters['rejoinedSourceColumnSentenceTails'],
+                "rejoinedSourceColumnOrphanHeads": _counters['rejoinedSourceColumnOrphanHeads'],
                 "legacyMathFontMatches": _counters['legacyMathFontMatches'],
                 "preservedLegacySymbolFormulas": _counters['preservedLegacySymbolFormulas'],
                 "preservedLegacyCommaFormulas": _counters['preservedLegacyCommaFormulas'],

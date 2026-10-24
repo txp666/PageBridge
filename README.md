@@ -4,7 +4,7 @@
 
 原生 macOS PDF 翻译与对照阅读应用。使用 SwiftUI、AppKit 和 PDFKit 构建界面，通过 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 保留 PDF 的主要版面结构，支持本机 Ollama 与自定义 OpenAI 兼容 API。
 
-**当前源码：0.1.4 开发中。** 厂商选择、模型列表、示例库和新图标已加入源码。2026-10-24 候选 v8 的 359 项 Python 测试通过，五份目标文档共 112 页正在串行重译，尚未完成全文验收。全部复核通过后再打包，实际结果以 [验证记录](docs/VERIFICATION.md) 为准。
+**当前源码：0.1.4 开发中，尚未重新打包。** 厂商选择、模型列表、示例库和新图标已加入源码。正在对五份目标文档共 112 页进行真实翻译验收，修复人工复核发现的语义、列表及链接问题。全部复核通过后再打包，实际结果以 [验证记录](docs/VERIFICATION.md) 为准。
 
 ## 开始使用
 
@@ -85,6 +85,6 @@ PDF 解析与排版在本机完成。使用在线 API 时，待翻译文本发�
 - [引擎说明](engine/README.md)：NDJSON 协议、内容保护、取消和缓存。
 - [版本记录](CHANGELOG.md)、[第三方来源](docs/THIRD_PARTY.md)、[图标说明](assets/README.md)。
 
-`macOS/` 是原生应用，`engine/` 是翻译运行时与测试，`scripts/` 是构建和质量工具，`assets/` 与 `demos/` 是随包资源。Git 排除私有 PDF、密钥、本地验证材料、生成译文、虚拟环境和应用包；公开示例及其归属说明纳入源码。浏览器原型不参与原生运行链路。
+`macOS/` 是原生应用，`engine/` 是翻译运行时与测试，`scripts/` 是构建和质量工具，`assets/` 与 `demos/` 是随包资源。私有 PDF、验证材料和生成译文保存在应用数据目录或被 Git 忽略的 `validation/`、`output/` 中；密钥文件、虚拟环境和应用包也不纳入源码。五份公开示例及其归属说明纳入源码。浏览器原型不参与原生运行链路。
 
 PDFMathTranslate-next 与 BabelDOC 使用 AGPL-3.0。依赖源码和许可元数据随本地包保留；本项目尚未另行声明覆盖全部原创源码的分发许可证。第三方许可、资源归属与对外发行事项见 [第三方来源](docs/THIRD_PARTY.md)。

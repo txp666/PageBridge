@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 import re
+from statistics import median
 import threading
 import unicodedata
 
@@ -123,7 +124,12 @@ def match_localized_callout(source_chars, target_chars, selected, matrix):
     pattern = re.compile(r'(?<![A-Za-z])(?P<label>Fig(?:ure)?|Table|Eq(?:uation)?)\.?\s*\(?(?P<number>\d+[a-z]?)\)?(?![A-Za-z0-9])', re.I)
     candidates = []
     for match in pattern.finditer(source):
-        covered = {source_indexes[i] for i in range(match.start(), match.end()) if source[i].strip()}
+        # Producers may link only the label and number in "(see Fig. 1)".
+        # The enclosing parenthesis is prose punctuation, not part of either
+        # semantic component of the callout. Require both components to be
+        # source-attested by the same action; never expand the target hotspot.
+        covered = {source_indexes[i] for name in ('label', 'number')
+                   for i in range(*match.span(name)) if source[i].strip()}
         if covered <= selected:
             candidates.append(match)
     result = []
@@ -132,7 +138,8 @@ def match_localized_callout(source_chars, target_chars, selected, matrix):
         localized = ('图' if label.startswith('fig') else '表' if label == 'table' else '式')
         number = match['number']
         # Parentheses around equation numbers can be retained or localized.
-        query = re.compile(re.escape(localized) + r'\(?' + re.escape(number) + r'\)?(?![0-9a-z])', re.I)
+        query = re.compile(re.escape(localized) + r'(?:\(' + re.escape(number)
+                           + r'\)|' + re.escape(number) + r')(?![0-9a-z])', re.I)
         targets = list(query.finditer(target))
         equivalent = [item for item in pattern.finditer(source)
                       if item['number'] == number and item['label'].lower() == label]
@@ -142,6 +149,85 @@ def match_localized_callout(source_chars, target_chars, selected, matrix):
         for found in targets:
             indexes = sorted(set(target_indexes[found.start():found.end()]))
             result.extend(_line_rects([target_chars[i] for i in indexes], matrix))
+    return result
+
+
+def match_linked_native_script(source_chars, target_chars, selected, matrix):
+    """Map one source-linked small native digit, never its body-text matches.
+
+    The original font/glyph signature and smaller-size role must occur exactly
+    once in both versions of this same paragraph. No page-wide number search,
+    ordinal assignment, old rectangle or guessed footnote destination is used.
+    """
+    if len(selected) != 1:
+        return []
+    original = source_chars[next(iter(selected))]
+    style = original.pdf_style
+    if (not re.fullmatch(r'[0-9]', original.char_unicode or '') or style is None
+            or not style.font_id or original.pdf_character_id is None):
+        return []
+    def candidates(chars):
+        sizes = [c.pdf_style.font_size for c in chars if c.pdf_style is not None
+                 and c.pdf_style.font_size and _normal(c.char_unicode or '')]
+        if not sizes:
+            return []
+        body = median(sizes)
+        return [c for c in chars if c.pdf_style is not None
+                and c.char_unicode == original.char_unicode
+                and c.pdf_style.font_id == style.font_id
+                and c.pdf_character_id == original.pdf_character_id
+                and c.pdf_style.font_size is not None
+                and 0 < c.pdf_style.font_size < body * .85]
+    source_matches, target_matches = candidates(source_chars), candidates(target_chars)
+    if (len(source_matches) != 1 or source_matches[0] is not original
+            or len(target_matches) != 1):
+        return []
+    return _line_rects(target_matches, matrix)
+
+
+def _citation_entries(text):
+    result = []
+    for group in re.finditer(r'\([^()]{1,1000}\)', text):
+        start = group.start() + 1
+        for part in group[0][1:-1].split(';'):
+            if re.fullmatch(r"[A-Z][A-Za-zÀ-ž.'’&\-]{1,},(?:19|20)\d{2}[a-z]?", part):
+                result.append((start, start+len(part), part))
+            start += len(part) + 1
+    return result
+
+
+def match_citation_fragment(source_chars, target_chars, selected, action_selected, matrix):
+    """Use a complete unchanged author/year item to locate its linked part.
+
+    A year alone is never assigned by occurrence order. If the same complete
+    item occurs twice, every equivalent source fragment must have this same
+    source action; otherwise it remains unmapped. Only the original linked
+    substring becomes clickable, not the surrounding citation or prose.
+    """
+    source, source_indexes = _text_map(source_chars)
+    target, target_indexes = _text_map(target_chars)
+    offsets = [i for i, index in enumerate(source_indexes) if index in selected]
+    if not offsets or offsets != list(range(min(offsets), max(offsets)+1)):
+        return []
+    start, end = offsets[0], offsets[-1]+1
+    entries = _citation_entries(source)
+    containers = [entry for entry in entries if entry[0] <= start and end <= entry[1]]
+    if len(containers) != 1:
+        return []
+    anchor = containers[0]
+    left, right = start-anchor[0], end-anchor[0]
+    equivalent = [entry for entry in entries if entry[2] == anchor[2]]
+    for entry in equivalent:
+        needed = set(source_indexes[entry[0]+left:entry[0]+right])
+        if not needed <= action_selected:
+            return []
+    targets = [entry for entry in _citation_entries(target) if entry[2] == anchor[2]]
+    if len(targets) != len(equivalent):
+        return []
+    result = []
+    for entry in targets:
+        indexes = sorted(set(target_indexes[entry[0]+left:entry[0]+right]))
+        result.extend(_line_rects([target_chars[i] for i in indexes], matrix))
     return result
 
 
@@ -263,6 +349,14 @@ def capture_target(page):
                 link = info['links'][index]
                 key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
                 rects = match_localized_callout(source_chars, target_chars, action_selections[key], info['matrix'])
+            if not rects:
+                rects = match_linked_native_script(source_chars, target_chars, selected, info['matrix'])
+            if not rects:
+                link = info['links'][index]
+                key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
+                if link['kind'] in (1, 4):  # PyMuPDF GoTo / named page destinations.
+                    rects = match_citation_fragment(source_chars, target_chars, selected,
+                                                   action_selections[key], info['matrix'])
             if rects:
                 mapped.setdefault(index, []).extend(rects)
     with _lock:
