@@ -2,16 +2,27 @@
 
 ## 0.3.0 / build 12 — GitHub CI 与应用内更新
 
-公开仓库为 https://github.com/txp666/PageBridge。此构建增加 Sparkle 2.10.0 应用内更新，版本与公钥分别保存在 `VERSION.json`、`update-config.json`；旧 build 11 本地候选另行保留，不作为本次公开安装包。
+2026-10-25，已公开 [v0.3.0 Release](https://github.com/txp666/PageBridge/releases/tag/v0.3.0)，不可变标签 `v0.3.0` 对应提交 `58a2ac8628702cd1234d2db20891349387f9425c`。此构建包含 Sparkle 2.10.0 应用内更新；版本与公钥分别保存在 `VERSION.json`、`update-config.json`。下节 build 11 是未包含 OTA 的历史本地候选，不作为此次公开安装包。
 
-- Swift 共 129 项，127 通过、2 项可选集成测试跳过。新增翻译忙碌时延后安装、恢复及取消状态测试。最终原生 Release 编译通过。
-- Sparkle 使用 HTTPS 更新源、Ed25519 更新包与 feed 签名，下载校验在解压前执行。应用菜单支持检查更新和自动检查开关；首次自动检查按 Sparkle 的标准流程征求同意，不静默下载或安装，不发送系统统计。翻译中暂缓更新操作。
-- 更新私钥保存在维护者的专用钥匙串条目，并经明确授权配置为该仓库的加密 `SPARKLE_PRIVATE_KEY` Secret；源码只包含公钥。GitHub 私密漏洞报告已启用。
-- `CI` 对主分支和 PR 运行检查；标签发布工作流对 `v*` 执行测试、打包、签名与发行验证。正式公开包以标签对应工作流成功生成的产物及其校验文件为准，不能拿旧本地包替换。
+正式应用 ZIP `PageBridge-0.3.0-macOS-arm64.zip`：**221,331,603 字节（约 221.3 MB）**，SHA-256：`547c660faa89979a90c66bb6f2fec8892cf8711414669cff475297ce7443b744`。配套项目源码、第三方源码、三份 SHA-256 文件及签名 `appcast.xml` 与应用包同页提供，共 7 项公开资产。
 
-本节记录实现与本地检查；GitHub 工作流结论、公开资产与真实 OTA 安装的最终证据由发行工作流报告和本机 `validation/github-030/` 保存。没有重新执行全文模型翻译；下列长文档质量结论仍对应各自历史输出。应用目前仍使用 ad-hoc 签名，未完成 Apple Developer ID 签名和公证。
+| 检查 | 结果与边界 |
+|---|---|
+| 标签源码测试 | 修复提交 `58a2ac8` 的云端 CI 已通过：Swift **129 项，127 通过、2 项可选集成测试跳过**，引擎 **655 项**，当时发布脚本 **40 项**。实际 GitHub 首轮暴露 Foundation 对未创建目录的 URL 尾斜杠提示差异，已改用规范路径比较、拒绝终端符号链接并增加三个回归用例。 |
+| 发布执行 | [Release run 40122587584](https://github.com/txp666/PageBridge/actions/runs/40122587584) 已完成测试、构建、签名、草稿资产核验及公开发布；最后的匿名 REST 复验收到 HTTP 403，导致该次运行总体为失败。此红色状态不能写成整次工作流通过，也不表示此前已公开资产被撤回。 |
+| 独立公开复验 | 后续只读 [Verify published release run 40123279269](https://github.com/txp666/PageBridge/actions/runs/40123279269) **成功**：7 项资产 SHA-256、三份 ZIP 的 HTTP Range `206`、latest feed、feed 与应用 ZIP 的 Ed25519 签名均通过；源码归档与标签源码一致。该复验没有重建、覆盖或重新发布 v0.3.0 资产。 |
+| 最终包与安装一致性 | 公开最终包通过私有 Python 导入隔离、锁定依赖、worker health 和运行前后签名检查。OTA 安装后的 12,458 个文件树项目与公开 ZIP 解压包的内容、权限模式、符号链接全部一致，无缺失、额外或不匹配项目。 |
+| 用户数据复核 | 基线 104 个 PDF／JSON 文件均存在，其中 102 个文件字节未变；13 个文档 ID 保留。`library.json` 和 `documents.json` 在阅读及用户新翻译过程中有正常写入变化，因此不声称 104 个文件哈希全部不变或完成完全静态数据验收。 |
+| 真实 OTA 升级 | 使用包含更新器的专用 build 11 验证应用，经更新窗口交互完成下载、替换与重启到正式 build 12；进程 PID 变化，重启后的原生 About 窗口显示 `0.3.0 (12)`，再次检查显示当前已是最新版本。此验证应用不是下节无 OTA 的旧本地候选。 |
+| 翻译期间检查入口 | 升级后用户启动了 `regnann` 翻译，原生更新菜单显示禁用状态及“翻译期间暂缓更新”，翻译结束后入口恢复。此项证实翻译运行时的检查入口保护；没有实测在更新下载／安装过程中再启动翻译的完整并发场景，也不声称无用户交互自动完成安装。 |
 
-GitHub 首轮 Swift 编译成功，但失败诊断持久化测试发现 Foundation 在解析未创建目录时丢失 URL 尾斜杠提示，导致目录对象比较误报。修复改用规范路径比较，并明确拒绝终端符号链接；新增三个回归用例，本机完整 129 项测试通过（2 项跳过）。修复提交 `58a2ac8` 的云端 CI 已通过：Swift 129 项（2 项跳过）、引擎 655 项、发布脚本 40 项。首次标签发布也通过构建、包验证和签名，但在读取已上传的 GitHub draft 元数据时遇到 404；已修复工作流的草稿查询，并支持从 main 对原标签重跑，不移动标签。
+Sparkle 使用 HTTPS 更新源，要求更新包与 feed 的 Ed25519 签名，解压前校验下载。应用菜单提供“检查更新…”与自动检查开关；首次自动检查征求同意，不静默下载或安装，不发送系统配置画像。更新私钥保存在维护者专用钥匙串条目，并经授权配置为此仓库的加密 `SPARKLE_PRIVATE_KEY` Secret；源码仅包含公钥，GitHub 私密漏洞报告已启用。
+
+发布自动化首次还遇到 draft 元数据查询 404，已修复草稿查询并允许从 main 对原标签受控重跑，不移动标签。主分支 `e6c9e0a` 的最终 [CI run 40123278215](https://github.com/txp666/PageBridge/actions/runs/40123278215) **成功**：Swift 129 项（127 通过、2 项跳过）、引擎 655 项、发布脚本 47 项，0 失败。该主分支包含后续发布工具修订，与不可变发行标签的源码及当时 40 项脚本测试记录分别保存。
+
+证据位于 `validation/github-030/`：`public-source-commit.json`、`release-published-run/`、`independent-ci-verification/published.json`、`independent-ci-verification/run.json`，以及 `ota-before-about.*`、`ota-update-found.*`、`ota-after-about.*`、`ota-installed-bundle.json`、`ota-verification.json`、`ota-up-to-date.txt`。本机 `dist/` 已替换为公开的 7 项发行资产和对应 App；旧候选另存于 `validation/github-030/pre-ci/`。本机验证材料不进入源码归档。
+
+本轮发布验收没有重新执行全文模型翻译。用户在升级后发起的 `regnann.pdf` 翻译为 292/293 段通过，1 段被完整性检查拒绝，应用未提交本次译文并保留上次结果；该运行不计作整篇翻译质量通过。下列长文档质量结论仍对应各自历史输出。应用仍采用 ad-hoc 签名，未完成 Apple Developer ID 签名与公证；不新增 macOS 14 或 Intel 实机矩阵结论。
 
 ## 0.3.0 / build 11 — 本地候选（未包含 OTA）
 

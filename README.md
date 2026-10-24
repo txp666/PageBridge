@@ -47,7 +47,7 @@
 | [项目源码 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip.sha256) | 对应版本源码、测试、构建脚本和锁文件 |
 | [第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip.sha256) | 随包 AGPL 组件的源码与清单 |
 
-文件是否已公开、大小和最终哈希以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.3.0)为准。
+文件大小和最终哈希以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.3.0)为准。
 
 1. 退出旧版，解压 ZIP，将 `PageBridge.app` 放入“应用程序”；更新时替换旧应用文件。
 2. 打开应用，在 **PageBridge → About PageBridge** 确认版本为 `0.3.0 (12)`。
@@ -120,7 +120,7 @@ python3 scripts/verify-bundle.py
 
 产物是 `dist/PageBridge.app`。完整测试、真实 PDF 验收与发布命令见[开发指南](docs/DEVELOPMENT.md)。版本来自 `VERSION.json`，build 必须递增；公开标签与资产不重打或覆盖。CI 执行 main／PR 测试，版本标签触发构建、签名、draft 资产核验和发布；具体结果见 [Actions](https://github.com/txp666/PageBridge/actions)。
 
-本轮 Swift 测试共 129 项，127 通过、2 项可选测试跳过；引擎 655 项单元测试在此前打包阶段通过。公开示例已验证文献搜索、站点验证、下载和去重打开，本次未重新执行全文模型翻译。CI 发布与 OTA 实测结果按[验证记录](docs/VERIFICATION.md)区分，不把历史验证当作本次新运行。
+最终 CI 通过：Swift 129 项（127 通过、2 项可选测试跳过）、引擎 655 项、发布脚本 47 项。v0.3.0 已公开，独立公开资产复验与交互式 OTA 升级至 build 12 已完成。公开示例已验证文献搜索、站点验证、下载和去重打开；本次未重新执行全文模型翻译。完整范围及边界见[验证记录](docs/VERIFICATION.md)。
 
 ## 文档与贡献
 
