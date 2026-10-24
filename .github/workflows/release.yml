@@ -114,6 +114,8 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: engine/.venv/bin/python scripts/create-appcast.py
       - name: Verify complete release and increasing build number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           engine/.venv/bin/python scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md
           ditto -x -k "dist/PageBridge-${{ steps.identity.outputs.version }}-macOS-arm64.zip" validation/release/unpacked
@@ -165,6 +167,8 @@ jobs:
           subprocess.run(['gh','release','edit',tag,'--repo',repo,'--draft=false','--latest'], check=True)
           PY
       - name: Verify public downloads and latest OTA feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: engine/.venv/bin/python scripts/verify-release.py --published --output validation/release/published.json
       - name: Upload release validation logs
         if: always()

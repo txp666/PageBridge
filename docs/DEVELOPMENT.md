@@ -164,3 +164,11 @@ gh workflow run release.yml --ref main -f tag=v0.3.0
 ```
 
 手动运行仍完整测试、构建和验证该标签的源码，并记录源码提交与工作流提交。只有同标签、同源码提交且带本工作流来源标记的 draft 可继续；已公开版本会被拒绝。草稿通过 `gh release view --json apiUrl` 定位，不能依赖只查已发布版本的 tag REST 端点。
+
+公开发行后可独立重跑只读校验，不构建或替换已发布资产：
+
+```sh
+gh workflow run verify-release.yml --ref main -f tag=v0.3.0
+```
+
+它分别检出当前验证工具和原标签源码，检查公开下载、SHA-256、ZIP CRC、三份 ZIP 的 HTTP Range 206、源码配置、上游源码及 OTA 签名。GitHub REST 元数据可使用仓库只读 Token，严格限定 `api.github.com`；安装包、源码、feed 的请求仍不携带 Token，以验证真实公开可下载。当前验证还要求该版本与 latest OTA feed 一致。

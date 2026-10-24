@@ -4,18 +4,21 @@
 Use engine/.venv/bin/python, which provides the locked cryptography package.
 --check-latest rejects a build which would roll back the current public feed.
 --published additionally downloads every public asset and checks bytes, SHA-256
-and HTTP Range support, without credentials or the private signing key.
+and HTTP Range support anonymously. GH_TOKEN, when supplied, is used only for
+GitHub REST metadata on api.github.com, never for asset/feed downloads.
 """
 import argparse
 import base64
 import hashlib
 import http.client
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
 import time
 import urllib.error
+from urllib.parse import urlparse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -59,6 +62,37 @@ def fetch(url, *, limit=4 * 1024 * 1024, headers=None, retry_missing=False):
             require(response.geturl().startswith("https://"), "Insecure release redirect")
             data = response.read(limit + 1)
             require(len(data) <= limit, "Release metadata exceeds limit")
+            return data
+    return network_attempt(operation, retry_missing=retry_missing)
+
+
+def is_github_api_url(url):
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.netloc == "api.github.com" and not parsed.fragment
+
+
+class GitHubAPIRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        # Never allow an Authorization header to follow an asset/CDN redirect.
+        require(is_github_api_url(newurl), "GitHub metadata redirect left api.github.com")
+        return super().redirect_request(request, response, code, message, headers, newurl)
+
+
+def fetch_github_api(url, *, limit=4 * 1024 * 1024, retry_missing=False):
+    require(is_github_api_url(url), "GitHub metadata URL must use https://api.github.com")
+    headers = {"User-Agent": "PageBridge-release-verifier/1", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", "Cache-Control": "no-cache"}
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if token:
+        require(not any(character.isspace() for character in token), "Invalid GitHub metadata token")
+        headers["Authorization"] = "Bearer " + token
+    opener = urllib.request.build_opener(GitHubAPIRedirectHandler())
+    def operation():
+        request = urllib.request.Request(url, headers=headers)
+        with opener.open(request, timeout=120) as response:
+            require(is_github_api_url(response.geturl()), "GitHub metadata response left api.github.com")
+            data = response.read(limit + 1)
+            require(len(data) <= limit, "GitHub metadata exceeds limit")
             return data
     return network_attempt(operation, retry_missing=retry_missing)
 
@@ -119,15 +153,15 @@ def signed_feed(data, key):
     return feed
 
 
-def current_notes(version):
-    contents = (ROOT / "CHANGELOG.md").read_text()
+def current_notes(version, source_root=ROOT):
+    contents = (source_root / "CHANGELOG.md").read_text()
     match = re.search(r"^## " + re.escape(version) + r"(?: /[^\n]*)?[^\n]*\n(.*?)(?=^## |\Z)",
                       contents, re.M | re.S)
     require(match is not None, "Missing release notes")
     return match.group(1).strip() + "\n"
 
 
-def verify_source(path, version):
+def verify_source(path, version, source_root=ROOT):
     with zipfile.ZipFile(path) as zipped:
         prefix = f"PageBridge-{version}-source/"
         manifest = json.loads(zipped.read(prefix + "SOURCE_MANIFEST.json"))
@@ -137,20 +171,22 @@ def verify_source(path, version):
             require(hashlib.sha256(data).hexdigest() == entry["sha256"] and len(data) == entry["bytes"],
                     "Source file differs from manifest: " + name)
         for name in ("VERSION.json", "update-config.json", ".github/workflows/release.yml"):
-            require(zipped.read(prefix + name) == (ROOT / name).read_bytes(), "Source release configuration differs: " + name)
+            require(zipped.read(prefix + name) == (source_root / name).read_bytes(), "Source release configuration differs: " + name)
     return len(manifest["files"])
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
+    parser.add_argument("--source-root", type=Path, default=ROOT, help="Checked-out release tag source (defaults to this repository)")
     parser.add_argument("--check-latest", action="store_true")
     parser.add_argument("--published", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--notes-output", type=Path, help="Write current changelog section for gh release --notes-file")
     args = parser.parse_args()
-    release = json.loads((ROOT / "VERSION.json").read_text())
-    config = json.loads((ROOT / "update-config.json").read_text())
+    source_root = args.source_root.resolve()
+    release = json.loads((source_root / "VERSION.json").read_text())
+    config = json.loads((source_root / "update-config.json").read_text())
     version, build = release["version"], str(release["build"])
     require(re.fullmatch(r"\d+\.\d+\.\d+", version) and build.isdecimal(), "Invalid release version/build")
     repository = config["repository"]
@@ -177,18 +213,18 @@ def main():
         require(info.get("SUPublicEDKey") == config["publicEDKey"] and info.get("SUFeedURL") == config["feedURL"], "App OTA configuration differs")
         require(info.get("SURequireSignedFeed") is True and info.get("SUVerifyUpdateBeforeExtraction") is True,
                 "App does not enforce feed/archive verification")
-    report["sourceFileCount"] = verify_source(args.dist / filenames[1], version)
+    report["sourceFileCount"] = verify_source(args.dist / filenames[1], version, source_root)
     with zipfile.ZipFile(args.dist / filenames[2]) as zipped:
         prefix = f"PageBridge-{version}-third-party-sources/"
         manifest = json.loads(zipped.read(prefix + "manifest.json"))
         require(manifest["release"] == version, "Third-party source release differs")
-        expected = json.loads((ROOT / "scripts/third-party-sources.json").read_text())["packages"]
+        expected = json.loads((source_root / "scripts/third-party-sources.json").read_text())["packages"]
         require(manifest["packages"] == expected, "Third-party source pins differ")
         for package in expected:
             with zipped.open(prefix + package["filename"]) as stream:
                 checksum = hashlib.file_digest(stream, "sha256").hexdigest()
             require(checksum == package["sha256"], "Third-party source hash differs")
-        require(zipped.read(prefix + "engine-uv.lock") == (ROOT / "engine/uv.lock").read_bytes(), "Third-party lock differs")
+        require(zipped.read(prefix + "engine-uv.lock") == (source_root / "engine/uv.lock").read_bytes(), "Third-party lock differs")
     feed_path = args.dist / "appcast.xml"
     feed = signed_feed(feed_path.read_bytes(), key)
     items = feed.findall("./channel/item")
@@ -206,7 +242,7 @@ def main():
     report["assets"].append({"name": "appcast.xml", "bytes": feed_path.stat().st_size, "sha256": digest(feed_path)})
     if args.check_latest:
         try:
-            latest = json.loads(fetch(api + "/releases/latest"))
+            latest = json.loads(fetch_github_api(api + "/releases/latest"))
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
@@ -218,7 +254,7 @@ def main():
             require(int(build) > max(map(int, builds)), "New build must exceed every build in the current public feed")
             report["previousRelease"] = latest["tag_name"]
     if args.published:
-        public = json.loads(fetch(api + f"/releases/tags/v{version}", retry_missing=True))
+        public = json.loads(fetch_github_api(api + f"/releases/tags/v{version}", retry_missing=True))
         require(not public["draft"] and not public["prerelease"], "Release is not publicly stable")
         assets = {asset["name"]: asset for asset in public["assets"]}
         require(set(assets) == {asset["name"] for asset in report["assets"]}, "Public release assets differ")
@@ -231,7 +267,7 @@ def main():
         report["publishedURL"] = public["html_url"]
     if args.notes_output:
         args.notes_output.parent.mkdir(parents=True, exist_ok=True)
-        args.notes_output.write_text(current_notes(version))
+        args.notes_output.write_text(current_notes(version, source_root))
     output = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

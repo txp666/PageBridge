@@ -1,0 +1,134 @@
+name: Verify published release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published version tag to verify (for example v0.3.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-release-${{ inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.repository == 'txp666/PageBridge'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+    steps:
+      - name: Check out current verification tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: automation
+          persist-credentials: false
+      - name: Check out immutable release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate source and workflow identity
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, tomllib
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Expected a vMAJOR.MINOR.PATCH tag'
+          source = Path('source')
+          release = json.loads((source/'VERSION.json').read_text())
+          config = json.loads((source/'update-config.json').read_text())
+          assert tag == 'v' + release['version']
+          assert config['repository'] == os.environ['GITHUB_REPOSITORY'] == 'txp666/PageBridge'
+          commit = subprocess.check_output(['git','-C','source','rev-parse','refs/tags/'+tag+'^{commit}'], text=True).strip()
+          assert commit == subprocess.check_output(['git','-C','source','rev-parse','HEAD'], text=True).strip()
+          assert os.environ['WORKFLOW_COMMIT'] == subprocess.check_output(['git','-C','automation','rev-parse','HEAD'], text=True).strip()
+          refs = subprocess.check_output(['git','-C','source','ls-remote','origin','refs/tags/'+tag,'refs/tags/'+tag+'^{}'], text=True)
+          remote = {line.split()[1]:line.split()[0] for line in refs.splitlines()}
+          assert remote.get('refs/tags/'+tag+'^{}', remote.get('refs/tags/'+tag)) == commit, 'Remote tag changed'
+          output = Path('validation'); output.mkdir()
+          identity = dict(tag=tag, sourceCommit=commit, workflowCommit=os.environ['WORKFLOW_COMMIT'])
+          (output/'identity.json').write_text(json.dumps(identity, indent=2)+'\n')
+          print(json.dumps(identity))
+          # Install only the verification library and its two dependencies, all
+          # pinned by the automation checkout's existing uv lock (including hashes).
+          lock = tomllib.loads(Path('automation/engine/uv.lock').read_text())
+          packages = {item['name']:item for item in lock['package']}
+          lines = []
+          for name in ('cryptography','cffi','pycparser'):
+              package = packages[name]
+              hashes = sorted({wheel['hash'] for wheel in package['wheels']})
+              assert hashes
+              lines.append(name+'=='+package['version']+' '+' '.join('--hash='+value for value in hashes))
+          (output/'verification-requirements.txt').write_text('\n'.join(lines)+'\n')
+          PY
+      - name: Install hash-pinned verification dependencies
+        run: |
+          python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r validation/verification-requirements.txt
+      - name: Download all seven public assets anonymously
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, urllib.request
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('verify', 'automation/scripts/verify-release.py')
+          verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+          tag = os.environ['RELEASE_TAG']; version = tag[1:]; repo = os.environ['GITHUB_REPOSITORY']
+          metadata = json.loads(verifier.fetch_github_api('https://api.github.com/repos/'+repo+'/releases/tags/'+tag, retry_missing=True))
+          assert not metadata['draft'] and not metadata['prerelease'] and metadata['tag_name'] == tag
+          filenames = [f'PageBridge-{version}-{kind}.zip' for kind in ('macOS-arm64','source','third-party-sources')]
+          names = filenames + [name+'.sha256' for name in filenames] + ['appcast.xml']
+          assets = {asset['name']:asset for asset in metadata['assets']}
+          assert set(assets) == set(names), 'Unexpected public assets'
+          Path('dist').mkdir()
+          for name in names:
+              expected = assets[name]
+              assert 0 < expected['size'] <= 2 * 1024**3 and expected['state'] == 'uploaded'
+              url = 'https://github.com/'+repo+'/releases/download/'+tag+'/'+name
+              def download():
+                  temporary = Path('dist')/('.'+name+'.partial')
+                  try:
+                      # No token, cookies or authenticated opener on this path.
+                      request = urllib.request.Request(url, headers={'User-Agent':'PageBridge-public-download/1', 'Cache-Control':'no-cache'})
+                      sha, count = hashlib.sha256(), 0
+                      with urllib.request.urlopen(request, timeout=120) as response, temporary.open('xb') as output:
+                          assert response.geturl().startswith('https://')
+                          while chunk := response.read(1024*1024):
+                              count += len(chunk); assert count <= expected['size']
+                              sha.update(chunk); output.write(chunk)
+                      assert count == expected['size'] and expected['digest'] == 'sha256:'+sha.hexdigest(), 'Public asset integrity failure'
+                      temporary.rename(Path('dist')/name)
+                  finally:
+                      temporary.unlink(missing_ok=True)
+              verifier.network_attempt(download, retry_missing=True)
+              print('Downloaded and verified:', name)
+          PY
+      - name: Verify source archive, public bytes, range support and OTA signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 automation/scripts/verify-release.py --source-root source --dist dist --published --output validation/published.json
+      - name: Save independent verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-release-verification-${{ github.run_id }}
+          path: validation/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -e -o pipefail {0}

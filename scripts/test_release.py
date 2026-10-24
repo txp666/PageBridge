@@ -1,6 +1,7 @@
 """Offline signing-boundary regressions; these seeds are public test fixtures."""
 import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
+import urllib.request
 import zipfile
 
 from cryptography.exceptions import InvalidSignature
@@ -190,6 +192,78 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertIn('[redacted]', str(caught.exception))
             self.assertTrue(all(not path.exists() for path in seen))
             self.assertFalse((dist / 'appcast.xml').exists())
+
+    def test_github_token_only_used_for_api_metadata(self):
+        response = io.BytesIO(b'{}')
+        response.geturl = lambda: 'https://api.github.com/repos/example/PageBridge/releases/latest'
+        opener = Mock(); opener.open.return_value = response
+        with patch.dict(os.environ, {'GH_TOKEN': 'public-test-token'}), \
+                patch.object(verify.urllib.request, 'build_opener', return_value=opener):
+            self.assertEqual(verify.fetch_github_api(response.geturl()), b'{}')
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_header('Authorization'), 'Bearer public-test-token')
+
+    def test_api_metadata_can_work_without_token(self):
+        response = io.BytesIO(b'{}')
+        response.geturl = lambda: 'https://api.github.com/repos/example/PageBridge/releases/latest'
+        opener = Mock(); opener.open.return_value = response
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(verify.urllib.request, 'build_opener', return_value=opener):
+            verify.fetch_github_api(response.geturl())
+        self.assertIsNone(opener.open.call_args.args[0].get_header('Authorization'))
+
+    def test_metadata_rejects_non_api_origins_before_network(self):
+        for url in ('https://github.com/example', 'https://api.github.com.attacker.invalid/',
+                    'http://api.github.com/repos/example', 'https://token@api.github.com/repos/example'):
+            with self.subTest(url=url), patch.object(verify.urllib.request, 'build_opener') as opener, self.assertRaises(ValueError):
+                verify.fetch_github_api(url)
+            opener.assert_not_called()
+
+    def test_metadata_cross_origin_redirect_rejected(self):
+        request = urllib.request.Request('https://api.github.com/repos/example', headers={'Authorization': 'Bearer public-test-token'})
+        handler = verify.GitHubAPIRedirectHandler()
+        for url in ('https://release-assets.githubusercontent.com/file', 'https://github.com/example', 'http://api.github.com/example'):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'left api.github.com'):
+                handler.redirect_request(request, None, 302, 'Found', {}, url)
+
+    def test_metadata_same_origin_redirect_preserves_token(self):
+        request = urllib.request.Request('https://api.github.com/repos/example', headers={'Authorization': 'Bearer public-test-token'})
+        redirected = verify.GitHubAPIRedirectHandler().redirect_request(request, None, 302, 'Found', {}, 'https://api.github.com/repos/renamed')
+        self.assertEqual(redirected.get_header('Authorization'), 'Bearer public-test-token')
+
+    def test_public_feed_and_asset_remain_anonymous_with_token_in_environment(self):
+        for kind in ('feed', 'asset'):
+            response = io.BytesIO(b'fixture')
+            response.geturl = lambda: 'https://release-assets.githubusercontent.com/public-fixture'
+            with self.subTest(kind=kind), patch.dict(os.environ, {'GH_TOKEN': 'public-test-token'}), \
+                    patch.object(verify.urllib.request, 'urlopen', return_value=response) as urlopen:
+                if kind == 'feed':
+                    verify.fetch('https://github.com/example/PageBridge/releases/latest/download/appcast.xml')
+                else:
+                    verify.verify_public_asset('https://github.com/example/PageBridge/releases/download/v1.2.3/file',
+                        dict(name='fixture.dat', bytes=7, sha256=hashlib.sha256(b'fixture').hexdigest()))
+                request = urlopen.call_args.args[0]
+                self.assertIsNone(request.get_header('Authorization'))
+                self.assertIsNone(request.get_header('Cookie'))
+
+    def test_source_verification_uses_explicit_tag_root_not_new_automation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, automation = root / 'source', root / 'automation'
+            files = {'VERSION.json': b'{"version":"1.2.3"}', 'update-config.json': b'{"fixture":true}',
+                     '.github/workflows/release.yml': b'name: original tag workflow\n'}
+            for directory in (source, automation):
+                for name, data in files.items():
+                    path = directory / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+            (automation / '.github/workflows/release.yml').write_text('name: improved recovery workflow\n')
+            archive = root / 'source.zip'
+            manifest = {'version':'1.2.3', 'files':{name:dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name,data in files.items()}}
+            with zipfile.ZipFile(archive, 'w') as zipped:
+                for name, data in files.items():zipped.writestr('PageBridge-1.2.3-source/'+name,data)
+                zipped.writestr('PageBridge-1.2.3-source/SOURCE_MANIFEST.json',json.dumps(manifest))
+            self.assertEqual(verify.verify_source(archive, '1.2.3', source), 3)
+            with self.assertRaisesRegex(ValueError, 'Source release configuration differs'):
+                verify.verify_source(archive, '1.2.3', automation)
 
 
 if __name__ == "__main__":
