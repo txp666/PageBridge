@@ -5,9 +5,12 @@ uses the official `pdf2zh_next.high_level.do_translate_async_stream` API;
 Swift owns import, Keychain, scheduling, cancellation deadlines, the PDFKit
 reader and export. The browser prototype is not part of this runtime.
 
-The current source targets **0.1.4, under validation**. Real-document results
-and final package status belong in [the verification record](../docs/VERIFICATION.md),
-not in a test-count claim that becomes stale as the code changes.
+The current source targets **0.1.4, under validation**. The frozen v8 candidate
+passed 359 Python tests and offline validation replays of four actual paragraphs
+on 2026-10-24. All five complete documents are being translated serially and
+still require full review. The preceding v6 full Wind run rejected four
+paragraphs and published no accepted output. See
+[the verification record](../docs/VERIFICATION.md) for current results.
 
 ## Locked runtime
 
@@ -134,15 +137,30 @@ Source-proven standalone `with` and `and` connectors are handled before the
 upstream minimum-length filter can skip them. Complete journal footers and
 publication-date metadata remain in their original form. During whole-paragraph
 recovery, numeric literals become opaque tokens only when the source grammar
-proves the supported two-group comparison with an elided second verb. Other
+proves the supported two-group comparison with an elided second verb or the
+explicit coordinated quantities and forecast input/output relation. Other
 counts and years remain visible to the model. Restored output still passes the
 numeric multiplicity guard; tokens and role hints do not prove semantic fidelity.
+
+For that proven forecast grammar, the model request can expand an English
+anaphor to its explicit source antecedent. The original translation input stays
+the validation authority, with its original formula objects and numbers. This
+does not insert a Chinese translation or resolve ambiguous pronouns generally.
+The real complete Wind abstract probe succeeded through one ordinary retry;
+it did not exercise the numeric-token recovery fallback, which has separate
+offline regression coverage.
 
 Valid English ordinal suffixes are normalized only in the numeric analysis
 view (`21st` and `21世纪` both carry 21). Source-attested dates retain their
 calendar month. Narrow checks and repair hints also cover demonstrated negative
 terminology, continuing predicates and count-ratio grouping errors;
 they do not constitute a general semantic-equivalence test.
+
+Source-attested `2D`/`3D` representation descriptions allow equivalent Chinese
+dimension wording without relaxing arbitrary technical identifiers. Regression
+coverage also preserves an explicitly negated non-equilibrium statement and a
+source-attested company name containing `Wind`, while ordinary weather prose
+still needs translation.
 
 Balanced model-added Markdown emphasis around pure Chinese prose can have its
 delimiters removed without changing the enclosed text. Source literal markup,

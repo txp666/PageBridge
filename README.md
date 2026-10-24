@@ -4,7 +4,7 @@
 
 原生 macOS PDF 翻译与对照阅读应用。使用 SwiftUI、AppKit 和 PDFKit 构建界面，通过 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 保留 PDF 的主要版面结构，支持本机 Ollama 与自定义 OpenAI 兼容 API。
 
-**当前源码：0.1.4 开发中。** 厂商选择、模型列表、示例库和新图标已加入源码；正文完整性、列表与链接修复正在进行真实文档验收。本轮要求原有两份文档与三篇公开论文共 112 页完整重译、复核通过后再打包。最终状态以 [验证记录](docs/VERIFICATION.md) 为准。
+**当前源码：0.1.4 开发中。** 厂商选择、模型列表、示例库和新图标已加入源码。2026-10-24 候选 v8 的 359 项 Python 测试通过，五份目标文档共 112 页正在串行重译，尚未完成全文验收。全部复核通过后再打包，实际结果以 [验证记录](docs/VERIFICATION.md) 为准。
 
 ## 开始使用
 

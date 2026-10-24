@@ -920,8 +920,9 @@ def _source_affirms_non_equilibrium(source):
     # check. This is not general polarity inference over scientific prose.
     for term in re.finditer(r"\bnon[-‐‑– ]?equilibrium\b", source, re.I):
         clause = re.split(r"[.;:!?]", source[:term.start()])[-1]
-        if not re.search(r"\b(?:not|never)\s+(?:(?:match(?:es)?|describe[sd]?|represent[sd]?|"
-                         r"involve[sd]?|necessarily|be|a|an|the)\s+){0,3}$", clause, re.I):
+        # A nearby explicit source negation with an unfamiliar verb is not
+        # evidence of affirmation. Retain the term-presence check in that case.
+        if not re.search(r"\b(?:not|never)\s+(?:(?:[A-Za-z]+)\s+){0,3}$", clause, re.I):
             return True
     return False
 
@@ -1044,6 +1045,109 @@ def _source_precedence_relation(ti):
                 or re.search(r'\b(?:sequences?|vectors?|winds?|days?)\s+previous\s+to\b', prose))
 
 
+def _source_weather_sequence_groups(ti):
+    # A quantified temporal relation is prose, not a scientific identifier.
+    # The count belongs to the classes, never the length of a wind sequence.
+    return list(re.finditer(
+        r'\bwind sequences\s+(?:preceding|previous to)\s+each one of the\s+'
+        r'(?P<count>[1-9]\d*)\s+(?P<classes>[A-Z][A-Za-z0-9]*'
+        r'(?:\s+[A-Z][A-Za-z0-9]*)?)(?:\s+classes\b|[’\']s\b)',
+        _prose_text(ti, ti.unicode)))
+
+
+def _source_circulation_weather_term(ti):
+    return bool(re.search(r'\bCirculation Weather Type\s*\(CWT\)',
+                          _prose_text(ti, ti.unicode)))
+
+
+def _source_sequence_prediction_roles(ti):
+    # Resolve only the explicit X/Y coordination followed by "the last from".
+    # The second quantity is a single day's named value, not another sequence.
+    relation = re.search(
+        r'\bbetween both (?P<first>[a-z]+-day\s+[A-Z][A-Z0-9]*\s+sequences) and '
+        r'(?P<second>the\s*(?P<name>[A-Z][A-Z0-9]*) of the\s*(?P<day>\{v\d+\})\s*day)'
+        # Only the attested duration adjunct can intervene. Arbitrary prose
+        # could introduce a third quantity and change what "the last" means.
+        r'(?:,\s*in the (?:long )?[1-9]\d*-year period,|,)?\s*'
+        r'can be generalized to predict (?P<anaphor>the last) from '
+        r'(?P<input>the previous [A-Z][A-Z0-9]* sequence)\b', ti.unicode)
+    if not relation:
+        return None
+    day = next((p for p in _formula(ti.placeholders) if p.placeholder == relation['day']), None)
+    if day is None or not re.fullmatch(r'\d{1,2}(?:st|nd|rd|th)?\s*',
+                                      ''.join(c.char_unicode or '' for c in day.formula.pdf_character)):
+        return None
+    return relation
+
+
+def _source_prediction_prompt_view(ti, source_text):
+    # The original TI remains the sole validation source. Only the request's
+    # English view expands a pronoun whose explicit X/Y grammar proves the
+    # antecedent; it adds no value, formula token or translated prose.
+    relation = _source_sequence_prediction_roles(ti)
+    if not relation:
+        return source_text
+    segment = 'predict the last from ' + relation['input']
+    if source_text.count(segment) != 1:
+        return source_text
+    expanded = 'predict the ' + relation['name'] + ' of that day from ' + relation['input']
+    with _lock:
+        _counters['sourceAnaphoraClarifiedRequests'] += 1
+    return source_text.replace(segment, expanded, 1)
+
+
+def _check_weather_prediction_roles(ti, output):
+    relation = _source_sequence_prediction_roles(ti)
+    if not relation:
+        return
+    target = _prose_text(ti, output)
+    # Reject the demonstrated incorrect object, not all paraphrases of a
+    # forecast. Source sequence counts are separate from "both X and Y".
+    if re.search(r'预测(?:(?!从|根据|利用|通过|[，。；]).){0,45}最后(?:一个)?序列', target):
+        raise PlaceholderIntegrityError('prediction-output-role-changed')
+    lengths = {'three': '三', 'four': '四', 'five': '五', 'six': '六', 'seven': '七'}
+    span = re.match(r'(?P<length>three|four|five|six|seven)-day\s+', relation['first'])
+    if span and re.search(r'两个\s*(?:' + lengths[span['length']] + r'天|' + lengths[span['length']]
+                          + r'日)\s*' + re.escape(relation['name']) + r'\s*序列', target):
+        raise PlaceholderIntegrityError('coordinated-quantities-miscounted')
+
+
+def _source_weather_retry_note(translator, ti):
+    if not str(getattr(translator.translation_config, 'lang_out', '')).lower().startswith('zh'):
+        return ''
+    notes = []
+    if _wind_data_title(ti):
+        notes.append('The initial common weather noun Wind must be translated as 风 in the complete title.')
+    for group in _source_weather_sequence_groups(ti):
+        notes.append('The source relation means ' + group['count'] + '个' + group['classes']
+                     + '类别中每一类之前最可能的风序列. The count modifies classes, not sequences; '
+                     'retain it once in this clause.')
+    if _source_circulation_weather_term(ti):
+        notes.append('Translate Circulation Weather Type as 环流天气类型, keeping CWT.')
+    return ('\n\nSource-specific translation notes (not source text): ' + ' '.join(notes)
+            + ' Return only the complete translation.') if notes else ''
+
+
+def _mask_source_wind_names(ti, target):
+    # Only a source-attested complete title-case name introduced by an author /
+    # organization preposition is exempt; weather Wind elsewhere still fails.
+    source = _prose_text(ti, ti.unicode)
+    for match in re.finditer(r'\b(?:by|from|at)\s+(Wind(?:\s+[A-Z][a-z]+){2,3})(?=$|[,.;])', source):
+        # Require an explicit organization-style ending as positive evidence;
+        # title-cased phrases such as Wind Turbine Measurements are not names.
+        if not re.search(r'\s(?:Systems|Inc|Corporation|Company|University|Institute|Laboratories|Laboratory|Ltd)$',
+                         match[1]):
+            continue
+        # Title case and "from" do not turn a research phrase into a name.
+        # Keep names such as Wind River Systems, but not weather measurements
+        # or analysis phrases embedded inside an otherwise translated title.
+        if re.match(r'Wind\s+(?:Data|Speeds?|Directions?|Measurements?|Energy|Power)\b',
+                    match[1], re.I):
+            continue
+        target = re.sub(r'(?<![A-Za-z0-9_])' + re.escape(match[1]) + r'(?![A-Za-z0-9_])', ' ', target)
+    return target
+
+
 def _wind_data_title(ti):
     # Meteorological noun + research operation in a complete title, never Wind
     # alone or a name such as Wind River. The caller also requires title layout.
@@ -1148,8 +1252,10 @@ def _ordinary_english_residuals(ti, output, label=None):
     for section in _source_section_references(ti):
         if re.search(r'(?<![A-Za-z0-9_])' + section + r'(?![A-Za-z0-9_])', translated, re.I):
             residuals.add(section)
-    if label == 'title' and _wind_data_title(ti) and re.search(r'(?<![A-Za-z0-9_])Wind(?![A-Za-z0-9_])', translated, re.I):
+    if label == 'title' and _wind_data_title(ti) and re.search(r'(?<![A-Za-z0-9_])Wind(?![A-Za-z0-9_])', _mask_source_wind_names(ti, translated), re.I):
         residuals.add('Wind')
+    if _source_circulation_weather_term(ti) and re.search(r'\bCirculation\s+Weather\s+Type\b', translated, re.I):
+        residuals.add('Circulation Weather Type')
     if _network_rewiring_prose(ti):
         # A model can split this ordinary word across spaces/style runs; PDF
         # line wrapping alone is not considered a formula/name exemption.
@@ -1315,7 +1421,23 @@ def _scientific_identifier_matches(text):
 
 
 def _prose_scientific_identifiers(ti, text):
-    return Counter(m[0] for m in _scientific_identifier_matches(_prose_text(ti, text)))
+    prose = _prose_text(ti, text)
+    identifiers = Counter(m[0] for m in _scientific_identifier_matches(prose))
+    # A source dimension immediately describing a representation may be
+    # translated as 维. Count the proven Chinese equivalent, never erase IDs.
+    dimensions = Counter(re.findall(r'\b([23])D\s+(?:graphical\s+)?representations?\b',
+                                    _prose_text(ti, ti.unicode)))
+    for dimension, limit in dimensions.items():
+        numeral = {'2': '二', '3': '三'}[dimension]
+        pattern = (r'(?<![A-Za-z0-9一二三四五六七八九十])(?:' + dimension + '|' + numeral
+                   + r')维(?:的)?(?=图形|表示|表征)')
+        count = len(re.findall(pattern, prose))
+        identifiers[dimension + 'D'] += min(count, limit)
+        # Surplus Chinese descriptors remain unmatched atoms; they must not
+        # replace another source occurrence used as a model/product identifier.
+        if count > limit:
+            identifiers[dimension + '维'] += count - limit
+    return +identifiers
 
 
 def _check_body_translation(translator, paragraph, ti, output):
@@ -1362,6 +1484,7 @@ def _check_body_translation(translator, paragraph, ti, output):
         raise PlaceholderIntegrityError("untranslated-prose-paragraph")
     if chinese_target and not non_prose and not _preserve_publication_metadata(ti, label):
         _check_semantic_roles(ti, output)
+        _check_weather_prediction_roles(ti, output)
         _check_added_prose_markup(ti, output)
         if _ordinary_english_residuals(ti, output, label) or _untranslated_numbered_labels(ti, output):
             raise PlaceholderIntegrityError("untranslated-prose-fragment")
@@ -2382,9 +2505,12 @@ def _retry_translation(translator, ti, tracker, attempt):
     if str(getattr(translator.translation_config, "lang_out", "")).lower().startswith("zh"):
         repair_rules += (" Translate every ordinary English prose word into Chinese, including modifiers and prepositions within otherwise Chinese sentences. "
                          "Keep actual mathematical variables, proper names, protocol names and identifiers unchanged.")
-    # BabelDOC's template ends in the actual source text. Never append any
-    # instructions after it: models correctly interpret that suffix as source.
-    prompt = repair_rules + _contextual_term_hint(translator, ti) + "\n\n" + translator.generate_prompt_for_llm(ti.unicode, translate_input=ti)
+    # Keep general repair rules before BabelDOC's source-ending template.
+    # Only the bounded weather note below is appended, explicitly identified
+    # as instructions; output still passes the original-source integrity gates.
+    prompt = (repair_rules + _contextual_term_hint(translator, ti) + "\n\n"
+              + translator.generate_prompt_for_llm(_source_prediction_prompt_view(ti, ti.unicode), translate_input=ti)
+              + _source_weather_retry_note(translator, ti))
     with _lock:
         _counters["retryRequests"] += 1
     llm_tracker = tracker.new_llm_translate_tracker()
@@ -2487,11 +2613,22 @@ def _contextual_term_hint(translator, ti):
             hints.append(' The source reference to ' + section + ' names the paper section '
                          + _SECTION_NAMES[section] + '. Translate this section reference into Chinese; it is not an acronym or identifier.')
         if _wind_data_title(ti):
-            hints.append(' In this meteorological research title, Wind refers to 风. Translate Wind with the data, '
-                         'speed or measurement phrase; preserve any researcher or method proper names.')
+            hints.append(' In this meteorological research title, the initial Wind is the common weather noun 风, '
+                         'not a person, product or method name. Wind Data Mining means 风数据挖掘; '
+                         'Wind Speed means 风速; Wind Measurements means 风测量. '
+                         'Use Chinese for this weather noun while preserving actual researcher or method names.')
         if _source_precedence_relation(ti):
-            hints.append(' Translate precede/preceding as the source order relation, 在…之前 or 前面的, not an English token. '
+            hints.append(' The lowercase precede/preceding is an ordinary temporal relation, not a name or identifier. '
+                         'Translate it as 在…之前 or 前面的; never copy the English word into Chinese prose. '
                          'Preserve active versus passive direction: A is preceded by B means B occurs before A.')
+        for group in _source_weather_sequence_groups(ti):
+            hints.append(' Source quantified relation: ' + group['count'] + ' counts the '
+                         + group['classes'] + ' classes. The wind sequences occur BEFORE each of those '
+                         + 'classes. Retain this class count once in this clause and '
+                         'express the temporal relation in Chinese; do not omit the number when translating each one.')
+        if _source_circulation_weather_term(ti):
+            hints.append(' Circulation Weather Type is the descriptive meteorological term 环流天气类型; '
+                         'translate the expansion and retain only its abbreviation CWT in English.')
         for month, atom, _ in _source_month_dates(ti):
             number = _MONTH_NAMES.index(month) + 1
             hints.append(' The source date ' + month + ' ' + atom + ' includes the calendar month '
@@ -2647,11 +2784,15 @@ def _whole_paragraph_translation(translator, ti, tracker):
     protected = {}
     numeric_tokens = set()
     pieces, start = [], 0
-    # Opaque numbers are only needed for this proven elided comparison. Keep
-    # dates/counts visible in ordinary or truncated fragments so the model can
-    # understand their grammar; the independent numeric gate still checks them.
+    # Only these complete, proven source grammars get numeric anchors. Keep
+    # dates/counts visible in other ordinary or truncated fragments so the
+    # model can understand them; the independent numeric gate still checks them.
+    prediction_roles = _source_sequence_prediction_roles(plain)
     numeric_spans = (set(_recovery_numeric_spans(plain, source))
-                     if _recovery_comparison_hint(source, source) else set())
+                     if _recovery_comparison_hint(source, source) or prediction_roles else set())
+    if prediction_roles and numeric_spans:
+        with _lock:
+            _counters['predictionRecoveryNumericProtectedParagraphs'] += 1
     spans = sorted(_protected_literal_spans(plain, source) + list(numeric_spans))
     for index, (left, right) in enumerate(spans, 1):
         token = "{" + prefix + f"_{index:04d}" + "}"
@@ -2703,7 +2844,9 @@ def _whole_paragraph_translation(translator, ti, tracker):
             recovery_rules += (' Output format: return exactly one JSON object with a single key "translation". '
                                'Its value must contain the complete natural paragraph translation as one string, '
                                'with all formula and protected-literal tokens preserved. No other keys or commentary.')
-    prompt = recovery_rules + _contextual_term_hint(translator, plain) + "\n\n" + translator.generate_prompt_for_llm(protected_source, translate_input=plain)
+    prompt = (recovery_rules + _contextual_term_hint(translator, plain) + "\n\n"
+              + translator.generate_prompt_for_llm(_source_prediction_prompt_view(plain, protected_source), translate_input=plain)
+              + _source_weather_retry_note(translator, plain))
     with _lock:
         _counters["wholeParagraphRecoveryRequests"] += 1
     llm_tracker = tracker.new_llm_translate_tracker()
