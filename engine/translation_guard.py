@@ -835,6 +835,179 @@ def _safe_native_name_permutation(ti,source,output):
             and _native_name_score_pairing(source,output,names))
 
 
+def _source_margin_note(paragraph, media):
+    """An abandon label alone cannot hide a body paragraph in reading flow."""
+    box = getattr(paragraph, 'box', None)
+    size = getattr(getattr(paragraph, 'pdf_style', None), 'font_size', None)
+    if (getattr(paragraph, 'layout_label', None) != 'abandon' or not box
+            or not isinstance(size, (int, float)) or not math.isfinite(size) or not 0 < size <= 12
+            or not 0 < len((paragraph.unicode or '').strip()) <= 180
+            or any(not isinstance(v, (int, float)) or not math.isfinite(v)
+                   for v in (box.x, box.y, box.x2, box.y2))
+            or not media.x <= box.x < box.x2 <= media.x2
+            or not media.y <= box.y < box.y2 <= media.y2
+            or box.y2-box.y > .04*(media.y2-media.y)):
+        return False
+    return box.y2 <= media.y+.08*(media.y2-media.y) or box.y >= media.y+.92*(media.y2-media.y)
+
+
+def _source_page_hyphen_continuations(docs):
+    """Read-only adjacency proof for a native word broken around a figure page.
+
+    Never skip a body, title, table or unknown text block. The two boundary
+    fragments keep their own glyphs, formulas, boxes and translation IDs.
+    """
+    import layout_guard
+    pages = list(docs.page)
+    pairs = []
+    for lp, middle, rp in zip(pages, pages[1:], pages[2:]):
+        if (getattr(middle, 'page_number', -2) != getattr(lp, 'page_number', -4)+1
+                or getattr(rp, 'page_number', -2) != getattr(middle, 'page_number', -4)+1):
+            continue
+        media = getattr(getattr(lp, 'mediabox', None), 'box', None)
+        if (not media or any(getattr(getattr(p, 'mediabox', None), 'box', None) != media
+                             for p in (middle, rp))
+                or any(not isinstance(v, (int, float)) or not math.isfinite(v)
+                       for v in (media.x, media.y, media.x2, media.y2))
+                or media.x2 <= media.x or media.y2 <= media.y):
+            continue
+        captions = list(getattr(middle, 'pdf_paragraph', []))
+        if (not captions or not any(p.layout_label == 'figure_caption' for p in captions)
+                or any(p.layout_label != 'figure_caption' and not _source_margin_note(p, media) for p in captions)
+                or not (getattr(middle, 'pdf_form', []) or getattr(middle, 'pdf_figure', []))
+                or getattr(middle, 'pdf_character', [])):
+            continue
+        bodies = [[(p, _body_geometry(p)) for p in page.pdf_paragraph] for page in (lp, rp)]
+        bodies = [[(p, box) for p, box in values if box] for values in bodies]
+        if not all(bodies):
+            continue
+        left, a = bodies[0][-1]; right, b = bodies[1][0]
+        size = max(a[4], b[4]); width = media.x2-media.x
+        if (left.xobj_id != 0 or right.xobj_id != 0 or right.first_line_indent is not False
+                or not layout_guard._flow_body_style(left.pdf_style, right.pdf_style)
+                or not .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18
+                or a[0] < media.x+.6*width or b[0] > media.x+.2*width
+                or b[3] < media.y+.8*(media.y2-media.y)
+                or a[3]-a[1] < 4*size or b[3]-b[1] < 4*size
+                or not any(g[2] < a[0]-.5*size for p, g in bodies[0])
+                or not any(g[0] > b[2]+.5*size for p, g in bodies[1])):
+            continue
+        li = next(i for i, p in enumerate(lp.pdf_paragraph) if p is left)
+        ri = next(i for i, p in enumerate(rp.pdf_paragraph) if p is right)
+        if (any(not _source_margin_note(p, media) and not (p.layout_label == 'figure_caption'
+                    and p.box and (p.box.y2 <= left.box.y+.2*size or p.box.y >= left.box.y2+.2*size))
+                    for p in lp.pdf_paragraph[li+1:])
+                or any(not _source_margin_note(p, media) for p in rp.pdf_paragraph[:ri])
+                or any(g[0] >= a[0]-.5*size and g[1] < a[1]-.2*size for p,g in bodies[0] if p is not left)
+                or any(g[0] <= b[2] and g[3] > b[3]+.2*size for p,g in bodies[1] if p is not right)):
+            continue
+        fa = [f for f in lp.pdf_font if f.font_id == left.pdf_style.font_id]
+        fb = [f for f in rp.pdf_font if f.font_id == right.pdf_style.font_id]
+        fields = ('font_id', 'xref_id', 'name', 'encoding_length', 'bold', 'italic', 'monospace', 'serif')
+        if (len(fa) != 1 or len(fb) != 1 or not isinstance(fa[0].xref_id, int) or fa[0].xref_id <= 0
+                or any(getattr(fa[0], k, None) != getattr(fb[0], k, None) for k in fields)):
+            continue
+        prefix = re.search(r'(?<![A-Za-z0-9_-])([a-z]{3,24})-$', left.unicode or '')
+        suffix = re.match(r'([a-z]{2,24})(?=[,; ]|$)', right.unicode or '')
+        if (not prefix or not suffix or len(prefix[1]+suffix[1]) > 40
+                or not _source_prose_context_fragment(left, tail=True)
+                or not _source_prose_context_fragment(right, tail=False)):
+            continue
+        tail = getattr(left.pdf_paragraph_composition[-1], 'pdf_same_style_characters', None)
+        head = getattr(right.pdf_paragraph_composition[0], 'pdf_same_style_characters', None)
+        if not tail or not head:
+            continue
+        end_chars = tail.pdf_character[-len(prefix[0]):]
+        start_chars = head.pdf_character[:len(suffix[1])]
+        if (''.join(c.char_unicode or '' for c in end_chars) != prefix[0]
+                or ''.join(c.char_unicode or '' for c in start_chars) != suffix[1]):
+            continue
+        valid = True
+        for chars, paragraph in ((end_chars, left), (start_chars, right)):
+            if (not chars or any(not layout_guard._finite_character(c) or c.formula_layout_id is not None
+                    or c.xobj_id != 0 or c.pdf_character_id is None
+                    or not layout_guard._flow_body_style(c.pdf_style, paragraph.pdf_style)
+                    or abs(c.box.y-chars[0].box.y) > .1*size for c in chars)
+                    or any(not -.1*size <= y.box.x-x.box.x2 <= .3*size for x,y in zip(chars, chars[1:]))):
+                valid = False
+        if (not valid or abs(end_chars[-1].box.x2-left.box.x2) > .5*size
+                or abs(start_chars[0].box.x-right.box.x) > .5*size
+                or abs(start_chars[0].box.y2-right.box.y2) > .5*size):
+            continue
+        pairs.append((left, right))
+    return pairs
+
+
+def _rehome_page_hyphen_sentence_heads(translator, docs):
+    """Keep one interrupted prose sentence in one translation input.
+
+    Move original plain glyph ownership, never reconstructed text or formulas.
+    Body glyph order, every glyph field and both target boxes stay unchanged;
+    traversal relative to intervening floating captions necessarily changes.
+    """
+    import layout_guard
+    from babeldoc.format.pdf.document_il import PdfParagraphComposition
+    config = getattr(translator, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    count = 0
+    for left, right in _source_page_hyphen_continuations(docs):
+        # The previous complete sentence remains on its original page. Reject
+        # citations, numbers, formulas, quotes, abbreviations and long/multiple
+        # sentences rather than guessing a movable linguistic boundary.
+        match = re.search(r'(?<=\.)[ \t]+(?P<head>[A-Z][A-Za-z ,;\x27-]{25,159}-)$', left.unicode)
+        if not match:
+            continue
+        prefix = left.unicode[:match.start('head')].rstrip()
+        head = match['head']
+        if (len(prefix) < max(100, getattr(config, 'min_text_length', 0))
+                or len(re.findall(r'[A-Za-z]{2,}', prefix)) < 12
+                or any(head.count(a) != head.count(b) for a,b in (('(',')'),('[',']'),('{','}')))):
+            continue
+        tail = left.pdf_paragraph_composition[-1].pdf_same_style_characters
+        first = right.pdf_paragraph_composition[0].pdf_same_style_characters
+        if not tail or not first or not tail.pdf_character or not first.pdf_character:
+            continue
+        target = layout_guard._definition_compact(head)
+        assembled = ''; cut = len(tail.pdf_character)
+        while cut and len(layout_guard._definition_compact(assembled)) < len(target):
+            cut -= 1
+            assembled = (tail.pdf_character[cut].char_unicode or '') + assembled
+        moved, kept = tail.pdf_character[cut:], tail.pdf_character[:cut]
+        if (not moved or not kept or layout_guard._definition_compact(assembled) != target
+                or moved[0].char_unicode != head[0]
+                or any(not layout_guard._finite_character(c) or c.formula_layout_id is not None
+                    or not layout_guard._flow_body_style(c.pdf_style, left.pdf_style)
+                    or not (c.xobj_id == 0 and c.pdf_character_id is not None
+                            or c.xobj_id is None and c.pdf_character_id is None and c.char_unicode == ' ')
+                    for c in moved)):
+            continue
+        all_chars = layout_guard._definition_chars(left)+layout_guard._definition_chars(right)
+        if len(set(map(id, all_chars))) != len(all_chars):
+            continue
+        moved_run, kept_run = copy.copy(tail), copy.copy(tail)
+        moved_run.pdf_character = moved
+        kept_run.pdf_character = kept
+        for run in (moved_run, kept_run):
+            run.box = copy.copy(tail.box)
+            if run.box:
+                run.box.x = min(c.box.x for c in run.pdf_character)
+                run.box.y = min(c.box.y for c in run.pdf_character)
+                run.box.x2 = max(c.box.x2 for c in run.pdf_character)
+                run.box.y2 = max(c.box.y2 for c in run.pdf_character)
+        left.pdf_paragraph_composition[-1] = PdfParagraphComposition(pdf_same_style_characters=kept_run)
+        right.pdf_paragraph_composition.insert(0, PdfParagraphComposition(pdf_same_style_characters=moved_run))
+        left.unicode = prefix
+        right.unicode = head+right.unicode
+        layout_guard._rejoined_source_paragraphs[id(left)] = left
+        layout_guard._rejoined_source_paragraphs[id(right)] = right
+        count += 1
+    if count:
+        with _lock:
+            _counters['rejoinedSourcePageHyphenSentenceHeads'] += count
+    return count
+
+
 def _capture_source_continuity(docs):
     _capture_source_native_names(docs)
     _capture_rule_title_context(docs)
@@ -1008,6 +1181,10 @@ _URL_OR_EMAIL = re.compile(
     r"|(?<![\w.+-])[\w.!#$%&'*+/=?^`{|}~-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b",
     re.I,
 )
+# A split URL's terminal punctuation must itself end the token. In particular,
+# ';extra', ':extra', '?query' and '.html' cannot be accepted as matching a
+# shorter path prefix. Chinese sentence punctuation is a natural boundary.
+_SPLIT_URL_END = r'(?=$|\s|[，。；：！？）]|[.,;:!?)\]]+(?=$|\s|[，。；：！？）]))'
 _SI_UNIT = r"(?:[pnumckMGTμµ]?(?:Hz|Pa|V|A|F|H|Ω|W|J|m|s)|°\s*C)(?:[23²³])?"
 _UNIT_ALIASES = {"千米": "km", "毫米": "mm", "厘米": "cm", "微法": "μF", "微法拉": "μF",
                  "纳法": "nF", "纳法拉": "nF", "毫亨": "mH", "毫亨利": "mH", "微亨": "μH",
@@ -1562,7 +1739,111 @@ def _prose_text(ti, text):
     # token would invent an identifier such as 5BLCof from 5BLC{v3}of. Style
     # wrappers, in contrast, can legitimately split one styled word/name.
     projected = _CANONICAL.sub(lambda match: " " if match[0].startswith("{v") else "", text)
-    return _URL_OR_EMAIL.sub(" ", projected)
+    # A PDF line break can divide a URL after a slash or inside its domain.
+    # Mask only the complete
+    # source-proven URL, whose spelling/count is checked independently below;
+    # otherwise a path component such as d3 becomes a spurious prose variable.
+    for left, right in reversed(_split_url_spans(ti, projected)):
+        projected = projected[:left] + " " + projected[right:]
+    # The generic URL recognizer also accepts Unicode IRIs, so its broad
+    # character class must not consume a translated sentence such as
+    # '/page/。访问日期：2014'. Keep an exact source-attested Unicode IRI opaque,
+    # including its literal punctuation; otherwise Chinese sentence punctuation
+    # ends only this prose-analysis URL span. No source/output text is edited.
+    punctuation = re.compile(r'[，。；：！？、（）【】]')
+    source_iris = []
+    for match in _URL_OR_EMAIL.finditer(ti.unicode):
+        value = match[0].rstrip('.,;:!?)]')
+        boundary = punctuation.search(value)
+        before = value[:boundary.start()] if boundary else value
+        if re.search(r'[\u3400-\u9fff]', before):
+            source_iris.append(value)
+    def opaque_url(match):
+        value = match[0]
+        for literal in sorted(source_iris, key=len, reverse=True):
+            if value.startswith(literal):
+                rest = value[len(literal):]
+                if not rest or punctuation.match(rest):
+                    return ' ' + rest
+        boundary = punctuation.search(value)
+        return ' ' + value[boundary.start():] if boundary else ' '
+    return _URL_OR_EMAIL.sub(opaque_url, projected)
+
+
+def _source_split_urls(ti):
+    """Prove one whitespace boundary inside a complete source URL.
+
+    An arbitrary word after a URL is never joined. Require the source's URL
+    to end in a slash and the continuation to contain at least two further
+    slashes, or require an unfinished single host label followed by a full
+    domain and a slash-terminated path at a source sentence/paragraph end.
+    Code, quoted examples, formulas and markup cannot establish this contract.
+    This is an analysis view only; PDF/source strings stay intact.
+    """
+    label = str(getattr(ti, '_pagebridge_layout_label', '')).lower().replace(' ', '_')
+    if label in {'code', 'formula', 'equation', 'isolate_formula'}:
+        return set()
+    text = ti.unicode
+    opaque = [m.span() for pattern in (_CANONICAL, _TAG, re.compile(
+        r'<code\b[^>]*>.*?</code>|`[^`]*`|"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\x27[^\x27\n]+\x27(?!\w)', re.S))
+        for m in pattern.finditer(text)]
+    # Deliberately exclude queries, fragments, percent-escaped whitespace and
+    # ambiguous punctuation. Only the observed slash-separated path grammar
+    # supplies evidence for joining a PDF whitespace boundary.
+    component = r'[A-Za-z0-9_~-]+(?:\.[A-Za-z0-9_~-]+)*'
+    pattern = (r'(?<![A-Za-z0-9_/:])(?P<base>https?://(?:[A-Za-z0-9-]+\.)+'
+               r'[A-Za-z]{2,63}(?::\d{1,5})?/(?:' + component + r'/)*)'
+               r'[ \t\r\n]+(?P<tail>' + component + r'(?:/' + component + r'){2,})'
+               + _SPLIT_URL_END)
+    # A complete domain cannot end at 'http://jfly.'. The native continuation
+    # supplies its remaining domain and full directory path. Requiring a
+    # terminal slash plus sentence punctuation/end avoids treating a second
+    # source break in an unfinished path as a complete shorter URL contract.
+    label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    domain_break = (r'(?<![A-Za-z0-9_/:])(?P<base>https?://' + label + r'\.)'
+                    r'[ \t\r\n]+(?P<tail>(?:' + label + r'\.)+[A-Za-z]{2,63}/'
+                    r'(?:' + component + r'/)+)'
+                    r'(?=$|[.,;:!?)\]](?=\s|$))')
+    # A broken final TLD can follow several subdomain labels and need not have
+    # a path. Distinguish it from a completed URL followed by a new sentence:
+    # its preceding label must not already be a conventional/cc top-level name.
+    conventional_tld = r'(?:com|org|net|edu|gov|mil|int)'
+    tld = r'(?:com|org|net|edu|gov|mil|int|[a-z]{2})'
+    # Bare 'is', 'in', or 'net benefits' after a completed URL is prose, not
+    # evidence of a new TLD. A two-letter suffix needs a nonempty path; a bare
+    # conventional suffix needs source sentence punctuation or paragraph end.
+    tld_break = (r'(?<![A-Za-z0-9_/:])(?P<base>https?://(?:' + label + r'\.)+)'
+                 r'[ \t\r\n]+(?P<tail>(?:' + tld + r'/' + component
+                 + r'(?:/' + component + r')*/?|' + conventional_tld
+                 + r'(?=$|[.,;:!?)\]](?=\s|$))))' + _SPLIT_URL_END)
+    result = {(m['base'], m['tail']) for grammar in (pattern, domain_break)
+            for m in re.finditer(grammar, text)
+            if not any(m.start() < right and left < m.end() for left, right in opaque)}
+    for match in re.finditer(tld_break, text):
+        prior_label = match['base'].split('://', 1)[1].rstrip('.').rsplit('.', 1)[-1]
+        if (not re.fullmatch(tld, prior_label)
+                and not any(match.start() < right and left < match.end() for left, right in opaque)):
+            result.add((match['base'], match['tail']))
+    return result
+
+
+def _split_url_pattern(base, tail):
+    # Accept only the known PDF boundary (retained or removed), and require the
+    # full URL token: a changed suffix/query must not pass as a matching prefix.
+    return (r'(?<![A-Za-z0-9_/:])' + re.escape(base) + r'[ \t\r\n]*' + re.escape(tail)
+            + _SPLIT_URL_END)
+
+
+def _split_url_spans(ti, text):
+    return sorted({m.span() for base, tail in _source_split_urls(ti)
+                   for m in re.finditer(_split_url_pattern(base, tail), text)})
+
+
+def _check_split_urls(ti, output):
+    for base, tail in _source_split_urls(ti):
+        pattern = _split_url_pattern(base, tail)
+        if len(re.findall(pattern, ti.unicode)) != len(re.findall(pattern, output)):
+            raise PlaceholderIntegrityError('source-split-url-changed')
 
 
 def _contextual_terms(ti):
@@ -3498,6 +3779,15 @@ def _joined_prose_number_spans(text):
                        r"(?P<number>\d+)\.[ \t]+(?=[A-Za-z]{2,}\b)", text, re.I)
     if caption:
         spans.add(caption.span("number"))
+    # Bibliographies can lose the space after the conventional page label,
+    # e.g. pp.35–41. The generic numeric regex rightly excludes decimal/name
+    # fragments after a dot, but both endpoints of this complete page-range
+    # grammar are prose numbers. Do not reinterpret code, URLs or quotations.
+    page_range = (r'(?<![A-Za-z0-9_.])pp\.(?P<first>[1-9]\d*)[ \t]*[-–][ \t]*'
+                  r'(?P<last>[1-9]\d*)(?![A-Za-z0-9_]|\.\d)')
+    for match in re.finditer(page_range, _boundary_visible_text(text)):
+        if int(match['first']) <= int(match['last']):
+            spans.update((match.span('first'), match.span('last')))
     spans.update(m.span('number') for m in _joined_parallel_module_numbers(text))
     return sorted(spans)
 
@@ -4581,6 +4871,7 @@ def normalize_output(ti, output: str) -> str:
     _check_parenthesis_boundaries(ti, _restore(text, literals))
     _check_math_primes(ti, _restore(text, literals))
     _check_accent_words(ti, _restore(text, literals))
+    _check_split_urls(ti, _restore(text, literals))
     # Upstream's style regex is deliberately single-line. Normalize only inside
     # engine wrappers so a model-added line break cannot silently remove styling.
     text = re.sub(r"(<style id='\d+'>)(.*?)(</style>)",
@@ -5255,6 +5546,7 @@ def _guard_batch_translate(self, docs):
     layout_guard.rejoin_source_page_definition_heads(self, docs)
     layout_guard.rejoin_source_page_short_heads(self, docs)
     layout_guard.rejoin_source_page_research_phrases(self, docs)
+    _rehome_page_hyphen_sentence_heads(self, docs)
     count = _capture_source_continuity(docs)
     with _lock:
         _counters["sourceColumnContinuityPairs"] += count

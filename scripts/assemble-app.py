@@ -1,11 +1,13 @@
 """Assemble a local, ad-hoc signed Mac app with a private Python runtime."""
 from pathlib import Path
 import argparse
+import base64
 import json
 import os
 import plistlib
 import shutil
 import subprocess
+from urllib.parse import urlparse
 from bundle_profile import prune_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,6 +19,13 @@ if app.parent != ROOT / "dist" or app.suffix != ".app":
     parser.error("Output must be an .app directly inside the project's dist directory.")
 info = json.loads((ROOT / "engine/runtime-info.json").read_text())
 profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text())
+release = json.loads((ROOT / "VERSION.json").read_text())
+updates = json.loads((ROOT / "update-config.json").read_text())
+feed = urlparse(updates["feedURL"])
+if feed.scheme != "https" or not feed.hostname or feed.username or feed.password:
+    raise RuntimeError("The update feed must use an HTTPS URL without credentials.")
+if len(base64.b64decode(updates["publicEDKey"], validate=True)) != 32:
+    raise RuntimeError("Sparkle requires a 32-byte Ed25519 public key.")
 stage = app.with_name("." + app.stem + "-staging.app")
 if stage.exists():
     shutil.rmtree(stage)
@@ -33,15 +42,68 @@ shutil.copy2(ROOT / "assets/PageBridge.icns", resources / "PageBridge.icns")
 shutil.copy2(ROOT / "assets/PageBridge-icon.png", resources / "PageBridgeIcon.png")
 shutil.copytree(ROOT / "demos", resources / "demos", ignore=shutil.ignore_patterns(".DS_Store"))
 
+# SwiftPM verifies the checksum of its pinned binary artifact. Copy the actual
+# framework tree, preserving version symlinks and helper executable modes.
+sparkle_candidates = list((ROOT / "macOS/.build/artifacts").glob(
+    "*/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"))
+if len(sparkle_candidates) != 1:
+    raise RuntimeError("Expected one resolved Sparkle framework; run the Swift build first.")
+sparkle_source = sparkle_candidates[0]
+sparkle_info = plistlib.loads((sparkle_source / "Resources/Info.plist").read_bytes())
+if sparkle_info.get("CFBundleShortVersionString") != updates["sparkleVersion"]:
+    raise RuntimeError("Resolved Sparkle framework differs from the pinned update version.")
+frameworks = contents / "Frameworks"
+frameworks.mkdir()
+sparkle = frameworks / "Sparkle.framework"
+shutil.copytree(sparkle_source, sparkle, symlinks=True, ignore=shutil.ignore_patterns(".DS_Store"))
+for path in sparkle.rglob("*"):
+    if path.is_symlink() and (os.path.isabs(os.readlink(path)) or not path.resolve().is_relative_to(sparkle.resolve())):
+        raise RuntimeError("Sparkle contains an external framework symlink.")
+sparkle_licenses = list((ROOT / "macOS/.build/checkouts").glob("*/LICENSE"))
+sparkle_licenses = [path for path in sparkle_licenses if path.parent.name.lower() == "sparkle"]
+if len(sparkle_licenses) != 1:
+    raise RuntimeError("The pinned Sparkle checkout license is missing.")
+shutil.copy2(sparkle_licenses[0], resources / "Sparkle-LICENSE.txt")
+
+# SwiftPM can add artifact and compiler-runtime search paths that only exist on
+# the build machine. Resolve the active toolchain instead of hardcoding Xcode's
+# installation path; keep the OS runtime and embedded-framework search paths.
+swift_compiler = Path(subprocess.run(["xcrun", "--find", "swift"], check=True,
+                                     capture_output=True, text=True).stdout.strip())
+toolchain_lib = swift_compiler.resolve().parent.parent / "lib"
+toolchain_swift_dirs = [path.resolve() for path in toolchain_lib.glob("swift*")
+                        if path.is_dir() and not path.resolve().is_relative_to(Path("/usr/lib"))]
+load_commands = subprocess.run(["otool", "-l", str(contents / "MacOS/PageBridge")],
+                               check=True, capture_output=True, text=True).stdout.splitlines()
+for index, line in enumerate(load_commands):
+    if line.strip() == "cmd LC_RPATH":
+        for detail in load_commands[index + 1:index + 4]:
+            if detail.strip().startswith("path "):
+                rpath = detail.strip()[5:].rsplit(" (offset", 1)[0]
+                rpath_path = Path(rpath)
+                is_build_path = rpath_path.is_absolute() and rpath_path.is_relative_to(ROOT / "macOS/.build")
+                is_toolchain_path = rpath_path.is_absolute() and any(
+                    rpath_path.resolve().is_relative_to(directory) for directory in toolchain_swift_dirs)
+                if is_build_path or is_toolchain_path:
+                    subprocess.run(["install_name_tool", "-delete_rpath", rpath,
+                                    str(contents / "MacOS/PageBridge")], check=True)
+
 metadata = {
     "CFBundleName": "PageBridge", "CFBundleDisplayName": "PageBridge",
     "CFBundleIdentifier": "tech.pagebridge.mac", "CFBundleExecutable": "PageBridge",
-    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.4",
-    "CFBundleVersion": "6", "CFBundleIconFile": "PageBridge.icns",
+    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": release["version"],
+    "CFBundleVersion": release["build"], "CFBundleIconFile": "PageBridge.icns",
     "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True,
     "LSMultipleInstancesProhibited": True,
     "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     "NSLocalNetworkUsageDescription": "连接你配置的本机或局域网翻译模型服务。",
+    "SUFeedURL": updates["feedURL"],
+    "SUPublicEDKey": updates["publicEDKey"],
+    "SURequireSignedFeed": True,
+    "SUVerifyUpdateBeforeExtraction": True,
+    "SUAutomaticallyUpdate": False,
+    "SUAllowsAutomaticUpdates": False,
+    "SUEnableSystemProfiling": False,
     "CFBundleDocumentTypes": [{"CFBundleTypeName": "PDF Document", "LSItemContentTypes": ["com.adobe.pdf"],
                                "CFBundleTypeRole": "Viewer", "LSHandlerRank": "Alternate"}],
 }
@@ -62,17 +124,10 @@ profile_report = prune_runtime(runtime, profile, info["versions"])
 for relative in ["worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py", "pyproject.toml", "uv.lock"]:
     shutil.copy2(ROOT / "engine" / relative, engine / relative)
 (engine / "runtime-info.json").write_text(json.dumps({"pythonVersion": info["pythonVersion"], "architecture": info["architecture"], "versions": info["versions"]}, indent=2))
-(resources / "Third-Party-Notices.txt").write_text(
-    "PageBridge local development build\n\n"
-    "PDFMathTranslate-next 2.9.0: AGPL-3.0, https://github.com/PDFMathTranslate-next/PDFMathTranslate-next\n"
-    "BabelDOC 0.6.2: AGPL-3.0, https://github.com/funstory-ai/BabelDOC\n"
-    "Python package source and wheel license notices are included in engine/runtime/lib/python3.12/site-packages.\n"
-    "The dependency lock and PageBridge worker source are included in engine/.\n"
-    "The native worker runtime profile is recorded in engine/bundle-profile.json.\n"
-    "Unused web UI/provider SDKs and development/test resources are excluded from this application.\n"
-    "Public sample PDFs are bundled unchanged; titles, authors, sources and individual licenses are in demos/README.md and demos/catalog.json.\n"
-    "This local build uses ad-hoc signing, not Developer ID signing or notarization.\n"
-)
+shutil.copy2(ROOT / "LICENSE", resources / "LICENSE")
+shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", resources / "Third-Party-Notices.txt")
+shutil.copy2(ROOT / "VERSION.json", resources / "VERSION.json")
+shutil.copy2(ROOT / "update-config.json", resources / "update-config.json")
 
 # A bundle must not depend on the developer's venv or an absolute external symlink.
 for directory, dirs, files in os.walk(runtime):
@@ -99,6 +154,20 @@ for directory, _, files in os.walk(runtime):
             magic = handle.read(4)
         if magic in mach_o_magic:
             subprocess.run(["codesign", "--force", "--sign", "-", str(path)], check=True, capture_output=True)
+# Sparkle's helpers are separate code objects. Sign from the inside out, without
+# --deep signing, preserving the downloader's own entitlement metadata.
+print("Signing Sparkle framework and update helpers…", flush=True)
+sparkle_version = (sparkle / "Versions/Current").resolve()
+for helper in (sparkle_version / "XPCServices/Installer.xpc",
+               sparkle_version / "XPCServices/Downloader.xpc",
+               sparkle_version / "Autoupdate", sparkle_version / "Updater.app"):
+    if not helper.exists():
+        raise RuntimeError("Sparkle update helper is missing: " + helper.name)
+    command = ["codesign", "--force", "--sign", "-"]
+    if helper.name == "Downloader.xpc":
+        command.append("--preserve-metadata=entitlements")
+    subprocess.run(command + [str(helper)], check=True, capture_output=True)
+subprocess.run(["codesign", "--force", "--sign", "-", str(sparkle)], check=True, capture_output=True)
 subprocess.run(["codesign", "--force", "--sign", "-", str(stage)], check=True)
 subprocess.run(["codesign", "--verify", "--deep", "--strict", str(stage)], check=True)
 if app.exists():

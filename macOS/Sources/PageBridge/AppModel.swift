@@ -7,11 +7,18 @@ import PageBridgeCore
 
 @MainActor
 final class AppModel: ObservableObject {
+    let library = LibraryModel()
     @Published var documents: [DocumentRecord] = []
     @Published var selectedID: UUID?
     @Published var settingsPresented = false
     @Published var readingMode: ReadingMode = .original
-    @Published var page = 1
+    @Published var page = 1 {
+        didSet {
+            if let document = selectedDocument, page > 0 && page <= document.pageCount {
+                UserDefaults.standard.set(page, forKey: "PageBridge.readingPage.\(document.id.uuidString)")
+            }
+        }
+    }
     @Published var zoom = 1.0
     @Published var syncScrolling = true
     @Published var searchQuery = ""
@@ -55,8 +62,11 @@ final class AppModel: ObservableObject {
                 services = [local]; activeServiceID = local.id
             }
             if activeService == nil { activeServiceID = services.first?.id }
-            selectedID = documents.first?.id
-            if selectedDocument?.translatedURL != nil { readingMode = .dual }
+            selectedID = documents.first(where: { !library.isTrashed(id: $0.id) })?.id
+            if let document = selectedDocument {
+                page = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: "PageBridge.readingPage.\(document.id.uuidString)")))
+                if document.translatedURL != nil { readingMode = .dual }
+            }
         } catch {
             repository = nil
             errorMessage = "无法打开 PageBridge 数据目录：\(error.localizedDescription)"
@@ -65,7 +75,10 @@ final class AppModel: ObservableObject {
     }
 
     func selectDocument(_ id: UUID) {
-        selectedID = id; page = 1; zoom = 1
+        guard let document = documents.first(where: { $0.id == id }), !library.isTrashed(id: id) else { return }
+        let savedPage = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: "PageBridge.readingPage.\(id.uuidString)")))
+        selectedID = id; page = savedPage; zoom = 1
+        library.markOpened(id: id)
         readingMode = selectedDocument?.translatedURL == nil ? .original : .dual
         searchQuery = ""; searchHits = []; searchRevision += 1
     }
@@ -86,11 +99,39 @@ final class AppModel: ObservableObject {
                 let record = try repository.importPDF(url)
                 let updated = [record] + documents
                 try repository.saveDocuments(updated)
+                library.organizeImported(ids: [record.id])
                 documents = updated; selectDocument(record.id)
                 statusMessage = "已添加 \(record.name)，原文件保持不变。"
             } catch { failures.append(error.localizedDescription) }
         }
         if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
+    }
+
+    /// Downloaded files are already validated; reuse identical local originals
+    /// so opening a search result does not duplicate its notes or translations.
+    func importLiteraturePDF(_ url: URL) throws {
+        guard let repository else { throw BridgeError.message("文档库不可用，请重新打开应用后重试。") }
+        let hash = try DocumentRepository.sha256(url)
+        if let existing = documents.first(where: {
+            $0.inputSHA256 == hash && !library.isTrashed(id: $0.id)
+                && (try? DocumentRepository.sha256($0.originalURL)) == hash
+        }) {
+            library.filter = .all; library.searchQuery = ""
+            selectDocument(existing.id)
+            statusMessage = "已打开文档库中的 \(existing.name)。"
+            return
+        }
+        let record = try repository.importPDF(url)
+        let updated = [record] + documents
+        do { try repository.saveDocuments(updated) }
+        catch {
+            // This directory was created only for the failed import above.
+            try? FileManager.default.removeItem(at: record.originalURL.deletingLastPathComponent())
+            throw error
+        }
+        library.organizeImported(ids: [record.id])
+        documents = updated; selectDocument(record.id)
+        statusMessage = "已下载并添加 \(record.name)。"
     }
 
     func refreshEngine() {
@@ -113,7 +154,7 @@ final class AppModel: ObservableObject {
     }
 
     func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?) {
-        guard !isTranslating, let document = selectedDocument, let repository else { return }
+        guard !isTranslating, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
         do {
             guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
             guard let service = activeService else { throw BridgeError.message("请先配置翻译服务。") }
@@ -156,13 +197,16 @@ final class AppModel: ObservableObject {
                     try? FileManager.default.removeItem(at: staging)
                 } catch {
                     var failed = documents.first { $0.id == document.id } ?? document
+                    let summary: TranslationFailureSummary? = cancelRequested ? nil : (try? repository.retainFailureDiagnostics(document: document, attempt: attempt, staging: staging))
+                    let failureMessage = summary?.message(hasPreviousResult: failed.translatedPath != nil)
+                        ?? TranslationFailureSummary.fallbackMessage(error.localizedDescription, hasPreviousResult: failed.translatedPath != nil)
                     failed.status = cancelRequested ? .cancelled : .failed
-                    failed.lastError = cancelRequested ? nil : error.localizedDescription
+                    failed.lastError = cancelRequested ? nil : failureMessage
                     do { try replaceRecord(failed) } catch { errorMessage = "任务记录保存失败：\(error.localizedDescription)" }
                     statusMessage = cancelRequested
                         ? (failed.translatedPath != nil ? "已取消；上次成功结果仍可使用。" : "已取消，未生成译文。")
-                        : "翻译失败：\(error.localizedDescription)"
-                    if !cancelRequested { errorMessage = error.localizedDescription }
+                        : "翻译失败：\(failureMessage)"
+                    if !cancelRequested { errorMessage = failureMessage }
                     try? FileManager.default.removeItem(at: staging)
                 }
             }
@@ -207,6 +251,19 @@ final class AppModel: ObservableObject {
     func openOutputFolder() {
         guard let record = selectedDocument else { return }
         NSWorkspace.shared.activateFileViewerSelecting([record.translatedURL ?? record.originalURL])
+    }
+
+    func renameDocument(id: UUID, name: String) {
+        guard id != activeJobDocumentID, var record = documents.first(where: { $0.id == id }) else { return }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.count <= 240, !clean.contains("/"), !clean.contains(":"),
+              !clean.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            errorMessage = "文档名称应为 1–240 个字符，不能包含斜杠、冒号或换行。"
+            return
+        }
+        record.name = clean.lowercased().hasSuffix(".pdf") ? clean : clean + ".pdf"
+        do { try replaceRecord(record) }
+        catch { errorMessage = error.localizedDescription }
     }
 
     func removeDocument(_ id: UUID) {

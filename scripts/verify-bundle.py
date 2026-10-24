@@ -6,6 +6,7 @@ translation is performed. A temporary HOME isolates import-time cache activity.
 """
 import ast
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,6 +17,7 @@ import sys
 import re
 import tempfile
 import plistlib
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "dist/PageBridge.app"
@@ -132,6 +134,66 @@ def verify_signature(environment):
             "diagnostic": (result.stdout + result.stderr).strip()}
 
 
+def verify_updater(environment, app_info):
+    resources = APP / "Contents/Resources"
+    configuration = json.loads((ROOT / "update-config.json").read_text())
+    require(json.loads((resources / "update-config.json").read_text()) == configuration,
+            "Bundled updater configuration differs from source.")
+    feed = urlparse(configuration["feedURL"])
+    require(feed.scheme == "https" and feed.hostname and not feed.username and not feed.password,
+            "Update feed is not an HTTPS URL without credentials.")
+    require(len(base64.b64decode(configuration["publicEDKey"], validate=True)) == 32,
+            "Updater public key is not a valid Ed25519 key.")
+    require(app_info.get("SUFeedURL") == configuration["feedURL"], "App update feed differs from configuration.")
+    require(app_info.get("SUPublicEDKey") == configuration["publicEDKey"], "App updater public key differs from configuration.")
+    for name in ("SURequireSignedFeed", "SUVerifyUpdateBeforeExtraction"):
+        require(app_info.get(name) is True, "Required updater signature policy is not enabled: " + name)
+    for name in ("SUAutomaticallyUpdate", "SUAllowsAutomaticUpdates", "SUEnableSystemProfiling"):
+        require(app_info.get(name) is False, "Unexpected updater background behavior: " + name)
+    require("SUEnableAutomaticChecks" not in app_info, "Automatic checks must retain Sparkle's initial consent flow.")
+    framework = APP / "Contents/Frameworks/Sparkle.framework"
+    require(framework.is_dir(), "The Sparkle update framework is missing.")
+    for path in framework.rglob("*"):
+        if path.is_symlink():
+            require(not os.path.isabs(os.readlink(path)) and inside(path, framework),
+                    "Sparkle has an external framework symlink.")
+    info = plistlib.loads((framework / "Resources/Info.plist").read_bytes())
+    require(info.get("CFBundleShortVersionString") == configuration["sparkleVersion"],
+            "Sparkle framework version differs from update configuration.")
+    licenses = [path for path in (ROOT / "macOS/.build/checkouts").glob("*/LICENSE")
+                if path.parent.name.lower() == "sparkle"]
+    require(len(licenses) == 1 and (resources / "Sparkle-LICENSE.txt").is_file(),
+            "Sparkle's complete license is missing.")
+    require(sha256(licenses[0]) == sha256(resources / "Sparkle-LICENSE.txt"),
+            "Bundled Sparkle license differs from the pinned checkout.")
+    current = (framework / "Versions/Current").resolve()
+    components = [framework, current / "Autoupdate", current / "Updater.app",
+                  current / "XPCServices/Installer.xpc", current / "XPCServices/Downloader.xpc"]
+    for component in components:
+        require(component.exists(), "Missing Sparkle updater component: " + component.name)
+        result = run(["/usr/bin/codesign", "--verify", "--strict", str(component)], environment)
+        require(result.returncode == 0, "Sparkle component signature failed: " + component.name)
+    executable = APP / "Contents/MacOS/PageBridge"
+    linked = run(["/usr/bin/otool", "-L", str(executable)], environment)
+    require(linked.returncode == 0, "Could not inspect native application dependencies.")
+    dependencies = [line.strip().split(" (", 1)[0] for line in linked.stdout.splitlines()[1:] if line.strip()]
+    require("@rpath/Sparkle.framework/Versions/B/Sparkle" in dependencies,
+            "Native application does not link the embedded Sparkle framework.")
+    require(all(not item.startswith("/") or item.startswith(("/System/Library/", "/usr/lib/"))
+                for item in dependencies), "Native application depends on an external build path.")
+    commands = run(["/usr/bin/otool", "-l", str(executable)], environment)
+    require(commands.returncode == 0, "Could not inspect native application runpaths.")
+    rpaths = re.findall(r"cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset", commands.stdout)
+    require("@executable_path/../Frameworks" in rpaths, "Embedded framework runpath is missing.")
+    require(all(not item.startswith("/") or item.startswith(("/System/Library/", "/usr/lib/"))
+                for item in rpaths), "Native application contains an external build runpath.")
+    return {"frameworkVersion": info["CFBundleShortVersionString"], "feedURL": configuration["feedURL"],
+            "publicKeyMatches": True, "signedFeedRequired": True, "verificationBeforeExtraction": True,
+            "silentInstallationDisabled": True, "profilingDisabled": True,
+            "componentsVerified": [str(path.relative_to(APP)) for path in components],
+            "nativeDependencies": dependencies, "nativeRunpaths": rpaths, "licenseMatches": True}
+
+
 def worker_expected_versions():
     tree = ast.parse(SOURCE_WORKER.read_text(encoding="utf-8"))
     for statement in tree.body:
@@ -246,6 +308,17 @@ def main():
                     report['engineModulesSHA256'][name] = checksum
                 resources = APP / 'Contents/Resources'
                 info = plistlib.loads((APP / 'Contents/Info.plist').read_bytes())
+                release = json.loads((ROOT / 'VERSION.json').read_text())
+                require(info.get('CFBundleShortVersionString') == release['version'], 'App version differs from VERSION.json.')
+                require(info.get('CFBundleVersion') == release['build'], 'App build differs from VERSION.json.')
+                report['appVersion'] = release['version']
+                report['appBuild'] = release['build']
+                for source, target in [('LICENSE', 'LICENSE'), ('THIRD_PARTY_NOTICES.md', 'Third-Party-Notices.txt'),
+                                       ('VERSION.json', 'VERSION.json')]:
+                    require((resources / target).is_file() and sha256(resources / target) == sha256(ROOT / source),
+                            'Bundled release notice differs: ' + source)
+                report['releaseNoticesMatch'] = True
+                report['updater'] = verify_updater(environment, info)
                 require(info.get('CFBundleIconFile') == 'PageBridge.icns', 'Application icon is not configured.')
                 for name in ('PageBridge.icns', 'PageBridge-icon.png'):
                     target = resources / ('PageBridgeIcon.png' if name.endswith('.png') else name)

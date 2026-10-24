@@ -53,6 +53,49 @@ public final class DocumentRepository {
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
+    /// Retain only a validated, text-free summary before disposable staging is
+    /// removed. Neither rejected PDFs nor arbitrary worker files are copied.
+    public func retainFailureDiagnostics(document: DocumentRecord, attempt: UUID, staging: URL) throws -> TranslationFailureSummary? {
+        let folder = document.originalURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+        let managed = root.resolvingSymlinksInPath().standardizedFileURL.appendingPathComponent("documents", isDirectory: true)
+        let expected = folder.appendingPathComponent("attempts/\(attempt.uuidString)", isDirectory: true)
+        let expectedRaw = document.originalURL.deletingLastPathComponent().appendingPathComponent("attempts/\(attempt.uuidString)", isDirectory: true).standardizedFileURL
+        guard folder.path.hasPrefix(managed.path + "/"),
+              staging.standardizedFileURL == expectedRaw,
+              staging.resolvingSymlinksInPath().standardizedFileURL == expected,
+              document.inputSHA256.count == 64,
+              document.inputSHA256.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw BridgeError.message("失败诊断目录与任务不匹配。")
+        }
+        let source = staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json")
+        guard fm.fileExists(atPath: source.path) else { return nil }
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0, size <= TranslationFailureSummary.maximumReportBytes else {
+            throw BridgeError.message("失败诊断文件格式无效。")
+        }
+        let summary = try TranslationFailureSummary.decodeWorkerReport(Data(contentsOf: source))
+        let directory = folder.appendingPathComponent("diagnostics", isDirectory: true)
+        guard directory.resolvingSymlinksInPath().standardizedFileURL == directory else {
+            throw BridgeError.message("失败诊断目录不可用。")
+        }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent(attempt.uuidString + ".json")
+        guard target.resolvingSymlinksInPath().standardizedFileURL == target else {
+            throw BridgeError.message("失败诊断文件不可用。")
+        }
+        struct Record: Encodable {
+            let documentID: UUID
+            let attemptID: UUID
+            let inputSHA256: String
+            let recordedAt: Date
+            let summary: TranslationFailureSummary
+        }
+        let record = Record(documentID: document.id, attemptID: attempt, inputSHA256: document.inputSHA256,
+                            recordedAt: Date(), summary: summary)
+        try JSONEncoder().encode(record).write(to: target, options: .atomic)
+        return summary
+    }
     public func commit(result: WorkerEvent, document: DocumentRecord, attempt: UUID, staging: URL, service: ServiceConfiguration, sourceLanguage: String, targetLanguage: String, pages: String?) throws -> DocumentRecord {
         guard let mono = result.translatedPath, let dual = result.bilingualPath else { throw BridgeError.message("引擎没有返回完整的译文和双语 PDF。") }
         let monoURL = URL(fileURLWithPath: mono).resolvingSymlinksInPath()

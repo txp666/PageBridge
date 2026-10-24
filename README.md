@@ -1,90 +1,137 @@
 # PageBridge
 
-<img src="assets/PageBridge-icon.png" alt="PageBridge icon" width="112">
+<img src="assets/PageBridge-icon.png" alt="PageBridge icon" width="96">
 
-原生 macOS PDF 翻译与对照阅读应用。使用 SwiftUI、AppKit 和 PDFKit 构建界面，通过 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 保留 PDF 的主要版面结构，支持本机 Ollama 与自定义 OpenAI 兼容 API。
+**原生 Mac PDF 阅读与翻译工作区。** 整理文档、保留排版翻译、原文译文对照、添加批注，也可以搜索文献并直接打开全文。
 
-**当前版本：0.1.4 / build 6，本地构建与验收已完成。** 626 项引擎测试通过；原生设置、示例导入、真实翻译、对照阅读、链接和系统导出已检查。应用文件合计 **614.3 MB**，压缩包 **222.8 MB**，完整数据见 [验证记录](docs/VERIFICATION.md)。译文仍有明确记录的措辞限制；68 页采用已审 v12 全文与 v13 第 20 页的合成，逐页来源可追溯。未公开发布。
+适用于手册、报告、教材、合同和论文等带文本层的 PDF。界面使用 SwiftUI、AppKit 和 PDFKit，翻译基于 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC)，支持本机 Ollama 和自定义 OpenAI 兼容 API。
 
-## 开始使用
+**当前版本：0.3.0 / build 12** · [下载](https://github.com/txp666/PageBridge/releases/tag/v0.3.0) · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
 
-1. 打开构建好的 `PageBridge.app`，进入左下角“翻译服务”。
-2. 在线服务选择厂商和模型、粘贴 API Key；本机服务选择 Ollama，点击“获取模型”选择已下载的模型。
-3. 拖入 PDF，或从“示例 PDF”选择论文，点击翻译。完成后对照阅读，再导出译文或双语 PDF。
+## 核心功能
 
-应用随包提供 Python 与 PDF 翻译引擎；Ollama 和语言模型需单独安装。首次翻译可能下载上游字体和版面分析资源，资源备齐后，本机 Ollama 模式可离线使用。
-
-详细操作、页码范围、导出和排错见 [使用指南](docs/USER_GUIDE.md)。
-
-## 功能
-
-| 功能 | 行为 |
+| 功能 | 说明 |
 |---|---|
-| 原生文档库 | 拖放或选择 PDF；导入建立独立副本，保存历史记录 |
-| 服务设置 | DeepSeek、阿里云百炼（北京）、硅基流动（中国站）、OpenAI、Ollama 与自定义 API；支持获取模型和手填模型 ID |
-| 对照阅读 | 原文与译文并排，页码跳转、缩放、搜索、文字选择与同步滚动 |
-| 翻译任务 | 显示真实阶段和进度，支持取消、重跑及指定页；一次处理一个任务 |
-| 输出 | 译文与输入页数一致；双语按原文页、译文页交替排列 |
-| 内容保护 | 校验公式占位符、原始公式对象、数值和技术标识；恢复失败时保留上次成功结果 |
-| 版面与链接 | 按源文档证据恢复列表条目、脚标和链接热点；本轮真实译文验收状态见验证记录 |
-| 示例库 | 内置五份公开论文，共 49 页，包含短文、图表、公式、双栏和长参考文献 |
+| 文档管理 | 文件夹、收藏、最近阅读、回收站、名称搜索、排序与首页预览 |
+| PDF 翻译 | 整篇或指定页，显示真实进度，支持取消和重跑；失败保留上次成功译文 |
+| 对照阅读 | 原文／对照／译文切换，缩放、文内搜索、缩略图、目录和同步滚动 |
+| 批注与笔记 | 高亮、下划线、便笺、页书签，导出批注 PDF 和 Markdown 笔记 |
+| 文档助手 | 文档问答、当前页、选中文字与自由提问；独立选择已配置模型，展开页码引用 |
+| 文献获取 | OpenAlex 搜索，Sci-Hub／公开 PDF 全文来源，支持 DOI 直接打开与应用内站点验证 |
+| 导出 | 原文、译文、交替页双语 PDF，以及批注和阅读笔记 |
+| 应用更新 | 手动或经同意自动检查，签名验证，翻译期间暂缓安装 |
 
-API Key 保存于 macOS 钥匙串。常用厂商已配置地址；其他地域、网关或兼容服务使用“自定义 API”。“获取模型”只读取模型目录，“测试连接”只发送固定短句；保存设置、打开示例不会自动开始翻译。
+## 界面预览
 
-## 示例 PDF
+原文与译文对照：
 
-| 示例 | 页数 | 适合体验 |
-|---|---:|---|
-| [可复现计算研究十条建议](demos/pdfs/reproducible-research.pdf) | 4 | 短篇正文、分节与参考文献 |
-| [科学图表设计十条建议](demos/pdfs/better-figures.pdf) | 7 | 图文混排与彩色图表 |
-| [神经网络雪崩模型](demos/pdfs/avalanches.pdf) | 8 | 公式与双栏排版 |
-| [风数据与自组织神经网络](demos/pdfs/wind-data-mining.pdf) | 11 | 数值表格、矩阵与参考文献 |
-| [基因网络与神经网络](demos/pdfs/regnann.pdf) | 19 | 长论文、分段公式与图表 |
+![对照阅读](docs/images/reader.jpg)
 
-示例是未修改的原始出版 PDF。完整作者、DOI、许可与文件哈希见 [示例说明](demos/README.md) 和 [目录清单](demos/catalog.json)。示例可用不等于相应机器译文已通过验收。
+文献搜索与全文来源：
+
+![文献搜索](docs/images/literature-search.jpg)
+
+文档助手：
+
+![文档助手](docs/images/assistant.jpg)
+
+截图来自原生 0.3.0 应用，使用公开示例文献；[截图与文献归属](docs/images/README.md)。
+
+## 下载与安装
+
+当前安装包支持 **Apple Silicon（M 系列）Mac**，部署目标为 **macOS 14+**；暂未提供 Intel 或 Windows 版本。macOS 14 尚未完成实机验证，具体环境及验收范围见[验证记录](docs/VERIFICATION.md)。
+
+| 下载 | 用途 |
+|---|---|
+| [Mac 应用 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-macOS-arm64.zip.sha256) | 普通用户下载安装 |
+| [项目源码 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip.sha256) | 对应版本源码、测试、构建脚本和锁文件 |
+| [第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip.sha256) | 随包 AGPL 组件的源码与清单 |
+
+文件是否已公开、大小和最终哈希以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.3.0)为准。
+
+1. 退出旧版，解压 ZIP，将 `PageBridge.app` 放入“应用程序”；更新时替换旧应用文件。
+2. 打开应用，在 **PageBridge → About PageBridge** 确认版本为 `0.3.0 (12)`。
+3. 已有文档、译文、笔记和服务配置会继续使用，无需重新导入。
+
+首次打开时，macOS 可能要求额外确认：当前采用 ad-hoc 签名，**尚未完成 Developer ID 签名与 Apple 公证**。请核对官方来源与 SHA-256，再自行按系统安全提示确认。OTA 更新签名不替代 Apple 公证。
+
+应用自带 Python 和 PDF 翻译引擎，普通用户无需另外安装 Python；**不包含语言模型**。Ollama 和本地模型需单独安装，首次翻译还可能下载字体和版面分析资源。
+
+## 快速上手
+
+1. **打开 PDF：** 拖入文件、点击 `+`，或从“示例 PDF”选择一份公开文档。阅读、整理和批注无需配置模型。
+2. **配置服务：** 打开侧栏设置或 **PageBridge → 翻译服务…**，选择厂商、模型，填写 API Key；本机 Ollama 选择已下载模型。测试连接后保存。
+3. **开始翻译：** 点击“翻译”，选择语言和整篇／指定页。页码可写 `1-5, 8`；初次可先试少量页面。任务中可取消，失败不覆盖旧译文。
+4. **阅读与记录：** 切换“对照”，按需开启同步滚动；选中文字添加高亮或笔记，也可打开“助手”提问。助手模型可与翻译模型不同。
+5. **导出结果：** “导出 PDF”保存原文、译文或交替页双语文件；需要带批注时，从“批注与笔记”选择“导出批注 PDF”或“导出笔记”。
+
+内置五份公开示例，共 49 页，覆盖短文、图表、公式和双栏排版；推荐先用 4 页的“可复现计算研究十条建议”熟悉流程。作者、来源和许可见[示例说明](demos/README.md)。
+
+## 模型服务
+
+| 方式 | 配置要点 |
+|---|---|
+| 在线厂商 | DeepSeek、阿里云百炼（北京）、硅基流动（中国站）、OpenAI 已预设地址；选模型并填 API Key |
+| 自定义 API | 使用 OpenAI Chat Completions 兼容服务，填写 Base URL、模型 ID 和服务要求的密钥；不要填写完整 `/chat/completions` 路径 |
+| 本机 Ollama | 按 [Ollama 官方指南](https://docs.ollama.com/quickstart)启动服务并下载本地模型，再点击“获取模型”；默认地址 `http://127.0.0.1:11434`，无需 API Key |
+
+模型可从服务获取，也可手填 ID；列表可见不代表账户一定有调用权限或额度。预设之外的地域、专属网关和远程模型请使用自定义 API。API Key 保存在 macOS 钥匙串；“测试连接”只发送固定短句，保存设置不会发送文档。详细操作见[服务配置指南](docs/USER_GUIDE.md#配置翻译服务)。
+
+## 搜索文献
+
+**OpenAlex 负责找文献，Sci-Hub 和公开 PDF 负责获取全文。** 搜索不需要翻译 API Key，也不调用模型。
+
+1. 点击“搜索在线文献”，输入标题、关键词、DOI 或 doi.org 链接。
+2. 选择全文来源：**Sci-Hub** 按 DOI 查找，**公开 PDF** 使用 OpenAlex 返回的开放获取链接。
+3. 点击“打开全文”，下载校验后进入阅读器；相同文件会复用已有记录，保留译文和笔记。
+
+已有 DOI 可直接打开，例如 `10.1371/journal.pcbi.1003833`。遇到站点验证时，点击“在 App 中验证并继续”，自行完成验证后继续；默认 Sci-Hub 地址可在“设置地址”中修改。搜索结果不保证全文可用，单文件下载上限 100 MB；没有 DOI、链接失效或站点不可达时，可切换来源或打开原文页面。详见[文献搜索指南](docs/USER_GUIDE.md#搜索在线文献)。
+
+## 应用更新
+
+在 **PageBridge → 检查更新…** 手动检查，或开启“自动检查更新”。自动检查遵循首次同意流程；发现新版本后由你决定下载、安装或跳过，应用不静默下载或安装。
+
+更新来自本项目 GitHub Releases，通过 HTTPS 获取并验证 feed 与更新包签名。翻译进行时暂缓检查与安装；失败时保留当前应用。旧的无更新菜单本地包需先手动安装此版。OTA 的实际下载、替换和重启验收范围见[验证记录](docs/VERIFICATION.md)，不以编译成功代替实机安装结果。
+
+## 隐私与限制
+
+- 文档副本、译文、批注和对话保存在 `~/Library/Application Support/PageBridge/`，密钥保存在钥匙串。替换应用不清空这些数据。
+- 本地解析与排版在 Mac 上完成；使用云模型时，翻译文本或助手选取的片段、问题与有限近期对话发送给所选服务。
+- OpenAlex 接收搜索词，Sci-Hub 接收 DOI；更新检查不发送文档、模型密钥或系统配置画像。托管方仍会收到常规网络请求元数据。
+- 需要带文本层的 PDF，当前没有通用 OCR；加密文件需先解密。人名、变量、单位和原始图像文字可能保留英文。
+- 助手每次只使用有限片段，文档问答最多 6 页／12,000 字符；页码引用不是结论正确的证明。重要文字、数值、公式与技术结论请对照原文核查。
+- 批注绑定 PDF 版本；重新翻译后，旧坐标不会自动套到新排版。当前回收站可恢复文档，不永久删除文件或释放其占用空间。
+
+遇到连接、超时、完整性检查、全文下载或更新问题，请先查看[常见问题](docs/USER_GUIDE.md#常见问题)。反馈时提供版本、系统、模型 ID 和脱敏复现，不要公开 API Key、Cookie 或私有文档。
 
 ## 开发与构建
 
-当前构建面向 Apple Silicon Mac，声明部署目标 macOS 14+。macOS 14 和 Intel 尚未完成实机验证。需要 Xcode Command Line Tools / Swift 6；Python 及翻译依赖由锁文件管理。
-
-在项目根目录执行：
+原生界面位于 `macOS/Sources/PageBridge`，核心服务与存储位于 `PageBridgeCore`，`engine/` 提供翻译 worker，`scripts/` 提供打包和验证工具。需要 Apple Silicon Mac、Xcode Command Line Tools / Swift 6 和 Python 3；安装脚本管理 Python 3.12.12 及锁定依赖。
 
 ```sh
+git clone https://github.com/txp666/PageBridge.git
+cd PageBridge
 bash engine/setup.sh
+swift test --package-path macOS --disable-sandbox
 engine/.venv/bin/python -B -m unittest discover -s engine/tests -v
-
-CLANG_MODULE_CACHE_PATH=/tmp/pagebridge-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/pagebridge-swift-cache \
-swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable-sandbox
-```
-
-完成 [真实 PDF 验收流程](docs/DEVELOPMENT.md#先验证-pdf再打包) 后构建：
-
-```sh
 bash scripts/build-app.sh
 python3 scripts/verify-bundle.py
 ```
 
-产物位于 `dist/PageBridge.app`，采用 ad-hoc 签名，尚未完成 Developer ID 签名与 Apple 公证。构建会生成 ICNS，加入示例、私有 Python 和必要依赖，并裁剪未使用的 Web UI、SDK、测试与开发资源。完整命令和最终包验证见 [开发指南](docs/DEVELOPMENT.md)。
+产物是 `dist/PageBridge.app`。完整测试、真实 PDF 验收与发布命令见[开发指南](docs/DEVELOPMENT.md)。版本来自 `VERSION.json`，build 必须递增；公开标签与资产不重打或覆盖。CI 执行 main／PR 测试，版本标签触发构建、签名、draft 资产核验和发布；具体结果见 [Actions](https://github.com/txp666/PageBridge/actions)。
 
-## 数据与适用范围
+本轮 Swift 测试共 126 项，124 通过、2 项可选测试跳过；引擎 655 项单元测试在此前打包阶段通过。公开示例已验证文献搜索、站点验证、下载和去重打开，本次未重新执行全文模型翻译。CI 发布与 OTA 实测结果按[验证记录](docs/VERIFICATION.md)区分，不把历史验证当作本次新运行。
 
-导入副本、配置和结果位于 `~/Library/Application Support/PageBridge/`。每次翻译使用独立 attempt；页数、输入哈希和内容保护检查通过后才提交结果。失败或取消保留上次成功译文，导出禁止覆盖应用管理目录。
+## 文档与贡献
 
-PDF 解析与排版在本机完成。使用在线 API 时，待翻译文本发送到所选服务；本机 Ollama 的推理在本机。密钥通过子进程 stdin 传递，不写入普通配置、命令行或任务日志。上游资源及历史缓存仍可能位于用户缓存目录，详见 [引擎说明](engine/README.md)。
+| 文档 | 内容 |
+|---|---|
+| [使用指南](docs/USER_GUIDE.md) | 服务配置、阅读、批注、助手、导出与排错 |
+| [开发指南](docs/DEVELOPMENT.md) · [架构说明](docs/ARCHITECTURE.md) | 环境、测试、数据流、构建、CI 与发布 |
+| [验证记录](docs/VERIFICATION.md) · [版本记录](CHANGELOG.md) | 分版本证据、已知限制与功能变化 |
+| [贡献指南](CONTRIBUTING.md) · [GitHub Issues](https://github.com/txp666/PageBridge/issues) | 问题反馈与代码贡献 |
+| [安全说明](SECURITY.md) | 密钥、私有数据和私密漏洞报告 |
 
-需要带文本层的 PDF，暂不提供通用 OCR；加密文档需先解密。人名、机构、技术标识、变量、部分图像文字和有意保留的原始结构仍可能是英文。自动检查不能证明语义完全正确，重要数值、公式和技术结论应对照原文。
+## 许可证
 
-## 文档与项目结构
-
-- [使用指南](docs/USER_GUIDE.md)：服务设置、导入、翻译、阅读、导出与排错。
-- [开发指南](docs/DEVELOPMENT.md)：依赖、测试、真实模型验收、构建与版本管理。
-- [架构与数据流](docs/ARCHITECTURE.md)：原生界面、worker、数据与提交边界。
-- [产品与技术设计](DESIGN.md)：当前设计决策、范围及后续目标。
-- [验证记录](docs/VERIFICATION.md)：本轮完成状态、验收门槛和最终数据。
-- [引擎说明](engine/README.md)：NDJSON 协议、内容保护、取消和缓存。
-- [版本记录](CHANGELOG.md)、[第三方来源](docs/THIRD_PARTY.md)、[图标说明](assets/README.md)。
-
-`macOS/` 是原生应用，`engine/` 是翻译运行时与测试，`scripts/` 是构建和质量工具，`assets/` 与 `demos/` 是随包资源。私有 PDF、验证材料和生成译文保存在应用数据目录或被 Git 忽略的 `validation/`、`output/` 中；密钥文件、虚拟环境和应用包也不纳入源码。五份公开示例及其归属说明纳入源码。浏览器原型不参与原生运行链路。
-
-PDFMathTranslate-next 与 BabelDOC 使用 AGPL-3.0。依赖源码和许可元数据随本地包保留；本项目尚未另行声明覆盖全部原创源码的分发许可证。第三方许可、资源归属与对外发行事项见 [第三方来源](docs/THIRD_PARTY.md)。
+PageBridge 原创程序代码采用 [GNU AGPL v3（AGPL-3.0-only）](LICENSE)。第三方依赖与示例 PDF 保留各自许可及作者归属，详见[第三方说明](THIRD_PARTY_NOTICES.md)和[示例说明](demos/README.md)。分发二进制时应同时提供匹配项目源码及所需第三方对应源码；文献不因本项目开源而改变权利归属。

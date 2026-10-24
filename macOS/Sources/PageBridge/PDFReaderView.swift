@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import PageBridgeCore
 
 /// Explicit navigation is separate from the page number reported while scrolling.
 struct PDFPageNavigation: Equatable {
@@ -15,6 +16,7 @@ struct PDFScrollAnchor: Equatable {
 }
 
 /// Native views exchange scroll positions directly, without publishing SwiftUI state.
+@MainActor
 final class PDFScrollSynchronizer: ObservableObject {
     private final class Peer {
         weak var value: PDFReaderView.Coordinator?
@@ -64,6 +66,9 @@ struct PDFReaderView: NSViewRepresentable {
     var synchronizesScrolling: Bool
     let synchronizer: PDFScrollSynchronizer
     var searchQuery: String
+    var workspace: ReaderWorkspace? = nil
+    var documentID: UUID? = nil
+    var variant: PDFDocumentVariant = .original
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -82,6 +87,7 @@ struct PDFReaderView: NSViewRepresentable {
         coordinator.detach()
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var parent: PDFReaderView
         private weak var container: PDFReaderContainer?
@@ -92,6 +98,15 @@ struct PDFReaderView: NSViewRepresentable {
         private var lastOrigin: NSPoint?
         private var lastNavigation: UUID?
         private var needsInitialPosition = true
+        private var initialPage = 1
+        private var initialPositionGeneration = 0
+        private var initialPositionWork: DispatchWorkItem?
+        private var initialGeometry: InitialGeometry?
+        private struct InitialGeometry: Equatable {
+            var documentSize: CGSize
+            var viewportSize: CGSize
+            var scale: CGFloat
+        }
         private var wasSynchronizing = false
         private var lastZoom: Double = 0
         private var lastWidth: CGFloat = 0
@@ -100,6 +115,8 @@ struct PDFReaderView: NSViewRepresentable {
         private var pageReportGeneration = 0
         private var highlightedQuery = ""
         private var searchWork: DispatchWorkItem?
+        private var selectionObserver: NSObjectProtocol?
+        private weak var annotationWorkspace: ReaderWorkspace?
 
         init(_ parent: PDFReaderView) { self.parent = parent; reportedPage = parent.page }
 
@@ -117,12 +134,42 @@ struct PDFReaderView: NSViewRepresentable {
             pdf.maxScaleFactor = 6
             container.onLayout = { [weak self] in self?.layoutReader() }
             parent.synchronizer.register(self)
+            selectionObserver = NotificationCenter.default.addObserver(forName: .PDFViewSelectionChanged, object: pdf, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
+                    self.parent.workspace?.receiveSelection(from: view, documentID: id, variant: self.parent.variant)
+                }
+            }
+            pdf.onActivate = { [weak self] in
+                guard let self, let view = self.container?.pdfView else { return }
+                self.cancelInitialPosition()
+                if let id = self.parent.documentID {
+                    self.parent.workspace?.activate(view, documentID: id, variant: self.parent.variant)
+                }
+            }
+            pdf.onScrollFocus = { [weak self] in
+                guard let self else { return }
+                self.cancelInitialPosition()
+                guard let workspace = self.parent.workspace, workspace.document?.id == self.parent.documentID else { return }
+                if workspace.selectedVariant != self.parent.variant { workspace.selectedVariant = self.parent.variant }
+            }
+            pdf.onOpenAnnotation = { [weak self] annotation in
+                guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
+                self.parent.workspace?.edit(annotation, in: view, documentID: id, variant: self.parent.variant)
+            }
         }
 
         func detach() {
+            cancelInitialPosition()
             if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
             scrollObserver = nil
             searchWork?.cancel()
+            if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
+            selectionObserver = nil
+            if let view = container?.pdfView { annotationWorkspace?.unregister(view) }
+            container?.pdfView.onActivate = nil
+            container?.pdfView.onScrollFocus = nil
+            container?.pdfView.onOpenAnnotation = nil
             invalidatePageReport()
             parent.synchronizer.unregister(self)
             container?.onLayout = nil
@@ -144,15 +191,27 @@ struct PDFReaderView: NSViewRepresentable {
                 lastZoom = 0
                 lastOrigin = nil
                 lastNavigation = parent.navigation.id
-                needsInitialPosition = true
+                beginInitialPosition(page: parent.page)
                 reportedPage = parent.page
                 applyingChange = false
+            }
+            if annotationWorkspace !== parent.workspace {
+                annotationWorkspace?.unregister(pdf)
+                annotationWorkspace = parent.workspace
+            }
+            if let id = parent.documentID {
+                parent.workspace?.register(pdf, documentID: id, variant: parent.variant, url: parent.url)
             }
             layoutReader()
             if lastNavigation != parent.navigation.id {
                 lastNavigation = parent.navigation.id
                 invalidatePageReport()
                 if parent.acceptsNavigation {
+                    if needsInitialPosition {
+                        // A user's explicit jump replaces the saved startup target.
+                        beginInitialPosition(page: parent.navigation.page)
+                        layoutReader()
+                    }
                     applyAnchor(PDFScrollAnchor(page: parent.navigation.page, fraction: 0))
                 }
             }
@@ -168,12 +227,68 @@ struct PDFReaderView: NSViewRepresentable {
 
         private func layoutReader() {
             guard !applyingChange, let pdf = container?.pdfView, pdf.bounds.width > 60 else { return }
+            // PDFKit can expose a clip view before the native window has attached
+            // and before its first document layout has established the scroll range.
+            guard !needsInitialPosition || container?.window != nil else { return }
             installScrollObserver()
             applyZoom()
-            if needsInitialPosition, observedScrollView != nil {
-                needsInitialPosition = false
-                applyAnchor(PDFScrollAnchor(page: parent.page, fraction: 0))
+            if needsInitialPosition { scheduleInitialPosition() }
+        }
+
+        private func beginInitialPosition(page: Int) {
+            initialPositionGeneration += 1
+            initialPositionWork?.cancel(); initialPositionWork = nil
+            initialGeometry = nil
+            initialPage = page
+            needsInitialPosition = true
+        }
+
+        private func cancelInitialPosition() {
+            initialPositionGeneration += 1
+            initialPositionWork?.cancel(); initialPositionWork = nil
+            initialGeometry = nil
+            needsInitialPosition = false
+        }
+
+        private func scheduleInitialPosition() {
+            guard needsInitialPosition, initialPositionWork == nil,
+                  container?.window != nil else { return }
+            let generation = initialPositionGeneration, url = openedURL
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.needsInitialPosition,
+                      generation == self.initialPositionGeneration, url == self.openedURL else { return }
+                self.initialPositionWork = nil
+                guard let pdf = self.container?.pdfView, self.container?.window != nil,
+                      pdf.bounds.width > 60, pdf.bounds.height > 60 else { return }
+                self.applyingChange = true
+                pdf.layoutSubtreeIfNeeded()
+                pdf.layoutDocumentView()
+                self.applyingChange = false
+                self.installScrollObserver()
+                guard let document = pdf.document, document.pageCount > 0,
+                      let documentView = pdf.documentView, let clip = self.observedScrollView?.contentView,
+                      documentView.bounds.height > 0, clip.bounds.height > 0 else { return }
+                let geometry = InitialGeometry(documentSize: documentView.bounds.size,
+                                               viewportSize: clip.bounds.size, scale: pdf.scaleFactor)
+                let target = max(1, min(document.pageCount, self.initialPage))
+                guard let targetPage = document.page(at: target - 1) else { return }
+                let pageRect = documentView.convert(pdf.convert(targetPage.bounds(for: .cropBox), from: targetPage), from: pdf)
+                guard pageRect.height > 0, pageRect.minY >= documentView.bounds.minY - 1,
+                      pageRect.maxY <= documentView.bounds.maxY + 1 else { return }
+                self.applyAnchor(PDFScrollAnchor(page: target, fraction: 0))
+                if self.initialGeometry == geometry {
+                    // Keep PDFKit's startup bounds notifications from overwriting
+                    // the saved page until two main-loop layouts agree. This gate
+                    // never delays ordinary scrolling and is cancelled by input.
+                    self.cancelInitialPosition()
+                    self.reportPage(target)
+                } else {
+                    self.initialGeometry = geometry
+                    self.scheduleInitialPosition()
+                }
             }
+            initialPositionWork = work
+            DispatchQueue.main.async(execute: work)
         }
 
         private func installScrollObserver() {
@@ -185,7 +300,11 @@ struct PDFReaderView: NSViewRepresentable {
             scroll.contentView.postsBoundsChangedNotifications = true
             scrollObserver = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main
-            ) { [weak self] _ in self?.scrollDidChange() }
+            ) { [weak self] _ in
+                // This observer explicitly runs on the main queue. Stay synchronous
+                // so the established per-scroll-event synchronization is unchanged.
+                MainActor.assumeIsolated { self?.scrollDidChange() }
+            }
         }
 
         private func applyZoom() {
@@ -231,6 +350,7 @@ struct PDFReaderView: NSViewRepresentable {
         }
 
         func visibleAnchor() -> PDFScrollAnchor? {
+            guard !needsInitialPosition else { return nil }
             guard let pdf = container?.pdfView, let document = pdf.document,
                   let documentView = pdf.documentView else { return nil }
             let rect = documentView.visibleRect
@@ -250,7 +370,11 @@ struct PDFReaderView: NSViewRepresentable {
             let origin = clip.bounds.origin
             let changed = lastOrigin != origin
             lastOrigin = origin
-            guard changed, !applyingChange, !needsInitialPosition,
+            if needsInitialPosition {
+                if !applyingChange { scheduleInitialPosition() }
+                return
+            }
+            guard changed, !applyingChange,
                   !parent.synchronizer.isSynchronizing, let anchor = visibleAnchor() else { return }
             parent.synchronizer.scrolled(anchor, from: self)
             reportPage(pageNumber(for: anchor))
@@ -264,6 +388,7 @@ struct PDFReaderView: NSViewRepresentable {
         }
 
         func reportPage(_ number: Int) {
+            guard !needsInitialPosition else { return }
             guard number != reportedPage || parent.page != number || pendingPage != nil else { return }
             reportedPage = number
             if pendingPage != nil { pendingPage = number; return }
@@ -274,6 +399,7 @@ struct PDFReaderView: NSViewRepresentable {
                 guard let latest = self.pendingPage else { return }
                 self.pendingPage = nil
                 if self.parent.page != latest { self.parent.page = latest }
+                self.parent.workspace?.reportPage(latest, variant: self.parent.variant)
             }
         }
 
@@ -300,8 +426,66 @@ struct PDFReaderView: NSViewRepresentable {
     }
 }
 
+final class AnnotationPDFView: PDFView {
+    var onActivate: (() -> Void)?
+    var onScrollFocus: (() -> Void)?
+    var onOpenAnnotation: ((PDFAnnotation) -> Void)?
+
+    private func managedAnnotation(at point: NSPoint, notesOnly: Bool = true) -> PDFAnnotation? {
+        guard onOpenAnnotation != nil, let document,
+              let page = page(for: point, nearest: false) else { return nil }
+        let location = convert(point, to: page)
+        // Preserve PDFKit's native link/widget behavior, even where a markup overlaps it.
+        if page.annotations.contains(where: { ($0.type == "Link" || $0.type == "Widget") && $0.bounds.contains(location) }) { return nil }
+        return page.annotations.reversed().first {
+            (!notesOnly || $0.type == "Text") && $0.type != "Popup" && $0.bounds.contains(location) && PDFAnnotationRenderer.overlayID(for: $0, in: document) != nil
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // PDFKit's document subview otherwise handles the click before PDFView can
+        // route it to the sidecar-backed editor, opening an unpersisted native popup.
+        let location = convert(point, from: superview)
+        // Left-drag/double-click on markup remains ordinary text selection.
+        // Right-click offers the same editor without hijacking that selection.
+        let notesOnly = NSApp.currentEvent?.type != .rightMouseDown
+        if bounds.contains(location), managedAnnotation(at: location, notesOnly: notesOnly) != nil { return self }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        if let annotation = managedAnnotation(at: convert(event.locationInWindow, from: nil)) {
+            onOpenAnnotation?(annotation)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let annotation = managedAnnotation(at: convert(event.locationInWindow, from: nil), notesOnly: false) else { return super.menu(for: event) }
+        // PDFKit's Remove Highlight/Add Note actions bypass our persistence and
+        // can reopen the broken native popup. Offer only the managed operation.
+        let result = NSMenu()
+        let item = NSMenuItem(title: "编辑批注笔记…", action: #selector(editManagedAnnotation(_:)), keyEquivalent: "")
+        item.target = self; item.representedObject = annotation
+        result.insertItem(item, at: 0)
+        return result
+    }
+
+    @objc private func editManagedAnnotation(_ sender: NSMenuItem) {
+        guard let annotation = sender.representedObject as? PDFAnnotation else { return }
+        onActivate?()
+        onOpenAnnotation?(annotation)
+    }
+    override func scrollWheel(with event: NSEvent) {
+        onScrollFocus?()
+        super.scrollWheel(with: event)
+    }
+}
+
 final class PDFReaderContainer: NSView {
-    let pdfView = PDFView()
+    let pdfView = AnnotationPDFView()
     let errorLabel = NSTextField(labelWithString: "无法读取此 PDF。请检查文件是否仍可访问。")
     var onLayout: (() -> Void)?
 
@@ -316,6 +500,13 @@ final class PDFReaderContainer: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        needsLayout = true
+        DispatchQueue.main.async { [weak self] in self?.onLayout?() }
+    }
 
     override func layout() {
         super.layout()

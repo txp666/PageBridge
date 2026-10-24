@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-tests:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      CLANG_MODULE_CACHE_PATH: /tmp/pagebridge-clang-cache
+      SWIFT_MODULECACHE_PATH: /tmp/pagebridge-swift-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Check native runner
+        run: |
+          test "$(uname -m)" = arm64
+          mkdir -p validation/ci
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          swift --version
+      - name: Install pinned uv bootstrap
+        run: python3 -m pip install --target engine/.tools uv==0.9.17
+      - name: Install locked translation engine
+        run: bash engine/setup.sh 2>&1 | tee validation/ci/engine-setup.log
+      - name: Test Swift application
+        run: swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable-sandbox 2>&1 | tee validation/ci/swift-tests.log
+      - name: Test translation engine with local fixtures
+        run: engine/.venv/bin/python -B -m unittest discover -s engine/tests -v 2>&1 | tee validation/ci/engine-tests.log
+      - name: Test packaging and release validation
+        run: engine/.venv/bin/python -B -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee validation/ci/release-tests.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-logs-${{ github.run_id }}
+          path: validation/ci/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -e -o pipefail {0}

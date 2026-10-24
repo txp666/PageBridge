@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "notes": [
+    "The three PyPI sdists must also match engine/uv.lock.",
+    "The MuPDF pin was computed from the official HTTPS archive; it is not an independent upstream signed checksum."
+  ],
+  "packages": [
+    {
+      "name": "pdf2zh-next",
+      "version": "2.9.0",
+      "url": "https://files.pythonhosted.org/packages/87/5e/d971946ec7ad3e0b0aeada46e323485e7b2fb29ed5285b0d854e285b9d8d/pdf2zh_next-2.9.0.tar.gz",
+      "filename": "pdf2zh_next-2.9.0.tar.gz",
+      "bytes": 7759383,
+      "sha256": "cadd8380eb8b3c06427f04e4c4a3a3bafc56a2a6b5e2293f9b5ad07c3c3011dd",
+      "license": "AGPL-3.0",
+      "license_file": "pdf2zh_next-2.9.0/LICENSE",
+      "license_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "build_materials": [
+        "pdf2zh_next-2.9.0/pyproject.toml"
+      ]
+    },
+    {
+      "name": "babeldoc",
+      "version": "0.6.2",
+      "url": "https://files.pythonhosted.org/packages/5e/2b/e0f23e7fde25a7d9b90ff219ca60c220105552ec96f290a5dfaadabe4590/babeldoc-0.6.2.tar.gz",
+      "filename": "babeldoc-0.6.2.tar.gz",
+      "bytes": 16391367,
+      "sha256": "b2b2769aa9f8372b35071b46788da531ebb58bc3cf31ab4dbb5deb06e9424026",
+      "license": "AGPL-3.0",
+      "license_file": "babeldoc-0.6.2/LICENSE",
+      "license_sha256": "afca41723b45e26069f68d485bf906a202f892f90c801d3052f8e6296bb41454",
+      "build_materials": [
+        "babeldoc-0.6.2/pyproject.toml"
+      ]
+    },
+    {
+      "name": "pymupdf",
+      "version": "1.25.2",
+      "url": "https://files.pythonhosted.org/packages/40/fc/dd8776dc5c2f8cf0e51cf81a5f1de3840996bed7ca03ec768b0733024fb9/pymupdf-1.25.2.tar.gz",
+      "filename": "pymupdf-1.25.2.tar.gz",
+      "bytes": 63814915,
+      "sha256": "9ea88ff1b3ccb359620f106a6fd5ba6877d959d21d78272052c3496ceede6eec",
+      "license": "AGPL-3.0",
+      "license_file": "pymupdf-1.25.2/COPYING",
+      "license_sha256": "57c8ff33c9c0cfc3ef00e650a1cc910d7ee479a8bc509f6c9209a7c2a11399d6",
+      "build_materials": [
+        "pymupdf-1.25.2/pyproject.toml",
+        "pymupdf-1.25.2/setup.py"
+      ]
+    },
+    {
+      "name": "MuPDF",
+      "version": "1.25.2",
+      "url": "https://mupdf.com/downloads/archive/mupdf-1.25.2-source.tar.gz",
+      "filename": "mupdf-1.25.2-source.tar.gz",
+      "bytes": 54635699,
+      "sha256": "36ccf6a5e691e188acf8db6e98d08bf05f27bb4ce30432dc15fc76d329a92d4d",
+      "license": "AGPL-3.0",
+      "license_file": "mupdf-1.25.2-source/COPYING",
+      "license_sha256": "57c8ff33c9c0cfc3ef00e650a1cc910d7ee479a8bc509f6c9209a7c2a11399d6",
+      "build_materials": [
+        "mupdf-1.25.2-source/Makefile",
+        "mupdf-1.25.2-source/Makerules",
+        "mupdf-1.25.2-source/Makethird",
+        "mupdf-1.25.2-source/pyproject.toml",
+        "mupdf-1.25.2-source/setup.py"
+      ]
+    }
+  ]
+}

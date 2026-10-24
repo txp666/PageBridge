@@ -28,7 +28,7 @@ struct DemoLibraryView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("示例 PDF").font(.title2.bold())
-                    Text("从短文开始，也可以试试带公式和表格的论文。")
+                    Text("从短文开始，也可以试读带公式和图表的 PDF。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()

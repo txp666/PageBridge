@@ -2473,6 +2473,25 @@ def _aligned_entry_markers(markers):
         max(m['right'] for m in markers) - min(m['right'] for m in markers) < 1))
 
 
+def _source_reference_date_row(rows, index, body_x):
+    """A complete access date continuing the preceding native source row."""
+    if index == 0 or not re.search(r'\bAccessed\s*$', ''.join(c.char_unicode for c in rows[index - 1])):
+        return False
+    text = ''.join(c.char_unicode for c in rows[index]).strip()
+    months = ('January', 'February', 'March', 'April', 'May', 'June',
+              'July', 'August', 'September', 'October', 'November', 'December')
+    match = re.fullmatch(r'([1-3]?\d)\s+(' + '|'.join(months) + r')\s+((?:19|20)\d{2})\.?', text)
+    first = next((c for c in rows[index] if c.char_unicode.strip()), None)
+    if not match or first is None or abs(first.box.x - body_x) >= 1:
+        return False
+    from datetime import date
+    try:
+        date(int(match[3]), months.index(match[2]) + 1, int(match[1]))
+    except ValueError:
+        return False
+    return True
+
+
 def _restore_detached_list_markers(finder, page):
     """Attach a paired `(a)`, `(b)` source run to its unique body rows.
 
@@ -2547,7 +2566,7 @@ def _restore_detached_list_markers(finder, page):
     return len(moved) // 3
 
 
-def _source_rows(paragraph):
+def _source_rows(paragraph, legacy_bullets=()):
     """Recover physical rows without touching source glyphs or script offsets."""
     if paragraph.vertical or any(c.pdf_line is None for c in paragraph.pdf_paragraph_composition):
         return None
@@ -2563,7 +2582,10 @@ def _source_rows(paragraph):
                 and char.box.x < row[-1].box.x - anchor.pdf_style.font_size):
             rows.append(row)
             row, anchor = [], None
-        if anchor is None:
+        # A proven legacy bullet is larger and lower than its body baseline.
+        # Use the following body glyph as the row anchor, without moving or
+        # changing either glyph. Other large/script characters keep old rules.
+        if anchor is None and id(char) not in legacy_bullets:
             anchor = char
         row.append(char)
     if row:
@@ -2577,6 +2599,75 @@ def _source_rows(paragraph):
     return rows
 
 
+def _source_legacy_bullet_markers(page):
+    """Prove repeated native AdvP7CA8/CID78 bullets by list geometry.
+
+    The exact legacy symbol is already protected as a formula downstream.
+    Its misleading Unicode N stays unchanged. Require separate physical rows,
+    same-column repeated markers, a smaller body in a different font, and
+    aligned hanging continuation rows; a font/name match alone proves nothing.
+    """
+    fonts = {font.font_id: font for font in page.pdf_font}
+    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
+              for o in page.pdf_xobject}
+    candidates = []
+    for paragraph in page.pdf_paragraph:
+        if (paragraph.vertical or paragraph.layout_label not in {'plain text', 'text', 'reference'}
+                or any(c.pdf_line is None for c in paragraph.pdf_paragraph_composition)):
+            continue
+        chars = [c for comp in paragraph.pdf_paragraph_composition for c in comp.pdf_line.pdf_character
+                 if isinstance(c.char_unicode, str) and c.char_unicode.strip()]
+        if any(not _finite_character(c) for c in chars):
+            continue
+        lookup = xfonts.get(paragraph.xobj_id, fonts)
+        for index, marker in enumerate(chars[:-1]):
+            family = getattr(lookup.get(marker.pdf_style.font_id), 'name', '') or ''
+            if (marker.char_unicode != 'N' or marker.pdf_character_id != 78
+                    or re.sub(r'^[A-Z]{6}\+', '', family) != 'AdvP7CA8'):
+                continue
+            body = chars[index + 1]
+            size = body.pdf_style.font_size
+            previous = chars[index - 1] if index else None
+            if (not re.match(r'^[A-Z]', body.char_unicode)
+                    or marker.xobj_id != body.xobj_id
+                    or marker.pdf_style.font_id == body.pdf_style.font_id
+                    or not 1.5 <= marker.pdf_style.font_size / size <= 2
+                    or not size * .3 <= body.box.x - marker.box.x2 <= size * 2
+                    or not marker.box.y - size * .1 <= body.box.y <= marker.box.y + size * .3
+                    or body.box.y2 > marker.box.y2 + size * .1
+                    or (previous is not None and not
+                        (previous.box.y > marker.box.y + size * .65
+                         and previous.box.x > marker.box.x + size))):
+                continue
+            candidates.append(dict(paragraph=paragraph, marker=marker, body=body.box.x, size=size))
+    provisional = {id(c['marker']): c for c in candidates}
+    verified = []
+    for candidate in candidates:
+        rows = _source_rows(candidate['paragraph'], provisional)
+        if not rows:
+            continue
+        starts = [next(c for c in row if c.char_unicode.strip()) for row in rows]
+        start = next((i for i, c in enumerate(starts) if c is candidate['marker']), None)
+        if start is None:
+            continue
+        end = next((i for i in range(start + 1, len(rows)) if id(starts[i]) in provisional), len(rows))
+        if end - start < 2 or any(abs(c.box.x - candidate['body']) >= 1 for c in starts[start + 1:end]):
+            continue
+        verified.append(candidate)
+    result = {}
+    for candidate in verified:
+        marker = candidate['marker']
+        peers = [c for c in verified if c['marker'].xobj_id == marker.xobj_id
+                 and c['marker'].pdf_style.font_id == marker.pdf_style.font_id
+                 and abs(c['marker'].pdf_style.font_size - marker.pdf_style.font_size) <= .02
+                 and abs(c['size'] - candidate['size']) <= .02
+                 and abs(c['marker'].box.x - marker.box.x) < 1
+                 and abs(c['body'] - candidate['body']) < 1]
+        if len(peers) >= 2:
+            result[id(marker)] = candidate
+    return result
+
+
 def split_structured_entries(finder, page):
     """Restore explicit list items and hanging bibliography entry boundaries.
 
@@ -2586,9 +2677,10 @@ def split_structured_entries(finder, page):
     """
     from babeldoc.format.pdf.document_il import PdfLine, PdfParagraphComposition
     _restore_detached_list_markers(finder, page)
+    legacy_bullets = _source_legacy_bullet_markers(page)
     result, splits, hanging = [], 0, 0
     for paragraph in page.pdf_paragraph:
-        rows = _source_rows(paragraph)
+        rows = _source_rows(paragraph, legacy_bullets)
         if (not rows or paragraph.layout_label not in {'plain text', 'text', 'reference'}):
             result.append(paragraph)
             continue
@@ -2597,6 +2689,16 @@ def split_structured_entries(finder, page):
         left = min(c.box.x for c in starts)
         size = max(c.pdf_style.font_size for c in starts)
         numeric = [(i, m) for i, row in enumerate(rows) if (m := _entry_marker(row))]
+        # A continuation can start with a date such as '12 August 2014'.
+        # Exclude it only with the complete previous-row 'Accessed' grammar,
+        # a valid date, and the established reference body column. Mixed
+        # punctuated/unpunctuated lists must retain their existing boundaries.
+        explicit = [(i, m) for i, m in numeric if m['explicit']]
+        if (len(explicit) >= 2 and _aligned_entry_markers([m for _, m in explicit])
+                and all(b[1]['value'] == a[1]['value'] + 1 for a, b in zip(explicit, explicit[1:]))
+                and all(m['explicit'] or _source_reference_date_row(rows, i, explicit[-1][1]['body'])
+                        for i, m in numeric)):
+            numeric = explicit
         letters = [(i, m) for i, row in enumerate(rows) if (m := _entry_marker(row, letter=True))]
         authors = [i for i, text in enumerate(texts)
                    if _ENTRY_AUTHOR.match(text) and abs(starts[i].box.x - left) < 1]
@@ -2606,7 +2708,8 @@ def split_structured_entries(finder, page):
         is_lettered = (len(letters) >= 2 and _aligned_entry_markers([m for _, m in letters]) and
                        all(b[1]['value'] == a[1]['value'] + 1 for a, b in zip(letters, letters[1:])))
         is_references = len(authors) >= 2 and continuation and bool(re.search(r'\b(?:19|20)\d{2}\b', ' '.join(texts)))
-        bullet_rows = [i for i,text in enumerate(texts) if re.match(r'^[•▪◦●]\s*\S', text)]
+        bullet_rows = [i for i,text in enumerate(texts) if re.match(r'^[•▪◦●]\s*\S', text)
+                       or id(starts[i]) in legacy_bullets]
         is_bulleted = (len(bullet_rows) >= 2
                        and max(starts[i].box.x for i in bullet_rows)-min(starts[i].box.x for i in bullet_rows) < 1
                        and len({starts[i].char_unicode for i in bullet_rows}) == 1
@@ -2615,8 +2718,10 @@ def split_structured_entries(finder, page):
                       [i for i, _ in letters] if is_lettered else
                       bullet_rows if is_bulleted else authors if is_references else [])
         markers = dict(numeric if is_numbered else letters if is_lettered else [])
+        markers.update((i, legacy_bullets[id(starts[i])]) for i in bullet_rows
+                       if id(starts[i]) in legacy_bullets)
         # Already separated bullets still need their original hanging column.
-        is_bullet = bool(re.match(r'^[•▪◦●]\s*', texts[0]))
+        is_bullet = bool(re.match(r'^[•▪◦●]\s*', texts[0]) or id(starts[0]) in legacy_bullets)
         # A source item already separated by the layout detector still needs
         # its hanging indentation. Require an explicit label and aligned body
         # continuation rows, rather than treating an arbitrary leading number

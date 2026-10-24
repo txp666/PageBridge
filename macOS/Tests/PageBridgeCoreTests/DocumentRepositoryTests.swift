@@ -73,4 +73,68 @@ final class DocumentRepositoryTests: XCTestCase {
         XCTAssertThrowsError(try DocumentRepository.export(source: source, destination: bilingual, protectedInput: input, managedRoot: root))
         XCTAssertEqual(try DocumentRepository.sha256(bilingual), before)
     }
+
+    private func rejectedReport() throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "protocolVersion": 1, "guardVersion": 7, "guardInstalled": true,
+            "layoutGuard": ["guardInstalled": true], "preparedParagraphs": 10,
+            "validatedParagraphs": 9, "unresolvedCount": 1,
+            "unresolvedReasons": ["formula-count-or-order": 1],
+            "unresolvedParagraphs": [["sourceParagraphSHA256": String(repeating: "a", count: 64),
+                                       "layoutLabel": "text", "reasons": ["formula-count-or-order"],
+                                       "source": "PRIVATE-DOCUMENT"]],
+            "apiKey": "PRIVATE-KEY", "response": "PRIVATE-RESPONSE"
+        ])
+    }
+
+    func testFailedAttemptRetainsOnlyTextFreeSummaryAfterStagingCleanup() throws {
+        let repository = try DocumentRepository(root: root.appendingPathComponent("library"))
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+        try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
+        try Data("PRIVATE-LOG".utf8).write(to: staging.appendingPathComponent("log.txt"))
+        let summary = try XCTUnwrap(repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        XCTAssertEqual(summary.validatedParagraphs, 9)
+        try FileManager.default.removeItem(at: staging)
+        let directory = record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [attempt.uuidString + ".json"])
+        let data = try Data(contentsOf: directory.appendingPathComponent(attempt.uuidString + ".json"))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("PRIVATE"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["documentID"] as? String, record.id.uuidString)
+        XCTAssertEqual(object["attemptID"] as? String, attempt.uuidString)
+        XCTAssertEqual(object["inputSHA256"] as? String, record.inputSHA256)
+        XCTAssertEqual(try DocumentRepository.sha256(record.originalURL), record.inputSHA256)
+        XCTAssertNil(record.translatedPath)
+    }
+
+    func testFailureDiagnosticsRejectWrongAttemptMalformedAndSymbolicLinks() throws {
+        let repository = try DocumentRepository(root: root.appendingPathComponent("library"))
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+        let report = staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json")
+        XCTAssertNil(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        try rejectedReport().write(to: report)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: UUID(), staging: staging))
+        try Data("{\"raw\":\"PRIVATE\"}".utf8).write(to: report)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        try FileManager.default.removeItem(at: report)
+        let outside = root.appendingPathComponent("outside.json")
+        try rejectedReport().write(to: outside)
+        try FileManager.default.createSymbolicLink(at: report, withDestinationURL: outside)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics").path))
+    }
+
+    func testFailureDiagnosticsRejectSymlinkDestination() throws {
+        let repository = try DocumentRepository(root: root.appendingPathComponent("library"))
+        let record = try repository.importPDF(pdf("source.pdf", pages: 1))
+        let attempt = UUID(), staging = try repository.attemptDirectory(document: record, attempt: attempt)
+        try rejectedReport().write(to: staging.appendingPathComponent("rejected-quality-\(attempt.uuidString).json"))
+        let outside = root.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: record.originalURL.deletingLastPathComponent().appendingPathComponent("diagnostics"), withDestinationURL: outside)
+        XCTAssertThrowsError(try repository.retainFailureDiagnostics(document: record, attempt: attempt, staging: staging))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+    }
 }

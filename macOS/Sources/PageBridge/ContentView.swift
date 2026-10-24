@@ -6,17 +6,32 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @StateObject private var scrollSynchronizer = PDFScrollSynchronizer()
+    @StateObject private var workspace = ReaderWorkspace()
+    @StateObject private var paperAssistant = PaperAssistantModel()
+    @AppStorage("PageBridge.showPageNavigation") private var showsNavigation = true
+    @AppStorage("PageBridge.assistantServiceID") private var assistantServiceID = ""
+    @State private var inspector: ReaderInspector?
+    @State private var navigationVariant: PDFDocumentVariant = .original
     @State private var pageNavigation = PDFPageNavigation()
     @State private var independentTranslatedPage = 1
     @State private var isDropTargeted = false
     @State private var showsSearchResults = false
     @State private var showsDemos = false
+    @State private var showsLiteratureSearch = false
+    @StateObject private var literatureSearch = LiteratureSearchModel()
     @FocusState private var searchFocused: Bool
+
+    init(model: AppModel) {
+        self.model = model
+        _pageNavigation = State(initialValue: PDFPageNavigation(page: model.page))
+        _independentTranslatedPage = State(initialValue: model.page)
+    }
 
     var body: some View {
         NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 215, ideal: 244, max: 310)
+            LibrarySidebar(model: model, library: model.library, onShowDemos: { showsDemos = true },
+                           onShowLiteratureSearch: { showsLiteratureSearch = true })
+                .navigationSplitViewColumnWidth(min: 220, ideal: 252, max: 320)
         } detail: {
             Group {
                 if model.settingsPresented {
@@ -46,17 +61,38 @@ struct ContentView: View {
         .frame(minWidth: 1000, minHeight: 680)
         .sheet(isPresented: $model.translationPresented) { TranslationSheet(model: model) }
         .sheet(isPresented: $showsDemos) { DemoLibraryView(model: model) }
+        .sheet(isPresented: $showsLiteratureSearch) { LiteratureSearchView(model: model, search: literatureSearch) }
         .alert("无法完成操作", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
             Button("好", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+        .onAppear { openReadingWorkspace() }
         .onChange(of: model.selectedID) { _, _ in
             scrollSynchronizer.reset()
-            pageNavigation = PDFPageNavigation()
-            independentTranslatedPage = 1
+            pageNavigation = PDFPageNavigation(page: model.page)
+            independentTranslatedPage = model.page
             showsSearchResults = false
+            openReadingWorkspace()
+        }
+        .onChange(of: model.selectedDocument?.translatedPath) { _, _ in openReadingWorkspace() }
+        .onChange(of: model.selectedDocument?.name) { _, _ in
+            if let document = model.selectedDocument { workspace.open(document: document) }
+        }
+        .onChange(of: model.readingMode) { _, mode in
+            if mode != .dual { workspace.selectedVariant = mode == .translated ? .translated : .original }
+        }
+        .onChange(of: model.page) { _, value in
+            if model.syncScrolling || workspace.selectedVariant == .original || model.readingMode != .dual {
+                workspace.currentPage = value
+            }
+        }
+        .onChange(of: model.searchHits.count) { _, count in
+            if model.searchPresented && count > 0 { showsSearchResults = true }
+        }
+        .onChange(of: workspace.errorMessage) { _, value in
+            if let value { model.errorMessage = value; workspace.errorMessage = nil }
         }
         .onChange(of: model.syncScrolling) { _, enabled in
             if !enabled { independentTranslatedPage = model.page }
@@ -66,116 +102,34 @@ struct ContentView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                if let icon = NSImage(named: "PageBridgeIcon") {
-                    Image(nsImage: icon).resizable().scaledToFit().frame(width: 34, height: 34)
-                        .accessibilityHidden(true)
-                } else {
-                    Image(systemName: "book.pages.fill").font(.system(size: 25)).foregroundStyle(.blue)
-                }
-                Text("PageBridge").font(.system(size: 19, weight: .semibold))
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 25)
-            HStack {
-                Text("文档").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                Spacer()
-                Button(action: model.importPDFs) { Image(systemName: "plus") }
-                    .buttonStyle(.plain).help("添加 PDF").accessibilityLabel("添加 PDF")
-            }.padding(.horizontal, 19).padding(.bottom, 7)
-            if model.documents.isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("尚未添加文档").font(.subheadline)
-                    Text("拖入 PDF，或点击 + 添加。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(19)
-                Spacer()
-            } else {
-                List(selection: Binding<UUID?>(
-                    get: { model.settingsPresented ? nil : model.selectedID },
-                    set: { if let id = $0 {
-                        model.selectDocument(id)
-                        if model.settingsPresented {
-                            NotificationCenter.default.post(name: Notification.Name("PageBridge.RequestSettingsClose"), object: nil)
-                        }
-                    } }
-                )) {
-                    ForEach(model.documents) { document in
-                        documentRow(document)
-                            .tag(document.id)
-                            .contextMenu {
-                                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([document.originalURL]) }
-                                Divider()
-                                Button("移出文档库", role: .destructive) { model.removeDocument(document.id) }
-                                    .disabled(document.status == .running || document.status == .cancelling)
-                            }
-                    }
-                }
-                .listStyle(.sidebar)
-            }
-            Divider().padding(.horizontal, 14)
-            Button { showsDemos = true } label: {
-                Label("示例 PDF", systemImage: "books.vertical")
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 10)
-            }.buttonStyle(.plain).padding(.horizontal, 10).padding(.top, 6)
-            Button {
-                model.settingsPresented = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "gearshape").font(.system(size: 18))
-                    Text("翻译服务").font(.subheadline)
-                    Spacer(minLength: 4)
-                    Text(model.activeService?.provider.title ?? "设置")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 11)
-                .background(model.settingsPresented ? Color.blue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).padding(10).help("配置 API 与翻译引擎")
-        }
-    }
-
-    private func documentRow(_ document: DocumentRecord) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: document.status == .completed ? "doc.text.fill" : "doc.text")
-                .font(.system(size: 23, weight: .light)).foregroundStyle(document.status == .completed ? Color.blue : Color.secondary)
-                .frame(width: 25).padding(.top, 3)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(document.name).font(.system(size: 12.5, weight: .medium)).lineLimit(2)
-                HStack(spacing: 5) {
-                    if document.status == .running || document.status == .cancelling {
-                        ProgressView().controlSize(.mini).scaleEffect(0.8)
-                    }
-                    Text("\(document.pageCount) 页 · \(document.status.title)")
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 7)
-        .accessibilityElement(children: .combine)
-    }
-
     private func reader(_ document: DocumentRecord) -> some View {
         VStack(spacing: 0) {
             readerToolbar(document)
             if model.searchPresented { searchBar }
+            readingTools
             Divider()
-            HStack(spacing: 1) {
-                if effectiveMode(document) != .translated {
-                    pane(document.originalURL, title: "原文", document: document)
-                }
-                if effectiveMode(document) == .dual { Divider() }
-                if effectiveMode(document) != .original, let url = readableTranslation(document) {
-                    pane(url, title: "译文", document: document)
+            GeometryReader { geometry in
+                HStack(spacing: 0) {
+                    if showsNavigation && (inspector == nil || geometry.size.width >= 1180) {
+                        PDFNavigationPanel(document: document, url: navigationURL(document), page: workspace.currentPage,
+                                           bookmarks: workspace.bookmarkPageNumbers) { navigate(to: $0, variant: workspace.selectedVariant) }
+                        Divider()
+                    }
+                    HStack(spacing: 1) {
+                        if effectiveMode(document) != .translated {
+                            pane(document.originalURL, title: "原文", document: document)
+                        }
+                        if effectiveMode(document) == .dual { Divider() }
+                        if effectiveMode(document) != .original, let url = readableTranslation(document) {
+                            pane(url, title: "译文", document: document)
+                        }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let inspector {
+                        Divider()
+                        readerInspector(inspector, document: document).frame(width: 346)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .separatorColor).opacity(0.2))
             if model.isTranslating { translationProgress }
             else if !model.statusMessage.isEmpty {
@@ -193,14 +147,17 @@ struct ContentView: View {
     }
 
     private func readerToolbar(_ document: DocumentRecord) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(URL(fileURLWithPath: document.name).deletingPathExtension().lastPathComponent)
-                    .font(.system(size: 18, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                Text("\(languageName(document.sourceLanguage)) → \(languageName(document.targetLanguage)) · \(document.pageCount) 页")
-                    .font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    documentTitle(document)
+                    Text(documentSummary(document))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize()
+                }
+                documentTitle(document)
             }
-            .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
+            .help("\(document.name)\n\(documentSummary(document))")
             readingModeControl(document)
             Menu {
                 Button("适合宽度") { model.zoom = 1 }
@@ -230,6 +187,9 @@ struct ContentView: View {
                         .disabled(!canExport(kind, document: document))
                 }
                 Divider()
+                Button("带批注的 PDF…") { workspace.exportAnnotatedPDF() }
+                Button("阅读笔记（Markdown）…") { workspace.exportNotes() }
+                Divider()
                 Button("在 Finder 中显示输出") { model.openOutputFolder() }
                     .disabled(readableTranslation(document) == nil && document.bilingualURL == nil)
             } label: {
@@ -238,9 +198,19 @@ struct ContentView: View {
             .menuStyle(.borderedButton).tint(.blue).fixedSize()
         }
         .controlSize(.regular)
-        .padding(.horizontal, 18).padding(.vertical, 17)
+        .padding(.horizontal, 16).padding(.vertical, 7)
         .documentToolbarWindowChrome()
         .background(.bar)
+    }
+
+    private func documentTitle(_ document: DocumentRecord) -> some View {
+        Text(URL(fileURLWithPath: document.name).deletingPathExtension().lastPathComponent)
+            .font(.system(size: 14, weight: .semibold))
+            .lineLimit(1).truncationMode(.middle)
+    }
+
+    private func documentSummary(_ document: DocumentRecord) -> String {
+        "\(languageName(document.sourceLanguage)) → \(languageName(document.targetLanguage)) · \(document.pageCount) 页"
     }
 
     private func readingModeControl(_ document: DocumentRecord) -> some View {
@@ -250,7 +220,7 @@ struct ContentView: View {
                     model.readingMode = mode
                 } label: {
                     Text(mode.title).font(.system(size: 12, weight: .medium))
-                        .frame(width: 44).padding(.vertical, 6)
+                        .frame(width: 44).padding(.vertical, 4)
                         .foregroundStyle(effectiveMode(document) == mode ? Color.white : Color.primary)
                         .background(effectiveMode(document) == mode ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 5))
                 }
@@ -261,7 +231,7 @@ struct ContentView: View {
                 .accessibilityAddTraits(effectiveMode(document) == mode ? .isSelected : [])
             }
         }
-        .padding(3).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+        .padding(2).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func pane(_ url: URL, title: String, document: DocumentRecord) -> some View {
@@ -272,22 +242,24 @@ struct ContentView: View {
                     Spacer()
                     Text(title == "原文" ? languageName(document.sourceLanguage) : languageName(document.targetLanguage) + (model.syncScrolling ? "" : " · 第 \(independentTranslatedPage) 页"))
                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                }.padding(.horizontal, 21).padding(.top, 9).padding(.bottom, 3)
+                }.padding(.horizontal, 16).padding(.vertical, 4)
             }
             PDFReaderView(url: url, page: title == "译文" && effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
                           navigation: pageNavigation,
-                          acceptsNavigation: !(title == "译文" && effectiveMode(document) == .dual && !model.syncScrolling),
+                          acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual || navigationVariant == (title == "译文" ? .translated : .original),
                           zoom: model.zoom,
                           synchronizesScrolling: model.syncScrolling && effectiveMode(document) == .dual,
                           synchronizer: scrollSynchronizer,
-                          searchQuery: model.searchPresented ? model.searchQuery : "")
+                          searchQuery: model.searchPresented ? model.searchQuery : "",
+                          workspace: workspace, documentID: document.id,
+                          variant: title == "译文" ? .translated : .original)
         }
     }
 
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("搜索原文中的文字", text: $model.searchQuery)
+            TextField(model.readingMode == .translated ? "搜索译文中的文字" : "搜索原文中的文字", text: $model.searchQuery)
                 .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
                 .focused($searchFocused).onSubmit { model.search(); showsSearchResults = !model.searchHits.isEmpty }
             Button("搜索") { model.search(); showsSearchResults = !model.searchHits.isEmpty }
@@ -302,7 +274,7 @@ struct ContentView: View {
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(model.searchHits) { hit in
                                     Button {
-                                        navigate(to: hit.page)
+                                        navigate(to: hit.page, variant: model.readingMode == .translated ? .translated : .original)
                                         showsSearchResults = false
                                     } label: {
                                         VStack(alignment: .leading, spacing: 6) {
@@ -376,9 +348,103 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    private func navigate(to page: Int) {
-        model.page = page
+    private func navigate(to requestedPage: Int, variant requestedVariant: PDFDocumentVariant? = nil) {
+        let variant = requestedVariant ?? workspace.selectedVariant
+        guard let document = model.selectedDocument else { return }
+        let page = max(1, min(document.pageCount, requestedPage))
+        navigationVariant = variant
+        workspace.selectedVariant = variant
+        workspace.currentPage = page
+        if effectiveMode(document) == .dual && !model.syncScrolling && variant == .translated {
+            independentTranslatedPage = page
+        } else { model.page = page }
+        if effectiveMode(document) != .dual {
+            model.readingMode = variant == .translated && readableTranslation(document) != nil ? .translated : .original
+        }
         pageNavigation = PDFPageNavigation(page: page)
+    }
+
+    private func openReadingWorkspace() {
+        guard let document = model.selectedDocument else { return }
+        workspace.open(document: document)
+        workspace.selectedVariant = effectiveMode(document) == .translated ? .translated : .original
+        workspace.currentPage = model.page
+        if let error = workspace.errorMessage { model.errorMessage = error; workspace.errorMessage = nil }
+    }
+
+    private func navigationURL(_ document: DocumentRecord) -> URL {
+        workspace.selectedVariant == .translated ? (readableTranslation(document) ?? document.originalURL) : document.originalURL
+    }
+
+    private var readingTools: some View {
+        HStack(spacing: 12) {
+            Button { showsNavigation.toggle(); if showsNavigation { inspector = nil } } label: {
+                Image(systemName: "sidebar.left")
+            }.help("页面缩略图、目录与书签").accessibilityLabel("页面导航")
+            Divider().frame(height: 18)
+            Button(action: workspace.highlightSelection) { Label("高亮", systemImage: "highlighter") }
+                .disabled(!workspace.canAnnotateSelection).help("先在 PDF 中选择文字，再添加高亮")
+            Button(action: workspace.underlineSelection) { Image(systemName: "underline") }
+                .disabled(!workspace.canAnnotateSelection).help("为选中文字添加下划线").accessibilityLabel("下划线")
+            Button(action: workspace.addNote) { Label("笔记", systemImage: "square.and.pencil") }.help("记录当前页面或选中文字的笔记")
+            Button(action: workspace.toggleBookmark) {
+                Image(systemName: workspace.bookmarkPageNumbers.contains(workspace.currentPage) ? "bookmark.fill" : "bookmark")
+            }.help("添加或移除当前页书签").accessibilityLabel("当前页书签")
+            Menu {
+                Button("复制选中文字") {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(workspace.selectionText, forType: .string)
+                }.disabled(workspace.selectionText.isEmpty)
+                Button("复制文档与页码") {
+                    guard let document = model.selectedDocument else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("\(document.name) · \(workspace.selectedVariant.title) 第 \(workspace.currentPage) 页", forType: .string)
+                }
+            } label: { Image(systemName: "doc.on.clipboard") }.menuStyle(.borderlessButton).frame(width: 24).help("复制选文或页码").accessibilityLabel("复制选文或页码")
+            Spacer(minLength: 6)
+            if !workspace.selectionText.isEmpty {
+                Text("已选 \(workspace.selectionText.count) 字").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Button { inspector = inspector == .notes ? nil : .notes } label: { Label("阅读笔记", systemImage: "list.bullet.rectangle") }
+                .foregroundStyle(inspector == .notes ? Color.accentColor : .primary)
+            Button { inspector = inspector == .assistant ? nil : .assistant } label: { Label("助手", systemImage: "sparkles") }
+                .foregroundStyle(inspector == .assistant ? Color.accentColor : .primary)
+        }.buttonStyle(.borderless).controlSize(.small).font(.system(size: 12))
+            .padding(.horizontal, 16).padding(.vertical, 6).background(.bar)
+    }
+
+    private func readerInspector(_ selected: ReaderInspector, document: DocumentRecord) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("阅读工具", selection: Binding(get: { inspector ?? .assistant }, set: { inspector = $0 })) {
+                    Text("助手").tag(ReaderInspector.assistant)
+                    Text("笔记").tag(ReaderInspector.notes)
+                }.pickerStyle(.segmented).labelsHidden()
+                Button { inspector = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).help("关闭侧栏").accessibilityLabel("关闭阅读侧栏")
+            }.padding(10)
+            Divider()
+            if selected == .assistant {
+                PaperAssistantPanel(model: paperAssistant, document: document, page: workspace.currentPage,
+                                    selectionText: workspace.selectionText, service: assistantService,
+                                    services: model.services, selectedServiceID: Binding(
+                                        get: { assistantService?.id },
+                                        set: { assistantServiceID = $0?.uuidString ?? "" }
+                                    ), apiKey: { try model.key(for: $0) },
+                                    onNavigate: { navigate(to: $0, variant: .original) }, onSaveNote: { text in
+                    workspace.addNote(text: text); inspector = .notes
+                })
+            } else {
+                AnnotationsPanel(workspace: workspace) { navigate(to: $0, variant: workspace.selectedVariant) }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var assistantService: ServiceConfiguration? {
+        // Assistant choice is independent of the translation profile. Deleted profiles fall back safely.
+        model.services.first { $0.id == UUID(uuidString: assistantServiceID) }
+            ?? model.activeService ?? model.services.first
     }
 
     private var emptyLibrary: some View {
@@ -432,3 +498,5 @@ struct ContentView: View {
         ["en": "英语", "zh": "简体中文", "zh-TW": "繁体中文", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语", "es": "西班牙语", "ru": "俄语"][code] ?? code
     }
 }
+
+private enum ReaderInspector: Hashable { case assistant, notes }
