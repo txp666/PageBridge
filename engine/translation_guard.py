@@ -320,6 +320,221 @@ def _check_regulator_continuity(ti,output):
 
 
 
+# Explicit source-document terminology, captured before any paragraph mutates.
+_WEATHER_ATTR = '_pagebridge_source_weather_terms'
+_weather_document_token = object()
+_weather_bindings = {}
+_WEATHER_LABELS = _BODY_LABELS | {'caption', 'figure_caption', 'table_caption', 'table_footnote', 'list_item'}
+_WEATHER_CWT = re.compile(r'\bCirculation Weather Types?\s*\(\s*CWT\s*\)')
+_WEATHER_CENTRE = re.compile(r'\b(?:an?|the)\s+(?P<code>[AC])\s+cent(?:r|er)ed\s+(?:on\s+|to\s+the\s+(?P<direction>N|NE|E|SE|S|SW|W|NW)\s+of\s+)(?P<point>[A-Z])\b')
+_WEATHER_RANGE = re.compile(r'\blet us take from Table (?P<table>\d+) the most probable wind sequence, (?P<range>from the fifth to the first day before the target day with (?P<class>[A-Z]{1,3})): (?P<sequence>[A-Z]{1,3}(?: +[A-Z]{1,3}){4})\.')
+_WEATHER_SPEED = re.compile(r'\b(?:speed|speeds|velocity|velocities|magnitude|intensity|strength|knots?|mph)\b|\bm\s*/\s*s\b|\bkm\s*/\s*h\b', re.I)
+_WEATHER_DIRECTIONS = {'N':'北','NE':'东北','E':'东','SE':'东南','S':'南','SW':'西南','W':'西','NW':'西北'}
+
+
+@_regulator_dataclass(frozen=True)
+class _WeatherParagraphContext:
+    document_token: object
+    cwt: bool
+    centres: tuple
+    neutral_wind: bool
+    preceding_range: tuple
+    formulas: tuple
+    source_allows_wavelet: bool
+
+
+def _weather_label(paragraph):
+    return str(getattr(paragraph,'layout_label','')).lower().replace(' ','_')
+
+
+def _weather_plain_span(mapped,paragraph,match,fonts,letters=()):
+    if mapped is None:return False
+    start,end=match.span() if hasattr(match,'span') else match
+    # Source URLs, quoted examples and code are never a terminology definition.
+    for pattern in (_URL_OR_EMAIL,re.compile(
+            r'<code\b[^>]*>.*?</code>|`[^`]*`|"[^"\n]*"|“[^”\n]*”'
+            r"|(?<![A-Za-z0-9])'[^'\n]*'(?![A-Za-z0-9])|‘[^’\n]*’",re.S)):
+        if any(m.start()<end and m.end()>start for m in pattern.finditer(mapped[0])):return False
+    return _regulator_prove_span(mapped,paragraph,start,end,set(letters),fonts)
+
+
+def _weather_positive_definition(source,start):
+    prefix=re.split(r'[.!?;]',source[:start])[-1]
+    return not re.search(r'\b(?:not|never|incorrect|false|denies|deny)\b',prefix,re.I)
+
+
+def _capture_source_weather_terms(docs):
+    global _weather_bindings,_weather_document_token
+    _weather_document_token=object();_weather_bindings={}
+    records=[];definitions=set();cwt_conflict=False;ac_conflict=False
+    # A competing explicit expansion vetoes this document binding. The known
+    # competing phrase is case-insensitive, without treating arbitrary lower-
+    # case prose before an acronym as another definition.
+    cwt_name=r'(?:[A-Z][a-z]+\s+){1,5}[A-Z][a-z]+|(?i:continuous\s+wavelet\s+transform)'
+    cwt_candidates=re.compile(r'\b(?P<name>'+cwt_name+r')\s*\(\s*CWT\s*\)')
+    reverse_cwt=re.compile(r'\bCWT\s*\(\s*(?P<name>'+cwt_name+r')\s*\)')
+    ac_candidates=re.compile(r'\b(?P<name>(?i:anticyclone|cyclone)(?:\s+(?i:circulation))?)\s*\(\s*(?P<code>[AC])\s*\)')
+    for page in docs.page:
+        native_fonts=getattr(page,'pdf_font',None)
+        if not native_fonts:continue
+        fonts={font.font_id:font for font in native_fonts}
+        if len(fonts)!=len(native_fonts):continue
+        for paragraph in page.pdf_paragraph:
+            if _weather_label(paragraph) not in _WEATHER_LABELS or getattr(paragraph,'vertical',False):continue
+            mapped=_regulator_native_source_map(paragraph)
+            if mapped is None:continue
+            source=mapped[0];records.append((paragraph,mapped,fonts))
+            for match in _WEATHER_CWT.finditer(source):
+                if (_weather_plain_span(mapped,paragraph,match,fonts)
+                        and _weather_positive_definition(source,match.start())):definitions.add('CWT')
+            for pattern in (cwt_candidates,reverse_cwt):
+                for match in pattern.finditer(source):
+                    if (_weather_plain_span(mapped,paragraph,match,fonts)
+                            and _weather_positive_definition(source,match.start())
+                            and ' '.join(match['name'].split()[-3:]) not in {'Circulation Weather Type','Circulation Weather Types'}):cwt_conflict=True
+            for match in ac_candidates.finditer(source):
+                if not (_weather_plain_span(mapped,paragraph,match,fonts)
+                        and _weather_positive_definition(source,match.start())):continue
+                expected='A' if match['name'].lower().startswith('anticyclone') else 'C'
+                if match['code']!=expected:ac_conflict=True
+                else:definitions.add(expected)
+    if 'CWT' not in definitions or cwt_conflict:return 0
+    has_ac={'A','C'}<=definitions and not ac_conflict
+    for paragraph,mapped,fonts in records:
+        source=mapped[0]
+        cwt=any(_weather_plain_span(mapped,paragraph,m,fonts) for m in re.finditer(r'\bCWT\b',source))
+        centres=[]
+        if has_ac:
+            for match in _WEATHER_CENTRE.finditer(source):
+                if _weather_plain_span(mapped,paragraph,match,fonts,(match.start('code'),match.start('point'))):
+                    centres.append((match['code'],match['direction'],match['point']))
+        # Only explicit circulation-class prose gets this rule. Source speed,
+        # velocity, strength and units are legitimate and disable it locally.
+        class_context=(bool(re.search(r'\b(?:5LC|LC6|5LC/LC6)\b',source))
+                       and bool(re.search(r'\bwind (?:series|persistence|prediction|of the last LC6 day)\b',source)))
+        daily_class_context=has_ac and bool(re.search(r'\bclasses A and C\b',source)) and bool(re.search(r'\bdaily average winds\b',source))
+        neutral_wind=bool((class_context or daily_class_context) and not _WEATHER_SPEED.search(source)
+                          and _weather_plain_span(mapped,paragraph,(0,len(source)),fonts))
+        preceding_range=()
+        ranges=list(_WEATHER_RANGE.finditer(source)) if has_ac else []
+        if len(ranges)==1 and _weather_plain_span(mapped,paragraph,ranges[0],fonts):
+            match=ranges[0]
+            replacement=('from the fifth day before the target day to the first day before the target day, '
+                         'where '+match['class']+' denotes the weather class of the target day')
+            preceding_range=(match['range'],replacement,match['class'],match['sequence'])
+        if not (cwt or centres or neutral_wind or preceding_range):continue
+        context=_WeatherParagraphContext(_weather_document_token,cwt,tuple(centres),neutral_wind,preceding_range,
+            tuple(comp.pdf_formula for comp in paragraph.pdf_paragraph_composition if comp.pdf_formula is not None),
+            bool(re.search(r'\bwavelets?\b|小波',source,re.I)))
+        _weather_bindings[id(paragraph)]=(paragraph,context)
+    return len(_weather_bindings)
+
+
+def _weather_input_key(ti):
+    # Whole recovery strips only these engine-created rich wrappers; formulas
+    # and all actual source content must remain identical for the binding.
+    return re.sub(r"<style id='\d+'>|</style>",'',ti.unicode)
+
+
+def _prepare_source_weather_terms(paragraph,ti):
+    entry=_weather_bindings.get(id(paragraph))
+    if not entry or entry[0] is not paragraph:return
+    context=entry[1];formulas=tuple(p.formula for p in _formula(ti.placeholders))
+    if len(formulas)!=len(context.formulas) or any(a is not b for a,b in zip(formulas,context.formulas)):return
+    setattr(ti,_WEATHER_ATTR,(context,_weather_input_key(ti)))
+
+
+def _copy_source_weather_terms(source,target):
+    binding=getattr(source,_WEATHER_ATTR,None)
+    if binding is not None:setattr(target,_WEATHER_ATTR,binding)
+
+
+def _source_weather_context(ti):
+    binding=getattr(ti,_WEATHER_ATTR,None)
+    if not isinstance(binding,tuple) or len(binding)!=2:return None
+    context,key=binding
+    if (not isinstance(context,_WeatherParagraphContext) or context.document_token is not _weather_document_token
+            or key!=_weather_input_key(ti)):return None
+    formulas=tuple(p.formula for p in _formula(ti.placeholders))
+    if len(formulas)!=len(context.formulas) or any(a is not b for a,b in zip(formulas,context.formulas)):return None
+    return context
+
+
+def _source_weather_range_replacements(ti):
+    context=_source_weather_context(ti)
+    if context is None or not context.preceding_range:return []
+    original,replacement,_,_=context.preceding_range
+    if ti.unicode.count(original)!=1:return []
+    start=ti.unicode.index(original)
+    return [(start,start+len(original),replacement,'weatherPrecedingRangeRequestViews')]
+
+
+def _source_weather_document_hint(ti):
+    context=_source_weather_context(ti)
+    if context is None:return ''
+    hints=[]
+    if context.cwt:
+        hints.append(' The source document explicitly defines CWT as Circulation Weather Type(s), 环流天气类型. '
+                     'Keep the acronym CWT where the current source uses it; expansion is not required. '
+                     'If stating its meaning, retain only this source-defined weather-type sense. '
+                     'Do not invent a different full name or a wavelet transform.')
+    if context.centres:
+        hints.append(' The source document explicitly defines A as anticyclone (反气旋), C as cyclone (气旋). '
+                     'Keep these circulation codes distinct. In the source centre-position clauses, an A is an anticyclone, '
+                     'never a cyclone; a C is a cyclone. Preserve the source point and compass direction for each centre. '
+                     'Do not change or expand any formula placeholder.')
+    if context.neutral_wind:
+        hints.append(' This source paragraph concerns classified circulation/weather types, directions and vorticity. '
+                     'Its winds/wind sequences/wind prediction do not specify wind speed. '
+                     'Use neutral 风、风况、风型 or the original weather-class codes as appropriate; do not add 风速.')
+    if context.preceding_range:
+        _,_,category,sequence=context.preceding_range
+        hints.append(' The explicit five-code weather sequence '+sequence+' runs from the fifth day BEFORE the target day '
+                     'through the first day BEFORE it, in that source order. '+category+' identifies the target day weather class; '
+                     'it is not an extra member of the five-code sequence. Preserve this distinction and every source code.')
+    return ''.join(hints)
+
+
+def _weather_target_prose(ti,output):
+    # At most one proven original native Latin letter can be visible for a
+    # centre-role check; compound formulas are never decoded into prose.
+    projected=output
+    for placeholder in _formula(ti.placeholders):
+        char=_regulator_single_letter_formula(placeholder.formula)
+        value=char.char_unicode if char is not None else ' '
+        projected=projected.replace(placeholder.placeholder,value)
+    prose=_prose_text(ti,projected)
+    prose=re.sub(r'[\x00-\x1f]', ' ', prose)
+    return re.sub(r'(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])','',prose)
+
+
+def _check_source_weather_terms(ti,output):
+    context=_source_weather_context(ti)
+    if context is None:return
+    target=_weather_target_prose(ti,output)
+    if context.cwt and not context.source_allows_wavelet and re.search(r'小波(?:变换|转换)',target):
+        raise PlaceholderIntegrityError('source-defined-acronym-sense-changed')
+    if context.neutral_wind and '风速' in target:
+        raise PlaceholderIntegrityError('weather-class-wind-became-speed')
+    for code,direction,point in context.centres:
+        wrong=r'(?<!反)气旋' if code=='A' else r'反气旋'
+        point=re.escape(point)
+        if direction:
+            place=point+r'\s*(?:的)?\s*'+_WEATHER_DIRECTIONS[direction]+r'(?:方|方向|侧|部)?'
+        else:place=point+r'\s*(?:点)?'
+        before=r'(?:以\s*'+place+r'\s*为中心|(?:中心)?(?:位于|处于|在)\s*'+place+r')\s*(?:处)?\s*(?:的)?\s*(?:一(?:个|种))?\s*'+wrong
+        after=wrong+r'\s*(?:的)?中心\s*(?:位于|处于|在)\s*'+place+r'(?=$|[，。；,;])'
+        paired=wrong+r'\s*[（(]\s*'+code+r'\s*[)）]|\b'+code+r'\s*[（(]\s*'+wrong+r'\s*[)）]'
+        # Distinct source alternatives can legitimately place A and C at the
+        # same location. A whole-paragraph location search cannot assign those
+        # occurrences; explicit code/name pairings remain independently strict.
+        same_place_codes={c for c,d,p in context.centres if d==direction and p==point}
+        ambiguous_place=len(same_place_codes)>1
+        if re.search(paired,target) or (not ambiguous_place and
+                (re.search(before,target) or re.search(after,target))):
+            raise PlaceholderIntegrityError('source-defined-circulation-role-changed')
+
+
 def _body_geometry(paragraph):
     label = str(getattr(paragraph, "layout_label", "")).lower().replace(" ", "_")
     text = getattr(paragraph, "unicode", None)
@@ -404,6 +619,7 @@ def _source_context_for_paragraph(paragraph):
 
 
 def _capture_source_continuity(docs):
+    _capture_source_weather_terms(docs)
     _capture_regulator_continuity(docs)
     # BabelDOC paragraphs are slot-backed. Hold exact object identities for this
     # document's synchronous translation lifetime rather than altering its schema.
@@ -435,6 +651,7 @@ def _context_has_engine_syntax(text):
 
 
 def _copy_source_continuity(source, target):
+    _copy_source_weather_terms(source, target)
     _copy_regulator_continuity(source, target)
     if hasattr(source, "_pagebridge_layout_label"):
         setattr(target, "_pagebridge_layout_label", source._pagebridge_layout_label)
@@ -444,6 +661,7 @@ def _copy_source_continuity(source, target):
 
 
 def _prepare_source_continuity(paragraph, ti):
+    _prepare_source_weather_terms(paragraph, ti)
     _prepare_regulator_continuity(paragraph, ti)
     setattr(ti, "_pagebridge_layout_label", str(getattr(paragraph, "layout_label", "")).lower().replace(" ", "_"))
     review_batch = _review_batch.get()
@@ -1059,6 +1277,11 @@ def _prose_text(ti, text):
 def _contextual_terms(ti):
     source, _ = _visible_text_map(ti, ti.unicode)
     terms = []
+    if _review_autonomous_laboratories(ti):
+        terms.append(('驾驶实验室', 'autonomous-research-laboratory-mistranslated',
+                      ' Scientific terminology: self-driving labs/laboratories here are autonomous research laboratories '
+                      '(自主科研实验室), as established by the source materials/catalysis or protein-fitness context. '
+                      'The phrase does not describe vehicle driving.'))
     if (re.search(r"\bhigh[-‑– ]power\s+trunk\b", source, re.I)
             and re.search(r"\b(?:concept|fieldbus|FISCO|spurs?|cables?)\b", source, re.I)
             and not re.search(r"\b(?:vehicle|car|automotive|chassis|bodywork)\b", source, re.I)):
@@ -1354,9 +1577,178 @@ def _review_attention_clause(ti):
     return m
 
 
+def _review_autonomous_laboratories(ti):
+    source = _review_source(ti)
+    source = re.sub(r"'[^'\n]*'|‘[^’\n]*’", lambda m: ' '*len(m[0]), source)
+    if re.search(r'\b(?:vehicles?|cars?|automotive|driving tests?|road tests?|roads?|traffic|chassis)\b', source, re.I):
+        return []
+    if not (re.search(r'\bmaterials and catalysis discovery\b', source, re.I)
+            or re.search(r'\bprotein fitness landscape\b', source, re.I)):
+        return []
+    return list(re.finditer(r'\bself[-‑–]driving (?:labs|laboratories)\b', source, re.I))
+
+
+def _review_research_triad(ti):
+    # The explicit three noun classes are the objects of one "among" relation.
+    # Code, quotes, formulas and URLs cannot establish this source grammar.
+    source = _review_source(ti)
+    source = re.sub(r"'[^'\n]*'|‘[^’\n]*’", lambda m: ' '*len(m[0]), source)
+    match = re.search(r'\brelationships among all researchers, research tools, and research objects\b', source)
+    if not match:
+        return None
+    prefix = re.split(r'[.;:]', source[:match.start()])[-1]
+    return None if re.search(r'\b(?:not|never|without|no|neither)\b', prefix, re.I) else match
+
+
+def _source_measured_list_prefix(ti):
+    """Prove a native leading bullet/quantity token followed by a distance unit.
+
+    A list marker is part of the preserved formula object; keeping formula order
+    alone cannot keep a single token at the beginning of its translated item.
+    """
+    label = str(getattr(ti, '_pagebridge_layout_label', '')).lower().replace(' ', '_')
+    if label not in {'plain_text', 'text', 'paragraph_hybrid'}:
+        return None
+    match = re.match(r'\s*(?P<token>\{v\d+\})\s*(?P<unit>mm|cm|m|µm|μm)\s+between\b', ti.unicode or '')
+    if not match:
+        return None
+    placeholders = [p for p in _formula(ti.placeholders) if p.placeholder == match['token']]
+    if len(placeholders) != 1 or (ti.unicode or '').count(match['token']) != 1:
+        return None
+    formula = placeholders[0].formula
+    if formula.pdf_curve or formula.pdf_form:
+        return None
+    raw = ''.join(c.char_unicode or '' for c in formula.pdf_character)
+    if not re.fullmatch(r'[•▪◦●]\s+\d+(?:\.\d+)?\s*', raw):
+        return None
+    native = [c for c in formula.pdf_character if (c.char_unicode or '').strip()]
+    if len(set(map(id,native))) != len(native):
+        return None
+    for c in native:
+        box, style = c.box, c.pdf_style
+        if (not box or not style or c.pdf_character_id is None or c.vertical
+                or c.xobj_id != 0 or c.formula_layout_id is not None
+                or any(not isinstance(v,(int,float)) or not math.isfinite(v)
+                       for v in (box.x,box.y,box.x2,box.y2,style.font_size))
+                or box.x2 <= box.x or box.y2 <= box.y or style.font_size <= 0):
+            return None
+    size = max(c.pdf_style.font_size for c in native)
+    center = (native[0].box.y+native[0].box.y2)/2
+    if (any(abs((c.box.y+c.box.y2)/2-center) > .25*size for c in native)
+            or any(not -.05*size <= b.box.x-a.box.x2 <= size for a,b in zip(native,native[1:]))):
+        return None
+    return match['token'], match['unit']
+
+
+def _check_measured_list_prefix(ti, output):
+    prefix = _source_measured_list_prefix(ti)
+    if prefix and not re.match(r'\s*'+re.escape(prefix[0])+r'\s*'+re.escape(prefix[1])+r'(?![A-Za-z])', output):
+        raise PlaceholderIntegrityError('source-list-prefix-displaced')
+
+
+def _source_rule_heading(ti):
+    """A complete numbered prose title, not an arbitrary Rule1 identifier."""
+    if str(getattr(ti, '_pagebridge_layout_label', '')).lower() != 'title':
+        return None
+    source = _review_source(ti)
+    match = re.match(r'\A[ \t]*Rule(?P<number>[1-9]\d?):[ \t]+(?P<title>[A-Z].*)\Z', source)
+    if not match:
+        return None
+    words = re.findall(r'[A-Za-z]{2,}', match['title'])
+    if len(words) < 3 or not ({w.lower() for w in words} & {'for','of','to','and','the','how','when','with'}):
+        return None
+    return match
+
+
+def _rule_heading_output_prefix(ti, text):
+    source = _source_rule_heading(ti)
+    if source is None:
+        return None
+    number = int(source['number'])
+    digits = '零一二三四五六七八九'
+    tens, ones = divmod(number, 10)
+    chinese = (('' if tens == 1 else digits[tens]) + '十' if tens else '')
+    chinese += digits[ones] if ones else ''
+    equivalent = source['number'] + '|' + chinese
+    return re.match(r'\A\s*(?:(?:规则|准则|原则|法则)\s*(?P<plain>' + equivalent
+                    + r')|第\s*(?P<ordinal>' + equivalent
+                    + r')\s*条(?:规则|准则|原则|法则)?)\s*[:：]', text)
+
+
+def _rule_heading_analysis_view(ti, text):
+    """Separate only the proven source prefix; preserve same-named later IDs."""
+    source = _source_rule_heading(ti)
+    if source is None:
+        return text
+    prefix = ti.unicode[:source.end('number') + 1]
+    if text.startswith(prefix):
+        left, right = source.span('number')
+        return text[:left] + ' ' + text[left:right] + ' ' + text[right:]
+    target = _rule_heading_output_prefix(ti, text)
+    if target:
+        left, right = target.span('plain' if target['plain'] is not None else 'ordinal')
+        return text[:left] + source['number'] + text[right:]
+    return text
+
+
+def _check_rule_heading_number(ti, output):
+    if _source_rule_heading(ti) and not _rule_heading_output_prefix(ti, _prose_text(ti, output)):
+        raise PlaceholderIntegrityError('numbered-rule-heading-changed')
+
+
+def _is_citation_editor_publication_metadata(ti, label, visible):
+    """Preserve one complete publisher block; keywords alone prove nothing."""
+    if str(label).lower() != 'abandon' or _formula(ti.placeholders):
+        return False
+    match = re.fullmatch(
+        r'Citation:\s+(?P<authors>[A-Za-zÀ-ž .,’\x27-]{8,200})\s+'
+        r'\((?P<year>(?:19|20)\d{2})\)\s+(?P<title>[^:<>\n]{8,300})\.\s+'
+        r'(?P<journal>[A-Z][A-Za-z .&-]{2,80})\s+(?P<volume>[1-9]\d{0,3})'
+        r'\((?P<issue>[1-9]\d{0,2})\):\s+(?P<article>e\d{4,10})\.\s+'
+        r'doi:(?P<doi>10\.\d{4,9}/[A-Za-z0-9._/-]+)\s+'
+        r'Editor:\s+(?P<editor>[A-Za-zÀ-ž .,’\x27()-]{8,220})\s+'
+        r'Published\s+(?P<month>' + '|'.join(_MONTH_NAMES) + r')\s+'
+        r'(?P<day>[1-3]?\d),\s*(?P<published_year>(?:19|20)\d{2})', visible.strip())
+    if (not match or match['authors'].count(',') < 1 or ',' not in match['editor']
+            or match['year'] != match['published_year']
+            or match['doi'].rsplit('.', 1)[-1] != match['article'][1:]):
+        return False
+    from datetime import date
+    try:
+        date(int(match['published_year']), _MONTH_NAMES.index(match['month']) + 1, int(match['day']))
+    except ValueError:
+        return False
+    return True
+
+
+
 def _source_review_replacements(ti):
     """Source-attested English disambiguations only; no Chinese output edits."""
     replacements = _regulator_request_replacements(ti)
+    rule = _source_rule_heading(ti)
+    if rule:
+        replacements.append((rule.start('number'), rule.start('number'), ' ', 'numberedRuleHeadingRequestViews'))
+    replacements.extend(_electrical_source_replacements(ti))
+    replacements.extend(_source_weather_range_replacements(ti))
+    for match in _review_autonomous_laboratories(ti):
+        replacements.append((match.start(), match.end(), 'autonomous research laboratories',
+                             'autonomousLaboratoryRequestViews'))
+    match = _review_research_triad(ti)
+    if match:
+        replacements.append((match.start(), match.end(),
+                             'relationships connecting all researchers, research tools, and research objects to one another',
+                             'researchTriadRequestViews'))
+    for match in _standard_reference_owners(ti):
+        replacements.append((match.start(), match.end(), match['owner'] + ' ' + match['kind']
+                             + ' ' + match['number'], 'standardReferenceOwnerRequestViews'))
+    density = _source_density_cluster_sentence(ti)
+    if density:
+        replacements.append((density.start('sentence'), density.end('sentence'),
+                             _density_cluster_request_view(density), 'densityClusterRequestViews'))
+    else:
+        for match in _data_classification_references(ti):
+            replacements.append((match.start('section'), match.end('section'),
+                                 'Data Classification', 'sectionBoundaryRequestViews'))
     for m in _review_passive_groups(ti):
         # Keep NP order so even opaque scientific atoms retain source order.
         replacements.append((m.start(), m.end(), m['later_np'] + ' can occur after '
@@ -1384,6 +1776,9 @@ def _source_review_replacements(ti):
     if m:
         replacements.append((m.start('predicate'), m.end('predicate'), 'attracted attention in the role of '
                              + m['role'], 'attentionRoleRequestViews'))
+    for match in _joined_parallel_module_numbers(_review_source(ti)):
+        replacements.append((match.start('number'), match.end('number'), ' ' + match['number'],
+                             'parallelModuleNumberRequestViews'))
     replacements.extend(_source_inference_order_views(ti))
     return replacements
 
@@ -1405,7 +1800,33 @@ def _source_review_prompt_view(ti, text):
 
 
 def _source_review_hint(ti, label=None):
-    hints = [_source_inference_order_hint(ti, label), _regulator_continuity_hint(ti)]
+    hints = [_source_inference_order_hint(ti, label), _regulator_continuity_hint(ti),
+             _source_weather_document_hint(ti), _electrical_source_hint(ti)]
+    prefix = _source_measured_list_prefix(ti)
+    if prefix:
+        hints.append(' The original leading formula token contains the list bullet AND its quantity. '
+                     'Keep '+prefix[0]+prefix[1]+' at the beginning of this translated list item, before any translated prose. '
+                     'The original unit must immediately follow the token. State the between-relationship after that prefix; '
+                     'do not move the formula token to the end, duplicate its bullet, or expand its number.')
+    if _review_research_triad(ti):
+        hints.append(' The explicit among-clause relates all three classes: researchers, research tools, and research objects. '
+                     'Translate it as 研究人员、研究工具和研究对象三者之间的关系; do not attach 之间的关系 only to researchers.')
+    for match in _standard_reference_owners(ti):
+        hints.append(' The source reference ' + match[0] + ' belongs to ' + match['owner']
+                     + ', not to the preceding standard. Keep that owner with its number in Chinese: '
+                     + match['owner'] + '第' + match['number'] + ('条' if match['kind'] == 'Article' else '节') + '.')
+    if _resulting_electrical_quantity(ti):
+        hints.append(' In this circuit paragraph resulting/resultant is an ordinary modifier meaning 所得 or 合成, '
+                     'not a technical name. Translate the modifier of voltage/current into Chinese.')
+    if _data_classification_references(ti):
+        hints.append(' The parenthetical source reference defined above in Data Classification by KNN '
+                     'refers to the paper section 数据分类. Translate its ordinary heading words; '
+                     'DataClassification is a lost word boundary, not a software identifier. Keep KNN unchanged. '
+                     'Use the Chinese section reference without repeating the English heading in parentheses.')
+    if _source_density_cluster_sentence(ti):
+        hints.append(' The first sentence finds clusters using their density map; the neighbourhood extends '
+                     'up to the given number of neighbours. The final clause selects the given number of '
+                     'largest density maxima from that map. Keep these roles distinct and retain the original quantities.')
     if _review_short_wind_title(ti) and label in {'title', 'abandon'}:
         hints.append(' The complete short meteorological title Wind Data Mining means 风数据挖掘. '
                      'It contains no energy or power-generation concept; do not introduce 风能 or 风力发电.')
@@ -1543,7 +1964,19 @@ def _source_inference_order_views(ti):
 
 
 def _check_review_roles(ti, output, label=None):
+    _check_electrical_source_terms(ti, output)
     target = _prose_text(ti, output)
+    if _review_research_triad(ti):
+        if re.search(r'研究(?:人员|者)(?:彼此)?之间(?:的)?关系\s*[、，,]\s*研究工具', target):
+            raise PlaceholderIntegrityError('research-triad-relation-narrowed')
+    for match in _standard_reference_owners(ti):
+        owner, number = re.escape(match['owner']), re.escape(match['number'])
+        gap = r'(?:(?!NEC|CEC)[^\d，。；;!?！？]){0,24}'
+        numbered = r'(?<![A-Za-z0-9_])' + owner + r'(?![A-Za-z0-9_])\s*[,，]\s*第\s*' + number + r'\s*(?:条|节)'
+        if not re.search(numbered + r'|(?<![A-Za-z0-9_])' + owner + r'(?![A-Za-z0-9_])' + gap
+                         + r'(?<!\d)' + number + r'(?!\d)|(?<!\d)' + number + r'(?!\d)'
+                         + gap + r'(?<![A-Za-z0-9_])' + owner + r'(?![A-Za-z0-9_])', output):
+            raise PlaceholderIntegrityError('standard-reference-owner-changed')
     for m in _review_passive_groups(ti):
         later, earlier = re.escape(m['later']), re.escape(m['earlier'])
         # These are positively reversed local Chinese clauses, not mere ID order.
@@ -1585,6 +2018,98 @@ def _check_review_roles(ti, output, label=None):
 
 
 
+def _standard_reference_owners(ti):
+    """An explicit numbered reference must keep its source standard owner."""
+    label = getattr(ti, '_pagebridge_layout_label', None)
+    source, _ = _source_inference_grammar(ti, label)
+    # A quotation or code literal is not a reference in running prose.
+    for match in re.finditer(r"'[^'\n]*'|‘[^’\n]*’", source):
+        source = source[:match.start()] + ' ' * len(match[0]) + source[match.end():]
+    return list(re.finditer(
+        r'\b(?P<kind>Article|Section) (?P<number>[1-9]\d*) of the (?P<owner>NEC|CEC)(?![A-Za-z0-9_])', source))
+
+
+def _resulting_electrical_quantity(ti):
+    source, _ = _source_inference_grammar(ti, getattr(ti, '_pagebridge_layout_label', None))
+    return bool(re.search(r'\bresulting (?:voltage|current)\b', source)
+                and re.search(r'\b(?:series|parallel) connection\b', source))
+
+
+def _electrical_source_terms(ti):
+    """Disambiguate source prose, with native squared-unit evidence for area.
+
+    These are request hints and rejection checks only. Original input, formula
+    objects, quantities and rendered responses are never substituted here.
+    """
+    source, _ = _source_inference_grammar(ti, getattr(ti, '_pagebridge_layout_label', None))
+    for match in re.finditer(r"(?<![A-Za-z])'[^'\n]+'(?![A-Za-z])|‘[^’\n]+’", source):
+        source = source[:match.start()] + ' ' * len(match[0]) + source[match.end():]
+    terms = []
+    if re.search(r'\bcharacteristic curve\b', source) and re.search(r'\bcross(?:es)?\b', source):
+        for match in re.finditer(r'\bsolid (?P<kind>inductive|capacitive) limit curves?\b', source):
+            terms.append(('solid-line', match.start(), match.start()+5, 'solid-line'))
+    area = re.search(r'\bThe (?P<surface>surface of the simple apparatus without supply lines) is at least '
+                     r'(?P<value>\d+(?:\.\d+)?) (?P<unit>mm|cm|m)(?P<token>\{v\d+\})(?![A-Za-z0-9])', source)
+    if area:
+        ph = next((p for p in _formula(ti.placeholders) if p.placeholder == area['token']), None)
+        proof = _script_proof(ph) if ph is not None else None
+        if (proof and proof['kind'] == 'unit' and proof['base'] == area['unit']
+                and proof['value'] == area['value']
+                and ''.join(c.char_unicode for c in proof['characters']).strip() == '2'):
+            terms.append(('surface-area', area.start('surface'), area.end('surface'),
+                          'surface area of the simple apparatus (excluding supply lines)'))
+    power = re.search(r'\bDuring transmission of a participant, (?P<flow>no power is fed into the circuit)\.', source)
+    if power:
+        terms.append(('power-input', power.start('flow'), power.end('flow'), 'no power is injected into the circuit'))
+    for match in re.finditer(r'\bFieldbus non-incendive concept\s*\(FNICO\)', source, re.I):
+        terms.append(('nonincendive', match.start(), match.end(), match[0]))
+    return terms
+
+
+def _electrical_source_replacements(ti):
+    return [(start, end, value, 'electricalMeaningRequestViews')
+            for kind, start, end, value in _electrical_source_terms(ti) if kind != 'nonincendive']
+
+
+def _electrical_source_hint(ti):
+    kinds = {t[0] for t in _electrical_source_terms(ti)}
+    hints = {
+        'solid-line': ' The solid inductive/capacitive limit curve is drawn with a solid line (实线), as opposed to a dashed line. Solid describes the plotted line style, not a material or an electrical quantity.',
+        'surface-area': ' The given squared length unit measures the surface AREA (表面积) of the apparatus, not a distance. Here without supply lines excludes those lines from the stated apparatus area. Preserve the generic supply lines (供给线路); do not introduce gas, fluid or another medium that this area clause does not specify. This does not remove any separately explicit source statement about a medium. Preserve the exact number, unit and exponent token.',
+        'power-input': ' During the participant transmission, no power is fed INTO the circuit (没有功率馈入电路). Preserve this direction of energy flow; the sentence does not assert that the entire circuit is shut off or unpowered.',
+        'nonincendive': ' The source expansion Fieldbus Non-Incendive Concept (FNICO) means 现场总线非引燃概念. Non-incendive means non-igniting, not non-sparking (无火花/非火花). Preserve FNICO and all standard numbers.',
+    }
+    return ''.join(hints[k] for k in hints if k in kinds)
+
+
+def _check_electrical_source_terms(ti, output):
+    kinds = {t[0] for t in _electrical_source_terms(ti)}
+    target = output
+    # Only exact literals actually present in the source are excluded. New
+    # quotes around a mistranslation cannot evade the semantic check.
+    target = _mask_exact_source_literals(ti, target)
+    wrong = {
+        'solid-line': ('实感感性', '实性电容', '固体感性', '固体电容'),
+        'surface-area': ('表面距离',),
+        'power-input': ('电路不供电', '电路断电', '电路未通电'),
+        'nonincendive': ('非火花概念', '无火花概念'),
+    }
+    source, _ = _source_inference_grammar(ti, getattr(ti, '_pagebridge_layout_label', None))
+    # A paragraph may explicitly contrast another state or concept. The
+    # whole-paragraph output has no reliable clause alignment, so retain the
+    # request hint but abstain from this narrow bad-term gate in that case.
+    conflicts = {
+        'power-input': r'\b(?:switch(?:ed)? off|shut(?:s|ting)? (?:off|down)|shutdown|unpowered|disconnect(?:ed|ion)?|de[- ]energiz(?:e|ed)|power(?:ed)? off)\b',
+        'nonincendive': r'\bnon[- ]sparking\b',
+        'surface-area': r'\b(?:distance|length|spacing|clearance)\b',
+    }
+    for kind in kinds:
+        if kind in conflicts and re.search(conflicts[kind], source, re.I):
+            continue
+        if any(_affirmed_wrong_term(target, phrase) for phrase in wrong[kind]):
+            raise PlaceholderIntegrityError('electrical-source-'+kind)
+
+
 def _network_rewiring_prose(ti):
     """Identify a source prose term from its network/node context, not a name."""
     prose = _prose_text(ti, ti.unicode)
@@ -1593,19 +2118,88 @@ def _network_rewiring_prose(ti):
 
 
 _SECTION_NAMES = {'METHODS': '方法', 'RESULTS': '结果', 'DISCUSSION': '讨论',
-                  'INTRODUCTION': '引言', 'CONCLUSIONS': '结论'}
+                  'INTRODUCTION': '引言', 'CONCLUSIONS': '结论', 'Data Classification': '数据分类'}
+
+
+def _mask_exact_source_literals(ti, text):
+    """Analysis-only exemption for complete, exact source-attested literals.
+
+    Preserve source multiplicity: a new quoted/code copy cannot hide ordinary
+    prose. This does not change either the source TI or the returned translation.
+    """
+    pattern = re.compile(
+        r'<code\b[^>]*>.*?</code>|(?<!`)`[^`\n]+`(?!`)'
+        r'|"[^"\n]+"|“[^”\n]+”'
+        r"|(?<![A-Za-z0-9])'[^'\n]+'(?![A-Za-z0-9])|‘[^’\n]+’", re.S)
+    expected = Counter(m[0] for m in pattern.finditer(ti.unicode))
+    spans = []
+    for match in pattern.finditer(text):
+        if expected[match[0]]:
+            spans.append(match.span())
+            expected[match[0]] -= 1
+    for left, right in reversed(spans):
+        text = text[:left] + ' ' * (right-left) + text[right:]
+    return text
+
+
+def _source_density_cluster_sentence(ti):
+    """Prove the complete source cluster/density/neighbourhood first sentence.
+
+    The original known grid-formula object and each visible quantity keep their
+    order. This grammar only changes an English request view, never source IL.
+    """
+    label = getattr(ti, '_pagebridge_layout_label', None)
+    source, genuine = _source_inference_grammar(ti, label)
+    # Exact quoted examples cannot establish an actual method description.
+    source = _mask_exact_source_literals(ti, source)
+    match = re.match(
+        r'(?P<sentence>The most significant clusters of each '
+        r'(?P<class_id>[A-Z][A-Z0-9]*\d[A-Z0-9]*) on the (?P<grid>\{v\d+\})'
+        r'Kohonen map, are found on their particular density map up to '
+        r'(?P<neighbours>[1-9]\d*) neighbours '
+        r'\(defined above in (?P<section>Data[ \t]*Classification) by KNN\), '
+        r'where we choose the (?P<maxima>one|two|three|four|five|six|seven|eight|nine|ten) largest maxima\.)',
+        source)
+    return match if genuine(match, ('grid',)) else None
+
+
+def _density_cluster_request_view(match):
+    return ('The most significant clusters of each ' + match['class_id'] + ' on the '
+            + match['grid'] + 'Kohonen map are found using their particular density map, '
+            'with the neighbourhood extending up to ' + match['neighbours']
+            + ' neighbours (as defined above in the Data Classification by KNN section). '
+            'From this density map we choose the ' + match['maxima'] + ' largest maxima.')
+
+
+def _data_classification_references(ti):
+    """A complete parenthetical back-reference proves the compound heading.
+
+    Only the source grammar establishes this boundary. No arbitrary CamelCase
+    identifier, quotation, code or translated output can trigger it.
+    """
+    if getattr(ti, '_pagebridge_layout_label', None) in {
+            'code', 'formula', 'equation', 'isolate_formula', 'reference', 'references', 'bibliography'}:
+        return []
+    source = _review_source(ti)
+    for match in re.finditer(r"<code\b[^>]*>.*?</code>|'[^'\n]*'|‘[^’\n]*’", source, re.S):
+        source = source[:match.start()] + ' ' * len(match[0]) + source[match.end():]
+    return list(re.finditer(
+        r'\(defined above in (?P<section>Data[ \t]*Classification) by KNN\)', source))
 
 
 def _source_section_references(ti):
     """Recognize section-reference grammar, not an uppercase word alone."""
     prose = _prose_text(ti, ti.unicode)
-    names = '|'.join(_SECTION_NAMES)
+    names = '|'.join(re.escape(name) for name in _SECTION_NAMES if name.isupper())
     patterns = (
         rf'\(see\s+(?:in\s+)?({names})\)',
         rf'\b[Ii]n the section of\s+({names})(?![A-Za-z0-9_])',
         rf'\b[Ww]e\s+(?:show|describe|explain)\s+in\s+({names})\s+(?=how\b|that\b)',
     )
-    return sorted({match[1] for pattern in patterns for match in re.finditer(pattern, prose)})
+    names = {match[1] for pattern in patterns for match in re.finditer(pattern, prose)}
+    if _data_classification_references(ti):
+        names.add('Data Classification')
+    return sorted(names)
 
 
 def _source_precedence_relation(ti):
@@ -1859,8 +2453,13 @@ def _ordinary_english_residuals(ti, output, label=None):
         # reclassified; only lowercase forms of this proven relation qualify.
         residuals.update(m[0] for m in re.finditer(
             r'(?<![A-Za-z0-9_])(?:precede|precedes|preceded|preceding)(?![A-Za-z0-9_])', translated))
+    if _resulting_electrical_quantity(ti):
+        residuals.update(match[0] for match in re.finditer(
+            r'(?<![A-Za-z0-9_])resultant(?![A-Za-z0-9_])', _mask_exact_source_literals(ti, translated)))
     for section in _source_section_references(ti):
-        if re.search(r'(?<![A-Za-z0-9_])' + section + r'(?![A-Za-z0-9_])', translated, re.I):
+        pattern = r'\s*'.join(re.escape(word) for word in section.split())
+        if re.search(r'(?<![A-Za-z0-9_])' + pattern + r'(?![A-Za-z0-9_])',
+                     _mask_exact_source_literals(ti, translated), re.I):
             residuals.add(section)
     if label == 'title' and _wind_data_title(ti) and re.search(r'(?<![A-Za-z0-9_])Wind(?![A-Za-z0-9_])', _mask_source_wind_names(ti, translated), re.I):
         residuals.add('Wind')
@@ -2025,7 +2624,8 @@ def _prose_numeric_literals(ti, text):
     inside variables (5BLC), formulas, citations and protected units are separate
     contracts and are excluded here, never duplicated into prose.
     """
-    text = _access_date_numeric_view(ti, _separate_prose_numbers(_prose_text(ti, text)))
+    text = _rule_heading_analysis_view(ti, _prose_text(ti, text))
+    text = _access_date_numeric_view(ti, _separate_prose_numbers(text))
     # A correctly formed English ordinal carries the same numeric value as
     # Chinese 第21 / 21世纪. Normalize only complete, valid ordinal tokens in
     # this analysis view; arbitrary alphanumeric names remain opaque. Without
@@ -2041,6 +2641,23 @@ def _prose_numeric_literals(ti, text):
                   ordinal_number, text, flags=re.I)
     pattern = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_]|\.\d)")
     return Counter(m[0] for m in pattern.finditer(text) if len(m[0]) > 1)
+
+
+def _joined_parallel_module_numbers(text):
+    """Prove one lost space from a complete pair of numbered prose modules."""
+    # Bare module12 remains an identifier. Neither code, a quote, a URL nor
+    # markup may establish a prose boundary, even if it contains this grammar.
+    visible = list(text)
+    opaque = [m.span() for pattern in (_URL_OR_EMAIL,
+              re.compile(r'<code\b[^>]*>.*?</code>|`[^`]*`|"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\x27[^\x27\n]+\x27(?!\w)', re.S),
+              _TAG) for m in pattern.finditer(text)]
+    for start, end in opaque:
+        visible[start:end] = ' ' * (end-start)
+    source = ''.join(visible)
+    pattern = (r'\bon module\s+(?P<first>[1-9]\d*)\s+and module(?P<number>[1-9]\d*)'
+               r'\s+respectively\b')
+    return [m for m in re.finditer(pattern, source)
+            if m['first'] != m['number'] and source[m.start():m.end()] == text[m.start():m.end()]]
 
 
 def _joined_prose_number_spans(text):
@@ -2065,6 +2682,7 @@ def _joined_prose_number_spans(text):
                        r"(?P<number>\d+)\.[ \t]+(?=[A-Za-z]{2,}\b)", text, re.I)
     if caption:
         spans.add(caption.span("number"))
+    spans.update(m.span('number') for m in _joined_parallel_module_numbers(text))
     return sorted(spans)
 
 
@@ -2087,7 +2705,7 @@ def _scientific_identifier_matches(text):
 
 
 def _prose_scientific_identifiers(ti, text):
-    prose = _prose_text(ti, text)
+    prose = _rule_heading_analysis_view(ti, _prose_text(ti, text))
     identifiers = Counter(m[0] for m in _scientific_identifier_matches(prose))
     # A source dimension immediately describing a representation may be
     # translated as 维. Count the proven Chinese equivalent, never erase IDs.
@@ -2130,6 +2748,7 @@ def _check_body_translation(translator, paragraph, ti, output):
     ordinary_body = not non_prose and len(words) >= 8 and natural_language
     chinese_target = str(getattr(translator.translation_config, "lang_out", "")).lower().startswith("zh")
     if chinese_target:
+        _check_source_weather_terms(ti, output)
         _check_regulator_continuity(ti, output)
         for wrong, category, _ in _contextual_terms(ti):
             if _affirmed_wrong_term(output_text, wrong):
@@ -2161,6 +2780,7 @@ def _check_body_translation(translator, paragraph, ti, output):
         if _prose_numeric_literals(ti, ti.unicode) != _prose_numeric_literals(ti, output):
             raise PlaceholderIntegrityError("prose-numeric-literal-changed")
         _check_plain_caption_number(ti, output)
+        _check_rule_heading_number(ti, output)
         if _prose_scientific_identifiers(ti, ti.unicode) != _prose_scientific_identifiers(ti, output):
             raise PlaceholderIntegrityError("scientific-identifier-changed")
         _check_review_roles(ti, output, label)
@@ -2378,6 +2998,8 @@ def _is_correspondence_metadata(visible):
 
 def _preserve_publication_metadata(ti, layout_label=None):
     visible, _ = _visible_text_map(ti, ti.unicode)
+    if _is_citation_editor_publication_metadata(ti, layout_label, visible):
+        return True
     # A complete journal footer is bibliographic metadata, including its exact
     # month/year, volume/issue roles and article ID. Repeated page footers must
     # not lose April or accidentally attach issue 4 to volume during translation.
@@ -3110,6 +3732,7 @@ def normalize_output(ti, output: str) -> str:
                 raise PlaceholderIntegrityError("atomic-variable-pairing")
     _check_unit_script_bindings(ti, text)
     _check_formula_descriptors(ti, text)
+    _check_measured_list_prefix(ti, text)
     _check_day_count_atoms(ti, text)
     for number, (base, unit) in _assigned_script_atoms(ti).items():
         pattern = r"(?<![A-Za-z0-9_])" + re.escape(base + "{v" + number + "}") + r"\s*" + re.escape(unit) + r"(?![A-Za-z0-9_])"
@@ -3791,6 +4414,7 @@ def _guard_batch_translate(self, docs):
     """
     import layout_guard
     layout_guard.rejoin_source_page_definition_heads(self, docs)
+    layout_guard.rejoin_source_page_research_phrases(self, docs)
     count = _capture_source_continuity(docs)
     with _lock:
         _counters["sourceColumnContinuityPairs"] += count

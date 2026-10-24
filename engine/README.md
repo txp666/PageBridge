@@ -197,6 +197,24 @@ script and cross-page fragments are excluded. A paragraph marked by this repair
 must reach translation; a silent upstream skip fails closed. This segmentation
 repair is separate from the read-only context mechanism above.
 
+Separate, narrow rules handle source-proven phrases split at adjacent page
+boundaries: a counted-ratio definition suffix and an unfinished research-list
+noun phrase. Both require native glyph/text agreement, compatible font resources
+and explicit page/column order. They move existing plain-text glyphs without
+changing formula objects or target paragraph boxes; gaps in selected pages and
+ambiguous resources disable the repair. A detached bullet-plus-`In` prefix is
+joined only to adjacent prose on the same source baseline. If an original formula
+contains a list bullet and a length value, the translated item must keep that
+object and its following unit at the beginning.
+
+Document-defined weather terms are captured from native source prose before
+translation. A matching CWT or A/C definition can constrain later weather prose;
+missing or conflicting definitions cannot establish that context. The binding is
+scoped to the current document, exact translation input and original formula
+objects, including recovery. Source-proven English request views also clarify
+specific relation roles or restore lost word boundaries. These views never replace
+the original input as the numeric, identifier and formula validation authority.
+
 `pdf_links.py` captures source-to-target paragraph/line relationships and
 restores supported URI and document-page links after reflow. It maps the source
 and translated halves of the bilingual file separately. Source rectangle

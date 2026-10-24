@@ -160,6 +160,7 @@ def _guard_styles_process_page(self, page):
     register_script_bindings(page)
     rejoin_source_column_sentence_tails(self, page)
     rejoin_source_column_orphan_heads(self, page)
+    merge_source_bullet_prepositions(self, page)
     return result
 
 
@@ -438,6 +439,180 @@ def _definition_same_style(a,b):
 def _definition_chars(paragraph):
     return [c for comp in paragraph.pdf_paragraph_composition
             for c in _composition_characters(comp)]
+
+
+def _research_body_style(a, b):
+    """Same body font/size and fill; allow only unused black stroke differences."""
+    if (not a or not b or a.font_id != b.font_id
+            or any(not isinstance(v, (int,float)) or not math.isfinite(v) or v <= 0 for v in (a.font_size,b.font_size))
+            or abs(a.font_size-b.font_size) > .02):
+        return False
+    if a.graphic_state == b.graphic_state:
+        return True
+    def black(style):
+        commands = getattr(style.graphic_state, 'passthrough_per_char_instruction', '') or ''
+        return bool(re.search(r'(?<!\S)0 0 0 (?:rg|sc)(?!\S)', commands)
+                    and re.fullmatch(r'(?:(?:0 0 0 (?:rg|RG|sc)|[0-9]+(?:\.[0-9]+)? w)\s*)+', commands))
+    return black(a) and black(b)
+
+
+def rejoin_source_page_research_phrases(translator, docs):
+    """Rehome a short list noun phrase split inside ``research and development``.
+
+    Only exact native prose after a comma moves from the last right-column body
+    to the first unindented left-column body on the next page. A floating figure
+    caption may be above that first body. Paragraph target boxes and all source
+    glyph/formula objects remain unchanged; the following list item is untouched.
+    """
+    config = getattr(translator, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    minimum = getattr(config, 'min_text_length', 0)
+    count = 0
+    for lp, rp in zip(docs.page, docs.page[1:]):
+        if rp.page_number != lp.page_number+1 or not lp.mediabox or lp.mediabox != rp.mediabox:
+            continue
+        media = lp.mediabox.box
+        if (not media or any(not isinstance(v,(int,float)) or not math.isfinite(v)
+                for v in (media.x,media.y,media.x2,media.y2)) or media.x2 <= media.x or media.y2 <= media.y):
+            continue
+        bodies = [[(p, _source_body_box(p)) for p in page.pdf_paragraph if _source_body_box(p)] for page in (lp, rp)]
+        if not all(bodies):
+            continue
+        left, a = bodies[0][-1]; right, b = bodies[1][0]
+        size = a[4]
+        ending = re.search(r',\s*(?P<tail>[a-z]{2,20}(?: [a-z]{2,20}){0,3} for (?:[a-z]{2,20} ){0,2}research and)\s*$', left.unicode)
+        if (not ending or len(ending['tail']) > 72 or not right.unicode.startswith('development,')
+                or right.first_line_indent is not False or left.xobj_id != 0 or right.xobj_id != 0
+                or not left.debug_id or not right.debug_id or not _research_body_style(left.pdf_style, right.pdf_style)
+                or a[0] < media.x+.45*(media.x2-media.x) or b[0] > media.x+.2*(media.x2-media.x)
+                or a[1] > media.y+.15*(media.y2-media.y) or not .85 <= (a[2]-a[0])/(b[2]-b[0]) <= 1.18
+                or len(left.unicode[:ending.start('tail')].strip()) < minimum
+                or len(right.unicode) < minimum):
+            continue
+        prefix_text = left.unicode[:ending.start('tail')]
+        if any(prefix_text.count(a) != prefix_text.count(b) for a,b in (('(',')'),('[',']'),('{','}'))):
+            continue
+        if (not any(g[2] < a[0]-.5*size and abs((g[2]-g[0])-(a[2]-a[0])) < 2*size for _,g in bodies[0])
+                or not any(g[0] > b[2]+.5*size and abs((g[2]-g[0])-(b[2]-b[0])) < 2*size for _,g in bodies[1])
+                or any(g[1] < a[1]-.2*size for p,g in bodies[0] if p is not left)):
+            continue
+        li = next(i for i,p in enumerate(lp.pdf_paragraph) if p is left)
+        ri = next(i for i,p in enumerate(rp.pdf_paragraph) if p is right)
+        if any(p.layout_label != 'abandon' for p in lp.pdf_paragraph[li+1:]):
+            continue
+        # A float cannot hide an intervening body sentence, title, or footnote.
+        if any(p.layout_label != 'abandon' and not (p.layout_label == 'figure_caption'
+                and p.box and p.box.y > right.box.y2 and p.box.x >= right.box.x-size
+                and p.box.x2 <= right.box.x2+size) for p in rp.pdf_paragraph[:ri]):
+            continue
+        if any(g[3] > b[3]+.2*size and g[0] < b[2] for p,g in bodies[1] if p is not right):
+            continue
+        # Exact composition boundary: no splitting a glyph/ligature or moving
+        # formulas, citations, URLs, brackets, footnote markers, or other items.
+        target = _definition_compact(ending['tail']); assembled = ''; cut = len(left.pdf_paragraph_composition)
+        while cut and len(assembled) < len(target):
+            cut -= 1; comp = left.pdf_paragraph_composition[cut]
+            if not comp.pdf_same_style_characters:
+                break
+            assembled = _definition_compact(''.join(c.char_unicode or '' for c in comp.pdf_same_style_characters.pdf_character)) + assembled
+        moved = left.pdf_paragraph_composition[cut:]
+        native = [c for comp in moved for c in _composition_characters(comp)]
+        visible = [c for c in native if (c.char_unicode or '').strip()]
+        first = right.pdf_paragraph_composition[0].pdf_same_style_characters if right.pdf_paragraph_composition else None
+        if (assembled != target or not visible or not first or not first.pdf_character
+                or not ''.join(c.char_unicode or '' for c in first.pdf_character).startswith('development,')
+                or _definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(left))) != _definition_compact(left.unicode)
+                or _definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(right))) != _definition_compact(right.unicode)):
+            continue
+        all_native = _definition_chars(left)+_definition_chars(right)
+        if len(set(map(id, all_native))) != len(all_native):
+            continue
+        baseline = visible[0].box.y if visible[0].box else None
+        head = [c for c in first.pdf_character if (c.char_unicode or '').strip()]
+        if (baseline is None or any(not _finite_character(c) or c.formula_layout_id is not None
+                or c.xobj_id != 0 or c.pdf_character_id is None or not re.fullmatch('[a-z]', c.char_unicode or '')
+                or not _research_body_style(c.pdf_style, left.pdf_style) or abs(c.box.y-baseline) > .1*size for c in visible)
+                or any(not _finite_character(c) for c in native)
+                or any(not -.1*size <= y.box.x-x.box.x2 <= 1.2*size for x,y in zip(visible,visible[1:]))
+                or abs(visible[-1].box.x2-left.box.x2) > size
+                or not head or any(not _finite_character(c) or c.formula_layout_id is not None or c.xobj_id != 0
+                    or not _research_body_style(c.pdf_style,right.pdf_style) for c in head)
+                or abs(head[0].box.x-right.box.x) > .3*size or abs(head[0].box.y2-right.box.y2) > .4*size):
+            continue
+        fa = {f.font_id:f for f in lp.pdf_font}; fb = {f.font_id:f for f in rp.pdf_font}
+        used = {c.pdf_style.font_id for c in native}
+        if (len(fa) != len(lp.pdf_font) or len(fb) != len(rp.pdf_font)
+                or any(k not in fa or k not in fb or fa[k] != fb[k] or not isinstance(fa[k].xref_id,int)
+                       or fa[k].xref_id <= 0 for k in used)):
+            continue
+        left.pdf_paragraph_composition = left.pdf_paragraph_composition[:cut]
+        right.pdf_paragraph_composition = moved+right.pdf_paragraph_composition
+        left.unicode = left.unicode[:ending.start('tail')].rstrip()
+        right.unicode = ending['tail']+' '+right.unicode
+        _rejoined_source_paragraphs[id(left)] = left; _rejoined_source_paragraphs[id(right)] = right
+        count += 1
+    if count:
+        with _lock: _counters['rejoinedSourceResearchPhrases'] += count
+    return count
+
+
+def merge_source_bullet_prepositions(styler, page):
+    """Join native ``bullet + In`` with its adjacent same-line prose only."""
+    config = getattr(styler, 'translation_config', None)
+    if config is None or getattr(config, 'skip_translation', False):
+        return 0
+    count = 0; result = []; index = 0
+    while index < len(page.pdf_paragraph):
+        left = page.pdf_paragraph[index]; index += 1
+        result.append(left)
+        if index >= len(page.pdf_paragraph) or not re.fullmatch(r'[•▪◦●]\s+In', left.unicode or ''):
+            continue
+        right = page.pdf_paragraph[index]
+        a = left.pdf_paragraph_composition; b = right.pdf_paragraph_composition
+        if (len(a) != 2 or not a[0].pdf_formula or not a[1].pdf_same_style_characters
+                or not b or not b[0].pdf_same_style_characters or not re.match(r'[a-z]{2,}\b', right.unicode or '')
+                or left.layout_label not in {'plain text','plain_text','text'} or right.layout_label != left.layout_label
+                or left.vertical or right.vertical or left.xobj_id != right.xobj_id
+                or not _definition_same_style(left.pdf_style,right.pdf_style)):
+            continue
+        marker = a[0].pdf_formula
+        if marker.pdf_curve or marker.pdf_form or ''.join(c.char_unicode for c in marker.pdf_character).strip() != left.unicode[0]:
+            continue
+        prefix = a[1].pdf_same_style_characters.pdf_character
+        head = b[0].pdf_same_style_characters.pdf_character
+        if ''.join(c.char_unicode for c in prefix) != 'In' or not head:
+            continue
+        size = left.pdf_style.font_size
+        visible = [c for c in head if (c.char_unicode or '').strip()]
+        first = visible[0] if visible else None
+        if (first is None or not left.box or not right.box or any(not _finite_character(c)
+                or c.formula_layout_id is not None or c.xobj_id != left.xobj_id
+                or not _definition_same_style(c.pdf_style,left.pdf_style) for c in prefix+[first])
+                or abs(prefix[0].box.y-prefix[-1].box.y) > .08*size
+                or abs(first.box.y-prefix[-1].box.y) > .08*size
+                or not .05*size <= first.box.x-prefix[-1].box.x2 <= .6*size
+                or not -.1*size <= prefix[1].box.x-prefix[0].box.x2 <= .1*size
+                or right.box.x < left.box.x2 or abs(right.box.y2-left.box.y2) > .3*size):
+            continue
+        all_native = _definition_chars(left)+_definition_chars(right)
+        if (_definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(left))) != _definition_compact(left.unicode)
+                or _definition_compact(''.join(c.char_unicode or '' for c in _definition_chars(right))) != _definition_compact(right.unicode)):
+            continue
+        if len(set(map(id, all_native))) != len(all_native):
+            continue
+        left.pdf_paragraph_composition = a+b
+        left.unicode = left.unicode+' '+right.unicode
+        left.box = copy.copy(left.box)
+        left.box.x2 = max(left.box.x2,right.box.x2); left.box.y = min(left.box.y,right.box.y); left.box.y2 = max(left.box.y2,right.box.y2)
+        left.first_line_indent = False
+        _hanging_indents[id(left)] = (left, prefix[0].box.x-left.box.x)
+        _rejoined_source_paragraphs[id(left)] = left
+        count += 1; index += 1
+    page.pdf_paragraph = result
+    if count:
+        with _lock: _counters['mergedSourceBulletPrepositions'] += count
+    return count
 
 
 def _page_definition_pair(left_page, right_page):
@@ -2125,6 +2300,8 @@ def snapshot():
                 "preservedTrailingEquationLines": _counters["preservedTrailingEquationLines"],
                 "preservedTrailingEquationGlyphs": _counters["preservedTrailingEquationGlyphs"],
                 "restoredStructuredEntryBoundaries": _counters["restoredStructuredEntryBoundaries"],
+                "rejoinedSourceResearchPhrases": _counters["rejoinedSourceResearchPhrases"],
+                "mergedSourceBulletPrepositions": _counters["mergedSourceBulletPrepositions"],
                 "restoredDetachedListMarkers": _counters["restoredDetachedListMarkers"],
                 "registeredHangingIndents": _counters["registeredHangingIndents"],
                 "rawDocumentTextStored": False}

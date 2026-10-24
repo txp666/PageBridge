@@ -35,7 +35,7 @@ API Key 保存于 macOS 钥匙串。常用厂商已配置地址；其他地域�
 
 | 示例 | 页数 | 适合体验 |
 |---|---:|---|
-| [可复现计算研究十条建议](demos/pdfs/reproducible-research.pdf) | 4 | 短篇正文、分节与链接 |
+| [可复现计算研究十条建议](demos/pdfs/reproducible-research.pdf) | 4 | 短篇正文、分节与参考文献 |
 | [科学图表设计十条建议](demos/pdfs/better-figures.pdf) | 7 | 图文混排与彩色图表 |
 | [神经网络雪崩模型](demos/pdfs/avalanches.pdf) | 8 | 公式与双栏排版 |
 | [风数据与自组织神经网络](demos/pdfs/wind-data-mining.pdf) | 11 | 数值表格、矩阵与参考文献 |

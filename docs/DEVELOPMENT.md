@@ -65,6 +65,8 @@ python3 scripts/verify-bundle.py
 
 产物为 `dist/PageBridge.app`。构建流程生成 ICNS、复制原生可执行文件、示例 PDF 和私有 Python，按 `scripts/bundle-profile.json` 裁掉未使用的 Web UI/SDK/开发资源，最后进行 ad-hoc 签名。更改任何打包文件后都需重新签名，不要直接修改已经验收的应用。
 
+示例库从 `PageBridge.app/Contents/Resources/demos/catalog.json` 读取目录，PDF 位于同一目录下的 `pdfs/`。这些资源由 `assemble-app.py` 从仓库 `demos/` 复制；直接 `swift run` 不会组装完整资源包，不能用于验证示例入口。新增示例时应同步记录页数、作者、来源、许可和 SHA-256，再通过完整应用包检查导入。
+
 `verify-bundle.py` 检查私有运行时、依赖版本、四个引擎模块、图标、示例清单/哈希及签名。它不调用真实模型。完成后可用最终包和公开示例做真实翻译烟测：
 
 ```sh

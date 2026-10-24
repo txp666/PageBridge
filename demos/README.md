@@ -6,7 +6,7 @@
 
 | 示例 | 页数 | 重点 | 来源及许可 |
 |---|---:|---|---|
-| [可复现计算研究十条建议](pdfs/reproducible-research.pdf) | 4 | 短篇正文、分节标题与链接 | [原文](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003285) · Creative Commons Attribution (publisher PDF does not specify version) |
+| [可复现计算研究十条建议](pdfs/reproducible-research.pdf) | 4 | 短篇正文、分节标题与参考文献 | [原文](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003285) · Creative Commons Attribution (publisher PDF does not specify version) |
 | [科学图表设计十条建议](pdfs/better-figures.pdf) | 7 | 短篇图文、彩色图表与图注 | [原文](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003833) · CC0 1.0 Public Domain Dedication |
 | [神经网络雪崩模型](pdfs/avalanches.pdf) | 8 | 公式、图表与双栏排版 | [原文](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0093090) · Creative Commons Attribution (PDF does not specify a version); CC BY 4.0 in publisher-deposited Crossref license metadata |
 | [风数据与自组织神经网络](pdfs/wind-data-mining.pdf) | 11 | 数值表格、矩阵与参考文献 | [原文](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000210) · Creative Commons Attribution (PDF does not specify a version); CC BY 4.0 in publisher-deposited Crossref license metadata |
