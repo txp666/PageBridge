@@ -14,7 +14,7 @@ PageBridge 的窗口、设置、导入导出为 SwiftUI / AppKit，PDF 阅读器
 
 ## 存储
 
-应用数据位于 `~/Library/Application Support/PageBridge/`。每份文档拥有原始副本和独立结果目录；导出文件位于用户在保存对话框中选择的目录。API Key 仅在 macOS Keychain 中存储。测试日志与模型调试响应可能含文档文字，不属于可公开发布的源代码。
+应用数据位于 `~/Library/Application Support/PageBridge/`，元数据采用原子 JSON 文件。每份文档拥有原始副本和独立结果目录；导出文件位于用户在保存对话框中选择的目录。API Key 仅在 macOS Keychain 中存储。上游资源与历史缓存可能在其他用户缓存目录，具体位置见 [引擎说明](../engine/README.md#cancellation-diagnostics-and-storage)。测试日志与模型调试响应可能含文档文字，不属于可公开发布的源代码。
 
 ## 本地与在线
 

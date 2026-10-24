@@ -80,6 +80,7 @@ PDF 解析与排版在本机完成。使用在线 API 时，待翻译文本发�
 - [使用指南](docs/USER_GUIDE.md)：服务设置、导入、翻译、阅读、导出与排错。
 - [开发指南](docs/DEVELOPMENT.md)：依赖、测试、真实模型验收、构建与版本管理。
 - [架构与数据流](docs/ARCHITECTURE.md)：原生界面、worker、数据与提交边界。
+- [产品与技术设计](DESIGN.md)：当前设计决策、范围及后续目标。
 - [验证记录](docs/VERIFICATION.md)：本轮完成状态、验收门槛和最终数据。
 - [引擎说明](engine/README.md)：NDJSON 协议、内容保护、取消和缓存。
 - [版本记录](CHANGELOG.md)、[第三方来源](docs/THIRD_PARTY.md)、[图标说明](assets/README.md)。
