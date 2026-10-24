@@ -162,6 +162,37 @@ class NumericRecoveryTests(unittest.TestCase):
                 ti = source_input(text)
                 self.assertEqual([text[a:b] for a, b in guard._recovery_numeric_spans(ti, text)], ["10000"])
 
+    def test_english_ordinals_and_chinese_numbers_have_equal_numeric_contracts(self):
+        source = "In the 21st century, scientific research uses the 11th, 12th, 13th, 22nd, 23rd and 111th trials."
+        output = "在21世纪，科学研究使用第11、12、13、22、23和111次试验。"
+        ti = source_input(source)
+        expected = {str(value): 1 for value in (21, 11, 12, 13, 22, 23, 111)}
+        self.assertEqual(guard._prose_numeric_literals(ti, source), expected)
+        self.assertEqual(guard._prose_numeric_literals(ti, output), expected)
+        guard._check_body_translation(translator(), paragraph(ti), ti, output)
+
+    def test_changed_missing_or_duplicated_ordinal_numbers_are_rejected(self):
+        ti = source_input("In the 21st century, scientific research is undergoing a substantial transformation.")
+        for output in ("在22世纪，科学研究正在经历重大变革。",
+                       "科学研究正在经历重大变革。",
+                       "在21世纪，科学研究正在经历21次重大变革。"):
+            with self.subTest(output=output), self.assertRaisesRegex(
+                    guard.PlaceholderIntegrityError, "prose-numeric-literal-changed"):
+                guard._check_body_translation(translator(), paragraph(ti), ti, output)
+
+    def test_ordinal_normalization_does_not_extract_identifiers_or_invalid_suffixes(self):
+        for source in ("X21st 21stGene _21st 21st_label 21st2 1.21st",
+                       "11st 12nd 13rd 21th 22th 23th"):
+            with self.subTest(source=source):
+                self.assertEqual(guard._prose_numeric_literals(source_input(source), source), {})
+        ti = source_input("The 21ST and 24th runs.")
+        self.assertEqual(guard._prose_numeric_literals(ti, ti.unicode), {"21": 1, "24": 1})
+
+    def test_formula_citation_and_url_ordinals_stay_with_their_existing_contracts(self):
+        ti = source_input("The 21st run uses {v1}; see https://example.org/31st and (Smith, 2001).",
+                          [formula(1, "42nd")])
+        self.assertEqual(guard._prose_numeric_literals(ti, ti.unicode), {"21": 1})
+
 
 COMPARISON = (
     "7300 5BLC input data represent 10 times better the possible series of 1995, "

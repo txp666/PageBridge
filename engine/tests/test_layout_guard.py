@@ -12,7 +12,7 @@ _test_cache = tempfile.TemporaryDirectory(prefix="pagebridge-layout-tests-")
 babeldoc.const.CACHE_FOLDER = Path(_test_cache.name)
 from babeldoc.format.pdf.document_il import (
     Box, Cropbox, GraphicState, Page, PdfCharacter, PdfFont, PdfFormula, PdfLine, PdfParagraph,
-    PdfParagraphComposition, PdfStyle, PdfXobject, VisualBbox,
+    PdfParagraphComposition, PdfSameStyleCharacters, PdfStyle, PdfXobject, VisualBbox,
 )
 from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
 from babeldoc.format.pdf.document_il.midend.typesetting import Typesetting
@@ -1187,6 +1187,171 @@ class StructuredEntryTests(unittest.TestCase):
                 self.assertEqual(out[0 if first_formula else 1].formular.pdf_character[0].box.y,104)
 
 
+class PhysicalSourceLineTests(unittest.TestCase):
+    def fixture(self):
+        # One parser line contains two genuine rows, plus a raised ordinal.
+        p = line_paragraph(['The original measured values are 12',
+                            'and these remaining samples follow.'], size=10)
+        first, second = [co.pdf_line.pdf_character for co in p.pdf_paragraph_composition]
+        script = character('th', 99, font_id='F2', x=first[-1].box.x2, y=504)
+        script.pdf_style.font_size = 6
+        script.box.x2 = script.box.x + 4
+        first.append(script)
+        p.pdf_paragraph_composition = [PdfParagraphComposition(pdf_line=PdfLine(
+            pdf_character=first + second, render_order=42))]
+        f = page([]); f.pdf_paragraph = [p]
+        from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
+        return f, p, object.__new__(StylesAndFormulas), first, second
+
+    def test_source_wrap_keeps_glyph_order_properties_and_true_script(self):
+        from dataclasses import asdict
+        f, p, styler, first, second = self.fixture()
+        before = first + second
+        states = [asdict(c) for c in before]
+        self.assertEqual(guard.split_source_physical_lines(styler, f), 1)
+        rows = [co.pdf_line for co in p.pdf_paragraph_composition]
+        self.assertEqual([r.pdf_character for r in rows], [first, second])
+        self.assertEqual([r.render_order for r in rows], [42, 42])
+        self.assertTrue(all(a is b for a, b in zip(before, sum((r.pdf_character for r in rows), []))))
+        self.assertEqual([asdict(c) for c in before], states)
+        self.assertEqual(guard.split_source_physical_lines(styler, f), 0)
+
+    def test_synthetic_space_without_xobject_is_retained(self):
+        f, p, styler, first, second = self.fixture()
+        space = next(c for c in first if c.char_unicode == ' ')
+        space.xobj_id = None; space.pdf_character_id = None
+        self.assertEqual(guard.split_source_physical_lines(styler, f), 1)
+        self.assertIs(p.pdf_paragraph_composition[0].pdf_line.pdf_character[3], space)
+
+    def test_unambiguous_wrap_is_required_and_equations_are_untouched(self):
+        for mode in ('equation-label', 'detected-equation', 'different-xobject', 'overprint',
+                     'same-x', 'large-gap', 'fraction', 'vertical', 'nan'):
+            with self.subTest(mode=mode):
+                f, p, styler, first, second = self.fixture()
+                if mode == 'equation-label': p.layout_label = 'formula'
+                elif mode == 'detected-equation': second[0].formula_layout_id = 7
+                elif mode == 'different-xobject': second[0].xobj_id = 7
+                elif mode == 'overprint': second[3].box.x = second[0].box.x
+                elif mode == 'same-x':
+                    for c in second: c.box.x += 400; c.box.x2 += 400
+                elif mode == 'large-gap':
+                    for c in second: c.box.y -= 20; c.box.y2 -= 20
+                elif mode == 'fraction':
+                    for c in second:
+                        c.box.y += 8; c.box.y2 += 8; c.pdf_style.font_size = 6
+                elif mode == 'vertical': second[0].vertical = True
+                elif mode == 'nan': second[0].box.y = float('nan')
+                original = p.pdf_paragraph_composition[0]
+                self.assertEqual(guard.split_source_physical_lines(styler, f), 0)
+                self.assertIs(p.pdf_paragraph_composition[0], original)
+
+    def test_real_formula_merger_cannot_swallow_unrelated_numbers_across_wrap(self):
+        import copy
+        from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
+        f = page([], name='Helvetica')
+        f.pdf_font = [PdfFont(font_id='F2', name='Helvetica'), PdfFont(font_id='M', name='Symbol')]
+        p = line_paragraph(['The measured quantity Q12 gives =',
+                            '1.56 and these samples remain separate.'], size=10)
+        rows = [co.pdf_line.pdf_character for co in p.pdf_paragraph_composition]
+        # Symbol-font equality makes the first formula overlap the earlier Q12
+        # when the wrapped 1.56 is incorrectly represented as one huge rectangle.
+        next(c for c in rows[0] if c.char_unicode == '=').pdf_style.font_id = 'M'
+        p.pdf_paragraph_composition = [PdfParagraphComposition(pdf_line=PdfLine(pdf_character=sum(rows, [])))]
+        f.pdf_paragraph = [p]
+        styler = object.__new__(StylesAndFormulas)
+        styler.font_mapper = SimpleNamespace(has_char=lambda text: True)
+        styler.translation_config = SimpleNamespace(formular_font_pattern=None, formular_char_pattern=None)
+        uncorrected = copy.deepcopy(f)
+        styler.process_page_formulas(uncorrected)
+        styler.merge_overlapping_formulas(uncorrected)
+        self.assertTrue(any('12' in ''.join(c.char_unicode for c in co.pdf_formula.pdf_character)
+                            and '=' in ''.join(c.char_unicode for c in co.pdf_formula.pdf_character)
+                            for co in uncorrected.pdf_paragraph[0].pdf_paragraph_composition if co.pdf_formula))
+        self.assertEqual(guard.split_source_physical_lines(styler, f), 1)
+        styler.process_page_formulas(f)
+        styler.merge_overlapping_formulas(f)
+        formulas = [co.pdf_formula for co in p.pdf_paragraph_composition if co.pdf_formula]
+        self.assertTrue(formulas)
+        for formula in formulas:
+            self.assertLess(max(c.box.y for c in formula.pdf_character) - min(c.box.y for c in formula.pdf_character), 7)
+        self.assertFalse(any('12' in ''.join(c.char_unicode for c in formula.pdf_character)
+                             and '=' in ''.join(c.char_unicode for c in formula.pdf_character)
+                             for formula in formulas))
+
+
+class SourceFormulaFragmentTests(unittest.TestCase):
+    def fixture(self):
+        from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
+        p = line_paragraph(['<δ_loc>=2.75 units'], size=10)
+        chars = p.pdf_paragraph_composition[0].pdf_line.pdf_character
+        left = PdfFormula(pdf_character=chars[:3], line_id=0)
+        right = PdfFormula(pdf_character=chars[6:9], line_id=0)
+        p.pdf_paragraph_composition = [PdfParagraphComposition(pdf_formula=left),
+            PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars[3:6])),
+            PdfParagraphComposition(pdf_formula=right),
+            PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars[9:]))]
+        f = page([]); f.pdf_paragraph = [p]
+        return f, p, chars, object.__new__(StylesAndFormulas)
+
+    def test_native_descriptor_and_decimal_keep_original_glyphs_and_order(self):
+        from dataclasses import asdict
+        f, p, chars, styler = self.fixture()
+        states = [asdict(c) for c in chars]
+        self.assertEqual(guard.bind_source_formula_fragments(styler, f), 2)
+        self.assertEqual(len(p.pdf_paragraph_composition), 2)
+        formula = p.pdf_paragraph_composition[0].pdf_formula
+        self.assertEqual(''.join(c.char_unicode for c in formula.pdf_character), '<δ_loc>=2.75')
+        result = [c for co in p.pdf_paragraph_composition for c in guard._composition_characters(co)]
+        self.assertTrue(all(a is b for a, b in zip(chars, result)))
+        self.assertEqual([asdict(c) for c in result], states)
+        self.assertEqual(guard.bind_source_formula_fragments(styler, f), 0)
+
+    def test_descriptor_rejects_prose_spaces_scripts_and_ambiguous_geometry(self):
+        for mode in ('word-space', 'different-row', 'different-font', 'different-xobject',
+                     'missing-underscore', 'missing-equality', 'different-line-id', 'curve',
+                     'script', 'overprint'):
+            with self.subTest(mode=mode):
+                f, p, chars, styler = self.fixture()
+                # Remove decimal continuation, isolating descriptor acceptance.
+                p.pdf_paragraph_composition = p.pdf_paragraph_composition[:3]
+                if mode == 'word-space':
+                    for c in chars[3:]: c.box.x += 5; c.box.x2 += 5
+                elif mode == 'different-row': chars[3].box.y -= 14
+                elif mode == 'different-font': chars[3].pdf_style.font_id = 'other'
+                elif mode == 'different-xobject': chars[3].xobj_id = 8
+                elif mode == 'missing-underscore': chars[2].char_unicode = 'x'
+                elif mode == 'missing-equality': chars[7].char_unicode = 'x'
+                elif mode == 'different-line-id': p.pdf_paragraph_composition[2].pdf_formula.line_id = 1
+                elif mode == 'curve': p.pdf_paragraph_composition[0].pdf_formula.pdf_curve = [object()]
+                elif mode == 'script': chars[3].pdf_style.font_size = 6
+                elif mode == 'overprint': chars[4].box.x = chars[3].box.x
+                self.assertEqual(guard.bind_source_formula_fragments(styler, f), 0)
+
+    def test_decimal_is_not_taken_from_next_row_or_alphanumeric_name(self):
+        for mode in ('different-row', 'gap', 'font', 'identifier'):
+            with self.subTest(mode=mode):
+                f, p, chars, styler = self.fixture()
+                # Retain only the native '=2' formula and its candidate tail.
+                p.pdf_paragraph_composition = p.pdf_paragraph_composition[2:]
+                if mode == 'different-row':
+                    for c in chars[9:]: c.box.y -= 14
+                elif mode == 'gap':
+                    for c in chars[9:]: c.box.x += 5; c.box.x2 += 5
+                elif mode == 'font': chars[9].pdf_style.font_id = 'other'
+                elif mode == 'identifier': chars[12].char_unicode = 'A'
+                self.assertEqual(guard.bind_source_formula_fragments(styler, f), 0)
+
+    def test_decimal_spanning_demoted_source_text_fragments_remains_one_native_value(self):
+        f, p, chars, styler = self.fixture()
+        p.pdf_paragraph_composition = p.pdf_paragraph_composition[2:3] + [
+            PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars[9:10])),
+            PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars[10:12])),
+            PdfParagraphComposition(pdf_line=PdfLine(pdf_character=chars[12:]))]
+        self.assertEqual(guard.bind_source_formula_fragments(styler, f), 1)
+        self.assertEqual(''.join(c.char_unicode for c in p.pdf_paragraph_composition[0].pdf_formula.pdf_character), '>=2.75')
+        self.assertEqual(''.join(c.char_unicode for c in p.pdf_paragraph_composition[1].pdf_line.pdf_character), ' units')
+
+
 class CaptionFragmentTests(unittest.TestCase):
     def fixture(self):
         prefix=line_paragraph(['Figure 9'],label='fallback_line',size=8)
@@ -1215,6 +1380,49 @@ class CaptionFragmentTests(unittest.TestCase):
         self.assertTrue(b.unicode.endswith(' u'))
         f,a,b,c=self.fixture();c.pdf_paragraph_composition[0].pdf_line.pdf_character[0].box.y-=10
         self.assertEqual(guard.merge_caption_fragments(object.__new__(ParagraphFinder),f),1)
+
+    def complete_fixture(self):
+        prefix = line_paragraph(['Table 12.'], label='fallback_line', size=8)
+        body = line_paragraph(['Measured result'], label='table_caption', size=8)
+        tail = line_paragraph(['s.'], label='fallback_line', size=8)
+        for c in prefix.pdf_paragraph_composition[0].pdf_line.pdf_character:
+            c.pdf_style.font_id = 'Bold'
+        for p, previous, gap in ((body, prefix, 3), (tail, body, 0)):
+            chars = p.pdf_paragraph_composition[0].pdf_line.pdf_character
+            anchor = previous.pdf_paragraph_composition[0].pdf_line.pdf_character[-1]
+            offset = anchor.box.x2 + gap - chars[0].box.x
+            for c in chars:
+                c.box.x += offset; c.box.x2 += offset
+                c.visual_bbox.box.x += offset; c.visual_bbox.box.x2 += offset
+        f = page([]); f.pdf_paragraph = [prefix, body, tail]
+        return f, prefix, body, tail
+
+    def test_complete_bold_number_label_and_punctuated_word_tail(self):
+        from dataclasses import asdict
+        f, a, b, c = self.complete_fixture()
+        chars = [g for p in f.pdf_paragraph for co in p.pdf_paragraph_composition for g in co.pdf_line.pdf_character]
+        states = [asdict(g) for g in chars]
+        self.assertEqual(guard.merge_caption_fragments(object.__new__(ParagraphFinder), f), 2)
+        self.assertEqual(f.pdf_paragraph, [b])
+        self.assertEqual(b.unicode, 'Table 12. Measured results.')
+        self.assertEqual([g for co in b.pdf_paragraph_composition for g in co.pdf_line.pdf_character], chars)
+        self.assertEqual([asdict(g) for g in chars], states)
+
+    def test_complete_caption_rejects_ambiguous_or_unrelated_fragments(self):
+        import copy
+        for mode in ('duplicate', 'different-line', 'far', 'wrong-label', 'word', 'different-xobject'):
+            with self.subTest(mode=mode):
+                f, a, b, c = self.complete_fixture()
+                f.pdf_paragraph.remove(c)
+                if mode == 'duplicate': f.pdf_paragraph.append(copy.deepcopy(a))
+                elif mode == 'different-line':
+                    for g in a.pdf_paragraph_composition[0].pdf_line.pdf_character: g.box.y -= 12
+                elif mode == 'far':
+                    for g in a.pdf_paragraph_composition[0].pdf_line.pdf_character: g.box.x -= 30; g.box.x2 -= 30
+                elif mode == 'wrong-label': b.layout_label = 'plain text'
+                elif mode == 'word': a.pdf_paragraph_composition[0].pdf_line.pdf_character[0].char_unicode = 'M'
+                elif mode == 'different-xobject': a.xobj_id = 8
+                self.assertEqual(guard.merge_caption_fragments(object.__new__(ParagraphFinder), f), 0)
 
 
 class SourceYearRangeFragmentTests(unittest.TestCase):
@@ -1308,6 +1516,101 @@ class SourceYearRangeFragmentTests(unittest.TestCase):
         capture.assert_called_once_with(f)
         self.assertEqual(f.pdf_paragraph, [right])
         self.assertIn('(1980–97)', right.unicode)
+
+
+class ColumnSentenceTailTests(unittest.TestCase):
+    def fixture(self, tail='Similarly, estimates of'):
+        def body(text, x, y, top):
+            chars = [character(c, ord(c), 'F2', x+i*4, top-8) for i,c in enumerate(text)]
+            for c in chars:
+                c.box.x2 = c.box.x+4
+                c.visual_bbox.box.x2 = c.box.x2
+            style = chars[0].pdf_style
+            return PdfParagraph(unicode=text, box=Box(x,y,x+200,top), pdf_style=style,
+                layout_label='plain text', xobj_id=-1, vertical=False, first_line_indent=False,
+                debug_id=text[:10], pdf_paragraph_composition=[PdfParagraphComposition(
+                    pdf_same_style_characters=PdfSameStyleCharacters(pdf_character=chars,
+                        pdf_style=style, box=Box(x,top-8,x+4*len(chars),top)))])
+        left = body('Earlier observations established a reliable physical mechanism',10,100,140)
+        ending = body('. '+tail,210-4*(len(tail)+2),100,108)
+        left.pdf_paragraph_composition.extend(ending.pdf_paragraph_composition)
+        left.unicode += '. '+tail
+        right = body('successive measurements provide a useful criterion for this mechanism.',230,450,520)
+        f = Page(pdf_paragraph=[body('This earlier complete section describes the experimental methods.',10,400,520),
+                                left,right,body('This later complete section presents independent observations.',230,100,140)])
+        return f,left,right,SimpleNamespace(translation_config=SimpleNamespace(min_text_length=5))
+
+    def glyphs(self, fixture):
+        return [c for p in fixture.pdf_paragraph for comp in p.pdf_paragraph_composition
+                for c in guard._composition_characters(comp)]
+
+    def test_moves_only_original_plain_tail_keeps_columns_and_is_idempotent(self):
+        from dataclasses import asdict
+        f,left,right,styler = self.fixture()
+        chars = self.glyphs(f)
+        states = [asdict(c) for c in chars]
+        boxes, styles = [p.box for p in f.pdf_paragraph], [p.pdf_style for p in f.pdf_paragraph]
+        values = [asdict(b) for b in boxes]
+        self.assertEqual(guard.rejoin_source_column_sentence_tails(styler,f),1)
+        self.assertEqual(left.unicode,'Earlier observations established a reliable physical mechanism.')
+        self.assertTrue(right.unicode.startswith('Similarly, estimates of successive measurements'))
+        self.assertEqual(list(map(id,self.glyphs(f))),list(map(id,chars)))
+        self.assertEqual([asdict(c) for c in self.glyphs(f)],states)
+        self.assertEqual([asdict(p.box) for p in f.pdf_paragraph],values)
+        for p,box,style in zip(f.pdf_paragraph,boxes,styles):
+            self.assertIs(p.box,box)
+            self.assertIs(p.pdf_style,style)
+        self.assertTrue(guard.source_sentence_was_rejoined(left))
+        self.assertTrue(guard.source_sentence_was_rejoined(right))
+        self.assertEqual(guard.rejoin_source_column_sentence_tails(styler,f),0)
+
+    def test_source_grammar_and_formula_ambiguity_are_not_joined(self):
+        for tail in ['This is a complete sentence','Estimates (including values) of',
+                     'Estimates [12] of','Estimates x_2 of','See https://example.test for',
+                     'Estimates 12 of','And the many independent original observations and estimates of']:
+            with self.subTest(tail=tail):
+                f,left,right,styler = self.fixture(tail)
+                before = list(map(id,self.glyphs(f)))
+                self.assertEqual(guard.rejoin_source_column_sentence_tails(styler,f),0)
+                self.assertEqual(list(map(id,self.glyphs(f))),before)
+
+    def test_rejects_unproved_geometry_style_mapping_and_scheduler_skip(self):
+        for mode in ('formula','script','different-xobject','font','raised-baseline','reversed-order',
+                     'indented-right','heading-between','right-not-top','left-not-bottom',
+                     'overlapping-column','wrong-unicode','long-gap','no-debug-id','short-filter','skip-translation',
+                     'abbreviation','unclosed-parenthesis','empty-right','right-script','right-xobject','right-invalid-box'):
+            with self.subTest(mode=mode):
+                f,left,right,styler = self.fixture()
+                last=left.pdf_paragraph_composition[-1]
+                chars=last.pdf_same_style_characters.pdf_character
+                if mode=='formula':
+                    left.pdf_paragraph_composition[-1]=PdfParagraphComposition(pdf_formula=PdfFormula(pdf_character=chars))
+                elif mode=='script': chars[-1].pdf_style.font_size=5
+                elif mode=='different-xobject': chars[-1].xobj_id=3
+                elif mode=='font': chars[-1].pdf_style.font_id='F3'
+                elif mode=='raised-baseline': chars[-1].box.y+=3
+                elif mode=='reversed-order': chars[-2],chars[-1]=chars[-1],chars[-2]
+                elif mode=='indented-right': right.first_line_indent=True
+                elif mode=='heading-between': f.pdf_paragraph.insert(2,line_paragraph(['Section title'],label='title'))
+                elif mode=='right-not-top': f.pdf_paragraph[-1].box.y2=550
+                elif mode=='left-not-bottom': f.pdf_paragraph[0].box.y=70
+                elif mode=='overlapping-column': f.pdf_paragraph[0].box.x2=440
+                elif mode=='wrong-unicode': left.unicode=left.unicode.replace('estimates','measurements')
+                elif mode=='long-gap': chars[-1].box.x+=25
+                elif mode=='no-debug-id': right.debug_id=None
+                elif mode=='short-filter': styler.translation_config.min_text_length=1000
+                elif mode=='skip-translation': styler.translation_config.skip_translation=True
+                elif mode=='abbreviation': left.unicode=left.unicode.replace('mechanism.','Dr.')
+                elif mode=='unclosed-parenthesis': left.unicode=left.unicode.replace('Earlier','(Earlier')
+                elif mode=='empty-right': right.pdf_paragraph_composition=[]
+                elif mode=='right-script': right.pdf_paragraph_composition[0].pdf_same_style_characters.pdf_character[0].pdf_style.font_size=5
+                elif mode=='right-xobject': right.pdf_paragraph_composition[0].pdf_same_style_characters.pdf_character[0].xobj_id=3
+                elif mode=='right-invalid-box': right.pdf_paragraph_composition[0].pdf_same_style_characters.pdf_character[0].box=None
+                before=list(map(id,self.glyphs(f)))
+                texts=[p.unicode for p in f.pdf_paragraph]
+                self.assertEqual(guard.rejoin_source_column_sentence_tails(styler,f),0)
+                self.assertEqual(list(map(id,self.glyphs(f))),before)
+                self.assertEqual([p.unicode for p in f.pdf_paragraph],texts)
 
 
 if __name__ == "__main__":

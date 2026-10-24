@@ -138,6 +138,17 @@ proves the supported two-group comparison with an elided second verb. Other
 counts and years remain visible to the model. Restored output still passes the
 numeric multiplicity guard; tokens and role hints do not prove semantic fidelity.
 
+Valid English ordinal suffixes are normalized only in the numeric analysis
+view (`21st` and `21世纪` both carry 21). Source-attested dates retain their
+calendar month. Narrow checks and repair hints also cover demonstrated negative
+terminology, continuing predicates and count-ratio grouping errors;
+they do not constitute a general semantic-equivalence test.
+
+Balanced model-added Markdown emphasis around pure Chinese prose can have its
+delimiters removed without changing the enclosed text. Source literal markup,
+code, URLs and formula atoms remain opaque. Unsupported new emphasis triggers
+paragraph recovery rather than being published as PDF text.
+
 `layout_guard.py` uses source glyphs and geometry to protect source-proven
 subscripts, superscripts, squared/cubed units, legacy mathematical fonts,
 list markers, contents/index structure and copyright metadata. Lists that were
@@ -150,6 +161,23 @@ A year range incorrectly split into three adjacent source paragraphs can be
 rejoined only when the original line shares its baseline, font, size and
 XObject, and its glyph adjacency is unambiguous. The repair retains original
 glyph objects and their order; it does not synthesize a missing year or dash.
+
+Before formula grouping, proven body-text baseline wraps become separate
+physical lines so a shared parser line ID cannot join unrelated numeric
+fragments across lines. Explicit source underscores, neighboring mathematical
+operators and compact original glyph geometry can bind a detached descriptor
+or decimal back to its native formula. Ambiguous multiline mathematics is left
+unchanged. Caption-fragment joins likewise require a source caption and clear
+glyph adjacency, including compatible baselines and sizes.
+
+After source formula grouping, a short unfinished plain-prose sentence at the
+bottom of one column can move to the next paragraph at the top of the adjacent
+column. This requires source reading order, baseline, style, word/glyph mapping
+and sentence-boundary evidence. It retains every original glyph and its global
+order, and keeps both original paragraph boxes and styles. Formula, citation,
+script and cross-page fragments are excluded. A paragraph marked by this repair
+must reach translation; a silent upstream skip fails closed. This segmentation
+repair is separate from the read-only context mechanism above.
 
 `pdf_links.py` captures source-to-target paragraph/line relationships and
 restores supported URI and document-page links after reflow. It maps the source
