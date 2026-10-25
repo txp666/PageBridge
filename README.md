@@ -37,9 +37,11 @@ Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证
 
 ![原文与译文对照](docs/images/reader.jpg)
 
+![文档助手](docs/images/assistant.jpg)
+
 ![在线文献搜索](docs/images/literature-search.jpg)
 
-以上是 Mac 0.3.0 的真实界面截图，展示公开文献；v0.4.0 的助手布局已调整。作者、许可及截图范围见[图片说明](docs/images/README.md)。
+以上是 Mac 0.4.0 的真实界面截图，展示公开文献。作者、许可及截图范围见[图片说明](docs/images/README.md)。
 
 ## 快速开始
 
