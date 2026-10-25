@@ -27,6 +27,7 @@ MAX_MANIFEST_BYTES = 32768
 MAX_INSTALLER_BYTES = 2 * 1024**3
 ACTIONS = frozenset({"update_check", "update_download", "update_status", "update_cancel", "update_prepare_install"})
 FIELDS = {"schema", "platform", "version", "build", "minWindowsBuild", "url", "sha256", "bytes", "releaseNotesURL"}
+CACHE_FILE = re.compile(r"\.download-.+\.part|PageBridge-.+-setup\.exe")
 
 
 class UpdateError(ValueError):
@@ -50,7 +51,11 @@ def _json(raw):
     try:
         return json.loads(raw, object_pairs_hook=_pairs,
                           parse_constant=lambda _: (_ for _ in ()).throw(UpdateError("更新信息数值无效。")))
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+    except UpdateError:
+        raise
+    except (ValueError, RecursionError) as error:
+        # JSONDecodeError, UnicodeError and integer literals beyond Python's
+        # digit limit are all ValueErrors.
         raise UpdateError("更新信息格式无效。") from error
 
 
@@ -196,6 +201,7 @@ class UpdateManager:
             self._set(update=None, total=0)
             self.raw = None
             self.target = None
+            prune_cache(self.root)
             deadline = time.monotonic() + 45
             with self.opener(FEED_URL) as response:
                 chunks, count = [], 0
@@ -212,14 +218,17 @@ class UpdateManager:
             self._checkpoint(deadline)
             payload = verify_manifest(raw, self.public_key)
             newest, current = version_tuple(payload["version"]), version_tuple(self.current_version)
-            if payload["build"] < self.current_build or newest < current:
+            build = payload["build"]
+            if build > self.current_build and newest < current:
                 raise UpdateError("更新信息版本低于当前应用，已阻止降级。")
+            if build <= self.current_build and (newest > current or (build == self.current_build and newest != current)):
+                raise UpdateError("更新版本与构建号不一致。")
             with self.lock:
                 self._checkpoint(deadline)
-                if payload["build"] == self.current_build:
-                    if newest != current:
-                        raise UpdateError("更新版本与构建号不一致。")
-                    self._set(state="current", update=payload)
+                if build <= self.current_build:
+                    # A feed behind this build (CDN lag right after a release, or
+                    # a newer local build) offers nothing; it is not an error.
+                    self._set(state="current", update=payload if build == self.current_build else None)
                 else:
                     self.raw = raw
                     self._set(state="unsupported" if self.windows_build < payload["minWindowsBuild"] else "available",
@@ -247,6 +256,7 @@ class UpdateManager:
         def run():
             cache = self._cache()
             self.target = None
+            prune_cache(self.root)
             fd, name = tempfile.mkstemp(prefix=".download-", suffix=".part", dir=cache)
             temporary = Path(name)
             deadline = time.monotonic() + 3600
@@ -302,6 +312,7 @@ class UpdateManager:
                 return self._prepared_file()
             except (OSError, UpdateError) as error:
                 self.target = None
+                prune_cache(self.root)
                 self._set(state="error", error="安装包不可用或已发生变化，请重新下载。")
                 raise UpdateError(self.value["error"]) from error
 
@@ -324,8 +335,37 @@ class UpdateManager:
                     version=payload["version"], build=payload["build"])
 
 
+def prune_cache(root):
+    """Delete partial downloads and installers that no manager references.
+
+    A killed reader process skips its download cleanup, and an installer stays
+    after the update it delivered. Windows refuses to delete a file that is
+    still open or running, such as an installer that has not exited yet.
+    """
+    root = Path(root)
+    cache = root / "updates"
+    try:
+        if cache.is_symlink() or not cache.is_dir() or cache.resolve().parent != root.resolve():
+            return
+        entries = list(cache.iterdir())
+    except OSError:
+        return
+    for path in entries:
+        if CACHE_FILE.fullmatch(path.name):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
 
 _MANAGERS = {}
+
+
+def recover(root):
+    # Runs when the reader starts. A live manager owns its cache; otherwise
+    # every cached file was left behind by an earlier process.
+    if str(Path(root).resolve()) not in _MANAGERS:
+        prune_cache(root)
 
 
 def dispatch(root, action):
