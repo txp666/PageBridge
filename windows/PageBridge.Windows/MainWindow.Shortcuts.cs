@@ -39,6 +39,7 @@ public sealed partial class MainWindow
         var shortcut = new KeyboardAccelerator { Key = key, Modifiers = modifiers };
         shortcut.Invoked += async (_, args) =>
         {
+            if (updateInstallPreparing) { args.Handled = true; return; }
             if (windowClosed || dialogs.CurrentCount == 0 || available?.Invoke() == false) return;
             args.Handled = true;
             await Attempt(action);

@@ -115,6 +115,7 @@ public sealed partial class MainWindow : Window
     }
     private async Task Attempt(Func<Task> action)
     {
+        if (updateInstallPreparing || windowClosed) return;
         activeUiOperations++;
         try { await action(); }
         catch (Exception error)

@@ -140,7 +140,9 @@ public sealed partial class MainWindow
             if (pollTask is not null) await pollTask;
             // Closing a progress dialog is also a cancellation request. Do not
             // kill its persistent reader process or silently keep downloading.
-            if (!windowClosed && Active()) { try { await backend.CallAsync("update_cancel"); } catch { } }
+            // A command may still be queued while its previous snapshot is
+            // idle/available. Always cancel; idle and completed states are no-op.
+            if (!windowClosed) { try { await backend.CallAsync("update_cancel"); } catch { } }
             if (ReferenceEquals(updatesPolling, polling)) updatesPolling = null;
             updatesDialogOpen = false;
         }
