@@ -1,6 +1,36 @@
 # 验证记录
 
-## 0.4.0 / build 13 — 本地验证与发行检查
+## 0.4.0 / build 13 — 正式发布与验证
+
+2026-10-25，已公开 [v0.4.0 Release](https://github.com/txp666/PageBridge/releases/tag/v0.4.0)。不可变标签对应提交 `3d9f704076e0de6af7a065f43608a23507923d36`，[联合发布 CI 40171729058](https://github.com/txp666/PageBridge/actions/runs/40171729058) 的身份、Mac、Windows、源码及发布任务全部通过。下列结果对应正式 CI 制品，后面的本地候选记录单独保留。
+
+### 正式下载文件
+
+| 制品 | 字节数 | SHA-256 |
+|---|---:|---|
+| Mac arm64 ZIP | 221,348,681 | `a90f719fe55dbeda2af1cc55fbe33f4af8c812583ed1ae187dba5014ef64d3be` |
+| Windows x64 Setup | 193,978,324 | `0ccf4d86823775176b62e18c9c67feb062b221ed0e4602e73d5915bfc794cfa2` |
+| Windows x64 ZIP | 296,050,926 | `015f49f9b6618a7cf62e26d5484d04bfbfb80677aa90e67b1860326d95b6cb5c` |
+| 项目对应源码 ZIP | 16,800,365 | `4c2157eca9bda972101afb86b846f94c4997260448ded34d5702d7ccfe98abc4` |
+| 第三方对应源码 ZIP | 143,014,892 | `4d0afa586892b9f4959de5d59a5ad3dde5f800f04c231232ebfa0339418cf4b3` |
+
+以上五份文件、各自 SHA-256 sidecar、Mac `appcast.xml` 和 Windows `windows-update.json` 共 **12 项**。CI 发布后以及本机独立复验均完成匿名全量下载校验；五个大文件的 HTTP Range 206、250 个源码文件与标签逐字节对应、Mac feed／归档签名、Windows 清单签名与 Setup 大小／哈希绑定全部通过。两个 latest 更新源均指向 v0.4.0。
+
+### 正式 CI 与应用验证
+
+| 检查 | 实际结果 |
+|---|---|
+| Mac 标签 CI | Swift 129 项：127 通过、2 跳过；引擎 661 项全部通过；桌面后端 135 项：132 通过、3 跳过；发布工具 85 项：84 通过、1 跳过。正式包组装、解压后的私有引擎及应用签名检查通过。 |
+| Windows 标签 CI | 引擎 661 项：659 通过、2 跳过；桌面后端 135 项：127 通过、8 跳过；Windows 打包 16 项全部通过。Inno Setup 直接编译安装器，安装及同 AppId 覆盖安装后的 12,632 个负载文件和清单一致，私有引擎及签名库可用；卸载移除程序与登记并保留独立资料哨兵。CI 没有已运行的旧应用，不能据此宣称实测了旧进程保护。 |
+| Mac 正式包原生检查 | 实际打开 CI 构建且与公开下载哈希一致的应用，About 显示 `0.4.0 (13)`，既有 PDF 可阅读；通过真实公开更新源显示 0.4.0 已是最新版本。没有从旧版本执行完整升级。 |
+| Windows 安装后界面 | 同提交本地候选在普通权限交互会话完成深浅主题各 6 项检查：7 页 PDF、缩略图、底部助手／模型菜单、两处更新入口、私有 Python 和正常退出。之后另行安装公开 CI Setup，实际原生窗口读取公开签名清单并显示“当前已是最新版本 0.4.0（13）”。 |
+| Windows 真实下载与复验 | 使用未修改的 production 更新器与内置公钥；仅在独立测试目录将已安装身份模拟为 0.3.0／12，经过真实 HTTPS 下载上述公开 CI Setup，大小／SHA-256 与签名清单一致，安装前再次验证通过；篡改清单被拒绝。未由该测试启动安装器，不当作旧版 GUI 点击升级、退出、安装与重启的完整实机证明。 |
+
+本轮不重新推理长篇 PDF，不新增译文、公式或排版质量的全面验收结论。Mac 仍为 ad-hoc 签名、未完成 Apple 公证；Windows EXE 未作 Authenticode 签名，更新签名不替代系统发行者认证。
+
+本机证据在 `validation/release-0.4.0/`：`github-publish/published.json`、`independent-public-verification.json`、`github-macos-release/`、`github-windows-release/`、`public-mac-ui.json`、`installer-gui-summary.json`、`public-updater-final/receipt.json` 及 `windows-public-feed-check.json`；原始失败、后续复验和各构建哈希分别保留。正式包同时整理到 `dist/`，此前本地 Windows 候选另存于 `local-candidates/`，不与公开 CI 字节混用。
+
+### 发布前本地记录
 
 下表先记录 **版本提升前的本地候选**，后附本地 v0.4.0 Mac 候选；两者都不是标签 CI 或公开发行资产的通过声明。正式 Mac ZIP、Windows 安装器与便携 ZIP 的大小、SHA-256、标签提交和 CI 状态，以 [v0.4.0 Release](https://github.com/txp666/PageBridge/releases/tag/v0.4.0) 及对应 [Actions](https://github.com/txp666/PageBridge/actions) 记录为准。历史 0.3.0 的测试数量不沿用为本版结果。
 

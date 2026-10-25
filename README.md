@@ -14,9 +14,9 @@
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
-| Apple Silicon Mac · macOS 14+ | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
-| Windows 11 · x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe.sha256) | 按安装向导选择目录和快捷方式，默认安装到当前用户目录 |
-| Windows 11 · x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe`，保留所有子目录 |
+| Apple Silicon Mac · macOS 14+ | [macOS arm64 ZIP · 211 MiB](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
+| Windows 11 · x64（推荐） | [Windows 安装器 · 185 MiB](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe.sha256) | 按安装向导选择目录和快捷方式，默认安装到当前用户目录 |
+| Windows 11 · x64（便携） | [Windows 便携 ZIP · 282 MiB](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe`，保留所有子目录 |
 
 同一发行还提供[项目源码](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-source.zip)和[第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-third-party-sources.zip)，各附 SHA-256。最终大小、哈希与发布状态以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.4.0)为准。
 
