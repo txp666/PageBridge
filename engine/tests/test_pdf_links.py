@@ -109,6 +109,34 @@ class LinkTests(unittest.TestCase):
         self.assertFalse(links._same_visible_region(pa,pb,pymupdf.Rect(10,10,100,50)))
         a.close();b.close()
 
+    def test_second_save_failure_leaves_both_original_outputs_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, mono, dual = (root / name for name in ('source.pdf', 'mono.pdf', 'dual.pdf'))
+            with pymupdf.open() as document:
+                page = document.new_page()
+                page.insert_text((40, 40), 'click target')
+                page.insert_link({'kind': pymupdf.LINK_URI,
+                                  'from': page.search_for('click target')[0],
+                                  'uri': 'https://example.test'})
+                document.save(source)
+                document.save(mono)
+                document.new_page()
+                document.save(dual)
+            original = {path: path.read_bytes() for path in (mono, dual)}
+            save = pymupdf.Document.save
+
+            def fail_dual(document, filename, *args, **kwargs):
+                if Path(filename) == dual.with_suffix('.links.pdf'):
+                    raise OSError('fixture output write failure')
+                return save(document, filename, *args, **kwargs)
+
+            with patch.object(pymupdf.Document, 'save', fail_dual):
+                with self.assertRaisesRegex(OSError, 'fixture output write failure'):
+                    links.restore_links(source, mono, dual, root / 'absent.json')
+            for path, expected in original.items():
+                self.assertEqual(path.read_bytes(), expected)
+
     def test_full_paragraph_capture_uses_target_geometry(self):
         source=chars('Read this text');p=PdfParagraph(pdf_paragraph_composition=[PdfParagraphComposition(pdf_character=c) for c in source])
         page=SimpleNamespace(page_number=0,pdf_paragraph=[p])

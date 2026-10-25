@@ -1,12 +1,13 @@
 # PageBridge Python engine
 
-The native app calls this worker through a versioned NDJSON pipe. The worker
-uses the official `pdf2zh_next.high_level.do_translate_async_stream` API;
-Swift owns import, Keychain, scheduling, cancellation deadlines, the PDFKit
-reader and export. The browser prototype is not part of this runtime.
+Desktop hosts call this worker through a versioned NDJSON pipe. The worker
+uses the official `pdf2zh_next.high_level.do_translate_async_stream` API.
+The macOS Swift host owns import, Keychain, scheduling, cancellation deadlines,
+the PDFKit reader and export. The Windows desktop host uses the same worker
+with Windows process handling. The browser prototype is not part of this runtime.
 
-The current source targets **0.1.4 / build 6, locally built and verified**.
-The 626 engine tests pass. Five complete documents (112 source pages), plus a
+The following full-document quality baseline comes from **0.1.4 / build 6**.
+That build passed 626 engine tests. Five complete documents (112 source pages), plus a
 fresh four-page translation imported through the final native app, have reviewed
 results with explicit limitations. The
 19-page v13 result retains a caption layer-count omission; the 68-page reviewed
@@ -58,6 +59,26 @@ It requests managed Python 3.12.12, checks the resulting interpreter, and
 writes credential-free `runtime-info.json` for packaging. Set
 `PAGEBRIDGE_BOOTSTRAP_PYTHON` only when a different bootstrap Python is needed.
 
+For Windows development, use a separate source checkout without the macOS
+`.venv` or `.tools` directories. From PowerShell, run:
+
+```powershell
+.\engine\setup-windows.ps1
+# Optional asset warmup; no model/API key is used.
+.\engine\setup-windows.ps1 -Assets
+```
+
+The script uses an existing uv or bootstrap Python, selects the locked
+**Windows x64 CPython 3.12.12** (also for the Windows 11 ARM compatibility test),
+and creates `engine/.venv/Scripts/python.exe` plus `engine/runtime-info.json`.
+It preserves `uv.lock`, checks dependency consistency, and refuses to overwrite
+a macOS virtual environment. The interpreter ABI is checked using
+`sysconfig.get_platform()` (`win-amd64`); the ARM64 host architecture is recorded
+separately, because `platform.machine()` can describe the host under emulation.
+This is a development bootstrap, not a Windows
+installer. The desktop host must launch `python.exe -B -u engine/worker.py`
+with UTF-8 pipes; API keys belong only in the request pipe.
+
 After the required real-PDF acceptance, `bash scripts/build-app.sh` creates the
 native bundle. It copies the private Python base and selected packages, and
 includes `worker.py`, `translation_guard.py`, `layout_guard.py` and
@@ -71,8 +92,8 @@ rebuild, sign and verify after changing its contents.
 
 ## Request and response protocol
 
-Start a new worker process for each request and write exactly one UTF-8 JSON
-line to stdin. Keep API keys in this private pipe and memory, never in command
+Start a new worker process for each request and write one UTF-8 JSON
+request line to stdin. Keep API keys in this private pipe and memory, never in command
 arguments, environment variables or saved request files.
 
 ```json
@@ -234,6 +255,11 @@ not drop their links.
 Ambiguous, unsupported or zero-area source annotations are counted separately;
 link counts alone do not establish that a hotspot or destination is correct.
 Internal destinations currently have page precision.
+Both rebuilt PDFs are saved to temporary siblings, then every MuPDF document
+handle is closed before replacing the output files. This is required on Windows,
+where an open PDF cannot be replaced. A failure while saving either temporary
+file leaves both original outputs intact; the worker publishes only after the
+remaining validation succeeds.
 
 `translation-quality.json` records paragraph/recovery counters and link
 restoration statistics without document text or API keys. Temporary link
@@ -243,10 +269,29 @@ figures and clickable targets still need source/target review.
 
 ## Cancellation, diagnostics and storage
 
-The worker has its own process group. Cancellation sends SIGTERM to the group,
-allows cleanup, then uses SIGKILL after the parent's deadline if needed. Swift
-rejects stale attempt IDs and late results after cancellation. Forced termination
-may leave a temporary directory, but cannot be treated as successful publication.
+On macOS, the worker has its own process group. Cancellation sends SIGTERM to
+the group, allows cleanup, then uses SIGKILL after the parent's deadline if
+needed. On Windows, POSIX process groups and asyncio signal handlers are not
+used. A host can keep stdin open after its request and send this optional
+control line on either platform:
+
+```json
+{"protocolVersion":1,"jobId":"job-1","attemptId":"attempt-1","action":"cancel"}
+```
+
+Only a matching protocol, job and attempt cancels the active task. Graceful
+cancellation emits one terminal `error` event with `stage: "cancelled"` and
+exits with code 130. EOF alone does not cancel, so existing macOS clients can
+still close stdin immediately after the request. A Windows host should contain
+the worker and descendants in a Job Object and terminate that job if graceful
+cleanup exceeds its deadline. Hosts reject stale attempt IDs and late results
+after cancellation. Forced termination may leave a temporary directory, but
+cannot be treated as successful publication.
+
+Windows control-pipe reads use `PeekNamedPipe` before `ReadFile`, so no blocking
+read remains pending on stdin. Such a pending read was found to block NumPy DLL
+initialization before translation began; the real spawned-translation
+cancellation test covers that regression.
 
 Native/upstream stdout and stderr are redirected at descriptor level; only the
 versioned protocol reaches the parent pipe. Classified error messages exclude

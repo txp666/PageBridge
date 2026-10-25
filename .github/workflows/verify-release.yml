@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Published version tag to verify (for example v0.3.0)
+        description: Published version tag to verify (for example v0.4.0; v0.3.0 is also supported)
         required: true
         type: string
 
@@ -19,7 +19,7 @@ jobs:
   verify:
     if: github.repository == 'txp666/PageBridge'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       WORKFLOW_COMMIT: ${{ github.workflow_sha }}
@@ -77,7 +77,7 @@ jobs:
       - name: Install hash-pinned verification dependencies
         run: |
           python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r validation/verification-requirements.txt
-      - name: Download all seven public assets anonymously
+      - name: Download the complete versioned public asset set anonymously
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -89,8 +89,9 @@ jobs:
           tag = os.environ['RELEASE_TAG']; version = tag[1:]; repo = os.environ['GITHUB_REPOSITORY']
           metadata = json.loads(verifier.fetch_github_api('https://api.github.com/repos/'+repo+'/releases/tags/'+tag, retry_missing=True))
           assert not metadata['draft'] and not metadata['prerelease'] and metadata['tag_name'] == tag
-          filenames = [f'PageBridge-{version}-{kind}.zip' for kind in ('macOS-arm64','source','third-party-sources')]
-          names = filenames + [name+'.sha256' for name in filenames] + ['appcast.xml']
+          # v0.3.x shipped seven assets; v0.4.0+ requires both platform ZIPs
+          # plus the installer, totaling eleven assets. Never infer the required set from server contents.
+          names = verifier.asset_names(version)
           assets = {asset['name']:asset for asset in metadata['assets']}
           assert set(assets) == set(names), 'Unexpected public assets'
           Path('dist').mkdir()

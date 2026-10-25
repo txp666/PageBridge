@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>PageBridge.Windows</RootNamespace>
+    <AssemblyName>PageBridge.Windows</AssemblyName>
+    <ApplicationManifest>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(Platform)\PageBridge.app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\PageBridge.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WebView2EnableCsWinRTProjection>true</WebView2EnableCsWinRTProjection>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PublishTrimmed>false</PublishTrimmed>
+    <Description>PageBridge for Windows</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <Content Include="Assets\PageBridge.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\PageBridge.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="GenerateVersionedApplicationManifest" BeforeTargets="PrepareForBuild">
+    <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(PageBridgeVersion)', '^[0-9]+\.[0-9]+\.[0-9]+$')) != 'True'"
+           Text="VERSION.json must contain a numeric major.minor.patch version." />
+    <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(PageBridgeBuildNumber)', '^[0-9]+$')) != 'True'"
+           Text="VERSION.json must contain a numeric build string." />
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(ApplicationManifest)'))" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\app.manifest" DestinationFiles="$(ApplicationManifest)" />
+    <XmlPoke XmlInputPath="$(ApplicationManifest)"
+             Query="/*[local-name()='assembly']/*[local-name()='assemblyIdentity']/@version"
+             Value="$(AssemblyVersion)" />
+  </Target>
+  <!-- Unpackaged MRT Core currently omits the app PRI from dotnet publish.
+       https://github.com/microsoft/WindowsAppSDK/issues/6720 -->
+  <Target Name="AddPageBridgePriToPublish"
+          BeforeTargets="ComputeResolvedFilesToPublishList"
+          DependsOnTargets="$(GenerateProjectPriFile)"
+          Condition="'$(WindowsPackageType)' == 'None'">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(ProjectPriFullPath)" Condition="Exists('$(ProjectPriFullPath)')">
+        <RelativePath>$(ProjectPriFileName)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <_PageBridgeCompiledXaml Include="$(TargetDir)**\*.xbf" />
+      <ResolvedFileToPublish Include="@(_PageBridgeCompiledXaml)">
+        <RelativePath>%(_PageBridgeCompiledXaml.RecursiveDir)%(_PageBridgeCompiledXaml.Filename)%(_PageBridgeCompiledXaml.Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(ApplicationManifest)">
+        <RelativePath>resources\windows\app.manifest</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

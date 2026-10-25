@@ -1,6 +1,6 @@
 # 许可证与第三方说明
 
-PageBridge 0.3.0 的原创程序代码以 **GNU Affero General Public License, version 3（AGPL-3.0-only）** 提供，完整条款见 [LICENSE](LICENSE)。可以按该许可证使用、修改和再分发；软件按原样提供，不附带担保。第三方代码、文献和其他资源继续适用各自的许可证，本项目的许可证不改变其权利归属。
+PageBridge 0.4.0 的原创程序代码以 **GNU Affero General Public License, version 3（AGPL-3.0-only）** 提供，完整条款见 [LICENSE](LICENSE)。可以按该许可证使用、修改和再分发；软件按原样提供，不附带担保。第三方代码、文献和其他资源继续适用各自的许可证，本项目的许可证不改变其权利归属。
 
 ## 随应用分发的软件
 
@@ -29,11 +29,17 @@ PDFMathTranslate-next、BabelDOC、PyMuPDF/MuPDF 及其他依赖的著作权归�
 
 当前 PyMuPDF wheel 的发行元数据标明 AGPL，但未附单独的 `COPYING` 文件；随包根目录 `LICENSE` 提供完整 AGPL v3 条款。PyMuPDF 的对应版本原始 `COPYING` 与版权说明仍应连同其对应源码保留。
 
+### Windows 组件
+
+Windows 前端使用 .NET 10 与 Windows App SDK 的 WinUI／InteractiveExperiences 组件，不包含 Sparkle。直接包版本固定在 `windows/PageBridge.Windows/PageBridge.Windows.csproj`，传递依赖由同目录 `packages.lock.json` 锁定，实际解析的依赖与许可证随 Windows 包保存在 `resources/licenses/nuget/`；Microsoft 组件继续适用各自 NuGet 包中声明的许可，不因 PageBridge 的 AGPL 许可证改变。
+
+Windows 私有 Python 路径为 `resources/engine/runtime/`，其 `Lib/site-packages/` 保留 Python 组件元数据与许可证；PageBridge 后端源码、完整许可证及第三方声明位于 `resources/`。0.4.0 的 Mac 和 Windows 包共享同一版本的项目源码及翻译引擎锁文件。框架来源见 [WinUI 源码](https://github.com/microsoft/microsoft-ui-xaml)、[Windows App SDK 源码](https://github.com/microsoft/WindowsAppSDK)及 [.NET runtime 源码](https://github.com/dotnet/runtime)。
+
 ## 对应源码与发行材料
 
-配套 `PageBridge-0.3.0-source.zip` 包含 PageBridge 原创 Swift/Python 源码、测试、构建脚本、资源、文档和依赖锁文件。它不包含开发机虚拟环境、用户文档、API Key、对话或验证输出，也不是所有第三方二进制的完整源码镜像。
+配套 `PageBridge-0.4.0-source.zip` 包含 PageBridge 原创 Swift、C#、XAML 和 Python 源码、测试、构建脚本、资源、文档和两端依赖锁文件。它不包含开发机虚拟环境、用户文档、API Key、对话或验证输出，也不是所有第三方二进制的完整源码镜像。
 
-配套 `PageBridge-0.3.0-third-party-sources.zip` 另外提供 PDFMathTranslate-next 2.9.0、BabelDOC 0.6.2、PyMuPDF 1.25.2 的官方源码发行件，以及 MuPDF 1.25.2 官方源码归档。前三项下载文件与锁文件中的大小、SHA-256 一致。MuPDF 归档包含构建文件和第三方源码树；清单记录了获取 URL、版本、许可证、计算所得哈希及检查边界，未执行所下载源码。
+配套 `PageBridge-0.4.0-third-party-sources.zip` 另外提供 PDFMathTranslate-next 2.9.0、BabelDOC 0.6.2、PyMuPDF 1.25.2 的官方源码发行件，以及 MuPDF 1.25.2 官方源码归档。前三项下载文件与锁文件中的大小、SHA-256 一致。MuPDF 归档包含构建文件和第三方源码树；清单记录了获取 URL、版本、许可证、计算所得哈希及检查边界，未执行所下载源码。
 
 PyMuPDF 1.25.2 源码发行件未内嵌 MuPDF；其 [构建脚本](https://raw.githubusercontent.com/pymupdf/PyMuPDF/1.25.2/setup.py) 指定从 [MuPDF 1.25.2 源码归档](https://mupdf.com/downloads/archive/mupdf-1.25.2-source.tar.gz) 获取底层源码，配套第三方源码包已单独包含该归档。其他 Python 源码发行件可按锁文件中的 `sdist` URL 与 SHA-256 取得和核对；这份配套包是上述四项组件的源码集合，并非全部捆绑依赖的穷尽性源码与许可审计。
 

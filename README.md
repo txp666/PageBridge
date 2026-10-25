@@ -2,136 +2,79 @@
 
 <img src="assets/PageBridge-icon.png" alt="PageBridge icon" width="96">
 
-**原生 Mac PDF 阅读与翻译工作区。** 整理文档、保留排版翻译、原文译文对照、添加批注，也可以搜索文献并直接打开全文。
+**Mac 与 Windows 原生 PDF 阅读、翻译工作区。** 整理文档、保留排版翻译、原译文对照、批注和 AI 问答，也能搜索文献并打开全文。
 
-适用于手册、报告、教材、合同和论文等带文本层的 PDF。界面使用 SwiftUI、AppKit 和 PDFKit，翻译基于 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC)，支持本机 Ollama 和自定义 OpenAI 兼容 API。
+适用于手册、报告、教材、合同和论文等带文本层的 PDF。Mac 使用 SwiftUI / AppKit / PDFKit，Windows 使用 WinUI 3；翻译基于 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC)，支持本机 Ollama 和 OpenAI 兼容 API。
 
-**当前版本：0.3.0 / build 12** · [下载](https://github.com/txp666/PageBridge/releases/tag/v0.3.0) · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
-
-## 核心功能
-
-| 功能 | 说明 |
-|---|---|
-| 文档管理 | 文件夹、收藏、最近阅读、回收站、名称搜索、排序与首页预览 |
-| PDF 翻译 | 整篇或指定页，显示真实进度，支持取消和重跑；失败保留上次成功译文 |
-| 对照阅读 | 原文／对照／译文切换，缩放、文内搜索、缩略图、目录和同步滚动 |
-| 批注与笔记 | 高亮、下划线、便笺、页书签，导出批注 PDF 和 Markdown 笔记 |
-| 文档助手 | 文档问答、当前页、选中文字与自由提问；独立选择已配置模型，展开页码引用 |
-| 文献获取 | OpenAlex 搜索，Sci-Hub／公开 PDF 全文来源，支持 DOI 直接打开与应用内站点验证 |
-| 导出 | 原文、译文、交替页双语 PDF，以及批注和阅读笔记 |
-| 应用更新 | 手动或经同意自动检查，签名验证，翻译期间暂缓安装 |
-
-## 界面预览
-
-原文与译文对照：
-
-![对照阅读](docs/images/reader.jpg)
-
-文献搜索与全文来源：
-
-![文献搜索](docs/images/literature-search.jpg)
-
-文档助手：
-
-![文档助手](docs/images/assistant.jpg)
-
-截图来自原生 0.3.0 应用，使用公开示例文献；[截图与文献归属](docs/images/README.md)。
+**0.4.0 / build 13** · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
 
 ## 下载与安装
 
-当前安装包支持 **Apple Silicon（M 系列）Mac**，部署目标为 **macOS 14+**；暂未提供 Intel 或 Windows 版本。macOS 14 尚未完成实机验证，具体环境及验收范围见[验证记录](docs/VERIFICATION.md)。
+下载 v0.4.0，或在 [Releases](https://github.com/txp666/PageBridge/releases) 中查看其他版本。
 
-| 下载 | 用途 |
-|---|---|
-| [Mac 应用 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-macOS-arm64.zip.sha256) | 普通用户下载安装 |
-| [项目源码 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-source.zip.sha256) | 对应版本源码、测试、构建脚本和锁文件 |
-| [第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.3.0/PageBridge-0.3.0-third-party-sources.zip.sha256) | 随包 AGPL 组件的源码与清单 |
+| 平台 | 安装包 | 安装方式 |
+|---|---|---|
+| Apple Silicon Mac · macOS 14+ | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
+| Windows 11 · x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe.sha256) | 按安装向导选择目录和快捷方式，默认安装到当前用户目录 |
+| Windows 11 · x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe`，保留所有子目录 |
 
-文件大小和最终哈希以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.3.0)为准。
+同一发行还提供[项目源码](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-source.zip)和[第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-third-party-sources.zip)，各附 SHA-256。最终大小、哈希与发布状态以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.4.0)为准。
 
-1. 退出旧版，解压 ZIP，将 `PageBridge.app` 放入“应用程序”；更新时替换旧应用文件。
-2. 打开应用，在 **PageBridge → About PageBridge** 确认版本为 `0.3.0 (12)`。
-3. 已有文档、译文、笔记和服务配置会继续使用，无需重新导入。
+Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证**；Windows 安装器及程序 **尚无 Authenticode 签名**。请核对来源和 SHA-256，按系统提示确认。尚无 Intel Mac 或原生 Windows ARM64 包；Windows ARM 虚拟机的 x64 兼容运行不等同于原生 ARM64 支持。
 
-首次打开时，macOS 可能要求额外确认：当前采用 ad-hoc 签名，**尚未完成 Developer ID 签名与 Apple 公证**。请核对官方来源与 SHA-256，再自行按系统安全提示确认。OTA 更新签名不替代 Apple 公证。
+应用自带 Python 和翻译依赖，无需另外安装 Python；**不包含语言模型**。Ollama 和模型需单独安装，首次翻译可能下载字体和版面资源。Windows 应用内网页验证使用系统 WebView2 Runtime。
 
-应用自带 Python 和 PDF 翻译引擎，普通用户无需另外安装 Python；**不包含语言模型**。Ollama 和本地模型需单独安装，首次翻译还可能下载字体和版面分析资源。
+## 主要功能
 
-## 快速上手
+- **文档库：** 文件夹、名称搜索、排序、收藏、最近阅读、回收站和首页预览。
+- **翻译与阅读：** 整篇或指定页翻译、取消与失败保护，原文／对照／译文、连续翻页、同步滚动、文内搜索、缩略图、目录和书签。
+- **批注：** 文字高亮、下划线、页笔记，编辑、删除，导出批注 PDF 和 Markdown。
+- **文档助手：** 独立选择已配置模型；文档问答、当前页、选文或自由提问，引用片段核对、复制回答和保存笔记。两端均采用顶部文件名、中央对话、底部操作的紧凑布局。
+- **文献获取：** OpenAlex 搜索，Sci-Hub／公开 PDF 全文来源，DOI 直接打开、下载校验与去重导入。
+- **导出：** 原文、译文和交替页双语 PDF。Windows 功能与已知差异见 [Windows 说明](docs/WINDOWS.md)。
 
-1. **打开 PDF：** 拖入文件、点击 `+`，或从“示例 PDF”选择一份公开文档。阅读、整理和批注无需配置模型。
-2. **配置服务：** 打开侧栏设置或 **PageBridge → 翻译服务…**，选择厂商、模型，填写 API Key；本机 Ollama 选择已下载模型。测试连接后保存。
-3. **开始翻译：** 点击“翻译”，选择语言和整篇／指定页。页码可写 `1-5, 8`；初次可先试少量页面。任务中可取消，失败不覆盖旧译文。
-4. **阅读与记录：** 切换“对照”，按需开启同步滚动；选中文字添加高亮或笔记，也可打开“助手”提问。助手模型可与翻译模型不同。
-5. **导出结果：** “导出 PDF”保存原文、译文或交替页双语文件；需要带批注时，从“批注与笔记”选择“导出批注 PDF”或“导出笔记”。
+## 界面预览
 
-内置五份公开示例，共 49 页，覆盖短文、图表、公式和双栏排版；推荐先用 4 页的“可复现计算研究十条建议”熟悉流程。作者、来源和许可见[示例说明](demos/README.md)。
+![原文与译文对照](docs/images/reader.jpg)
 
-## 模型服务
+![在线文献搜索](docs/images/literature-search.jpg)
 
-| 方式 | 配置要点 |
-|---|---|
-| 在线厂商 | DeepSeek、阿里云百炼（北京）、硅基流动（中国站）、OpenAI 已预设地址；选模型并填 API Key |
-| 自定义 API | 使用 OpenAI Chat Completions 兼容服务，填写 Base URL、模型 ID 和服务要求的密钥；不要填写完整 `/chat/completions` 路径 |
-| 本机 Ollama | 按 [Ollama 官方指南](https://docs.ollama.com/quickstart)启动服务并下载本地模型，再点击“获取模型”；默认地址 `http://127.0.0.1:11434`，无需 API Key |
+以上是 Mac 0.3.0 的真实界面截图，展示公开文献；v0.4.0 的助手布局已调整。作者、许可及截图范围见[图片说明](docs/images/README.md)。
 
-模型可从服务获取，也可手填 ID；列表可见不代表账户一定有调用权限或额度。预设之外的地域、专属网关和远程模型请使用自定义 API。API Key 保存在 macOS 钥匙串；“测试连接”只发送固定短句，保存设置不会发送文档。详细操作见[服务配置指南](docs/USER_GUIDE.md#配置翻译服务)。
+## 快速开始
 
-## 搜索文献
+1. 点击 `+` 导入 PDF；阅读和批注无需模型。也可从“搜索在线文献”按标题或 DOI 获取全文。
+2. 打开侧栏设置，选择厂商、模型并填写 API Key；本机 Ollama 点击“获取模型”。可选预设厂商，也可填写自定义 OpenAI 兼容 Base URL 和模型 ID。
+3. 点击“翻译”，选择语言和页码，例如 `1-5, 8`。失败或取消保留上次成功译文。
+4. 切换“对照”阅读，选中文字添加批注，或打开助手提问。快捷问题会按当前模型与范围立即发送。
+5. 用“导出 PDF”保存结果；带批注的版本从“阅读笔记”面板导出。
 
-**OpenAlex 负责找文献，Sci-Hub 和公开 PDF 负责获取全文。** 搜索不需要翻译 API Key，也不调用模型。
+内置五份公开示例共 49 页，作者、来源与许可见[示例说明](demos/README.md)。更完整的配置、快捷键和排错见[使用指南](docs/USER_GUIDE.md)。
 
-1. 点击“搜索在线文献”，输入标题、关键词、DOI 或 doi.org 链接。
-2. 选择全文来源：**Sci-Hub** 按 DOI 查找，**公开 PDF** 使用 OpenAlex 返回的开放获取链接。
-3. 点击“打开全文”，下载校验后进入阅读器；相同文件会复用已有记录，保留译文和笔记。
+## 数据与更新
 
-已有 DOI 可直接打开，例如 `10.1371/journal.pcbi.1003833`。遇到站点验证时，点击“在 App 中验证并继续”，自行完成验证后继续；默认 Sci-Hub 地址可在“设置地址”中修改。搜索结果不保证全文可用，单文件下载上限 100 MB；没有 DOI、链接失效或站点不可达时，可切换来源或打开原文页面。详见[文献搜索指南](docs/USER_GUIDE.md#搜索在线文献)。
+| 平台 | 本机数据 | API 密钥 | 更新 |
+|---|---|---|---|
+| Mac | `~/Library/Application Support/PageBridge/` | macOS 钥匙串 | Sparkle 检查更新，校验更新签名；由用户确认安装 |
+| Windows | `%LOCALAPPDATA%\PageBridge` | Windows 凭据管理器 | 从 Releases 下载新版安装器升级，或更换便携程序目录；暂无 Windows OTA |
 
-## 应用更新
+Windows 安装器默认目录为 `%LOCALAPPDATA%\Programs\PageBridge`，卸载只移除程序与快捷方式，保留文档、译文、配置和系统凭据。替换程序保留独立用户数据。两端文档库格式不同，暂不支持直接互拷数据目录或自动跨平台同步。Mac OTA 签名不替代 Apple 公证，Windows 不使用 Mac 的更新源。
 
-在 **PageBridge → 检查更新…** 手动检查，或开启“自动检查更新”。自动检查遵循首次同意流程；发现新版本后由你决定下载、安装或跳过，应用不静默下载或安装。
+文档解析与排版在本机执行。使用云模型时，翻译文本或助手选取的片段、问题与有限近期对话会发送给所选服务；OpenAlex 接收检索词，所选全文来源接收 DOI 或下载请求。应用不携带云服务额度。
 
-更新来自本项目 GitHub Releases，通过 HTTPS 获取并验证 feed 与更新包签名。翻译进行时暂缓检查与安装；失败时保留当前应用。旧的无更新菜单本地包需先手动安装此版。OTA 的实际下载、替换和重启验收范围见[验证记录](docs/VERIFICATION.md)，不以编译成功代替实机安装结果。
+当前不提供通用 OCR。机器翻译和 AI 回答可能出错，公式、数字和关键条款需核对原文；助手每次仅使用有限片段，不代表通读全文。全文可用性取决于来源网站；遇到网站验证需自行完成，应用不自动解答验证码。
 
-## 隐私与限制
-
-- 文档副本、译文、批注和对话保存在 `~/Library/Application Support/PageBridge/`，密钥保存在钥匙串。替换应用不清空这些数据。
-- 本地解析与排版在 Mac 上完成；使用云模型时，翻译文本或助手选取的片段、问题与有限近期对话发送给所选服务。
-- OpenAlex 接收搜索词，Sci-Hub 接收 DOI；更新检查不发送文档、模型密钥或系统配置画像。托管方仍会收到常规网络请求元数据。
-- 需要带文本层的 PDF，当前没有通用 OCR；加密文件需先解密。人名、变量、单位和原始图像文字可能保留英文。
-- 助手每次只使用有限片段，文档问答最多 6 页／12,000 字符；页码引用不是结论正确的证明。重要文字、数值、公式与技术结论请对照原文核查。
-- 批注绑定 PDF 版本；重新翻译后，旧坐标不会自动套到新排版。当前回收站可恢复文档，不永久删除文件或释放其占用空间。
-
-遇到连接、超时、完整性检查、全文下载或更新问题，请先查看[常见问题](docs/USER_GUIDE.md#常见问题)。反馈时提供版本、系统、模型 ID 和脱敏复现，不要公开 API Key、Cookie 或私有文档。
-
-## 开发与构建
-
-原生界面位于 `macOS/Sources/PageBridge`，核心服务与存储位于 `PageBridgeCore`，`engine/` 提供翻译 worker，`scripts/` 提供打包和验证工具。需要 Apple Silicon Mac、Xcode Command Line Tools / Swift 6 和 Python 3；安装脚本管理 Python 3.12.12 及锁定依赖。
+## 开发与贡献
 
 ```sh
 git clone https://github.com/txp666/PageBridge.git
 cd PageBridge
+# Mac
 bash engine/setup.sh
-swift test --package-path macOS --disable-sandbox
-engine/.venv/bin/python -B -m unittest discover -s engine/tests -v
 bash scripts/build-app.sh
-python3 scripts/verify-bundle.py
+# Windows PowerShell：./scripts/build-windows.ps1
 ```
 
-产物是 `dist/PageBridge.app`。完整测试、真实 PDF 验收与发布命令见[开发指南](docs/DEVELOPMENT.md)。版本来自 `VERSION.json`，build 必须递增；公开标签与资产不重打或覆盖。CI 执行 main／PR 测试，版本标签触发构建、签名、draft 资产核验和发布；具体结果见 [Actions](https://github.com/txp666/PageBridge/actions)。
+详见[开发指南](docs/DEVELOPMENT.md)、[Windows 构建说明](docs/WINDOWS.md)、[验证记录](docs/VERIFICATION.md)、[贡献指南](CONTRIBUTING.md)和[安全说明](SECURITY.md)。本地检查与历史 CI 记录分别保留；本版发行状态和 CI 结果以对应 Release／Actions 记录为准。
 
-最终 CI 通过：Swift 129 项（127 通过、2 项可选测试跳过）、引擎 655 项、发布脚本 47 项。v0.3.0 已公开，独立公开资产复验与交互式 OTA 升级至 build 12 已完成。公开示例已验证文献搜索、站点验证、下载和去重打开；本次未重新执行全文模型翻译。完整范围及边界见[验证记录](docs/VERIFICATION.md)。
-
-## 文档与贡献
-
-| 文档 | 内容 |
-|---|---|
-| [使用指南](docs/USER_GUIDE.md) | 服务配置、阅读、批注、助手、导出与排错 |
-| [开发指南](docs/DEVELOPMENT.md) · [架构说明](docs/ARCHITECTURE.md) | 环境、测试、数据流、构建、CI 与发布 |
-| [验证记录](docs/VERIFICATION.md) · [版本记录](CHANGELOG.md) | 分版本证据、已知限制与功能变化 |
-| [贡献指南](CONTRIBUTING.md) · [GitHub Issues](https://github.com/txp666/PageBridge/issues) | 问题反馈与代码贡献 |
-| [安全说明](SECURITY.md) | 密钥、私有数据和私密漏洞报告 |
-
-## 许可证
-
-PageBridge 原创程序代码采用 [GNU AGPL v3（AGPL-3.0-only）](LICENSE)。第三方依赖与示例 PDF 保留各自许可及作者归属，详见[第三方说明](THIRD_PARTY_NOTICES.md)和[示例说明](demos/README.md)。分发二进制时应同时提供匹配项目源码及所需第三方对应源码；文献不因本项目开源而改变权利归属。
+原创代码采用 [AGPL-3.0-only](LICENSE)。第三方组件和示例保留各自许可及归属，见[第三方说明](THIRD_PARTY_NOTICES.md)。反馈问题请附版本、系统和脱敏复现，不要公开密钥、Cookie 或私有文档。

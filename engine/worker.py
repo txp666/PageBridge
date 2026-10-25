@@ -16,6 +16,8 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
@@ -40,6 +42,92 @@ STAGES = {
 
 class WorkerError(Exception):
     """Only fixed, non-secret messages should be constructed here."""
+
+
+class ProtocolInput:
+    """Bounded raw pipe input, including an optional cancellation control line.
+
+    Raw reads avoid a daemon reader retaining Python's BufferedReader lock when
+    a desktop host keeps stdin open after a completed request.
+    """
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+        self.pending = b""
+        self._read = lambda count: os.read(self.descriptor, count)
+        if sys.platform == "win32":
+            # A pending synchronous read of stdin can block native-library
+            # startup (observed in NumPy's multiarray extension). Peek first so
+            # the control thread never leaves a pending read on that handle.
+            import ctypes
+            from ctypes import wintypes
+            import msvcrt
+            api = ctypes.WinDLL("kernel32", use_last_error=True)
+            api.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                     ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+            api.ReadFile.restype = wintypes.BOOL
+            api.GetFileType.argtypes = [wintypes.HANDLE]
+            api.GetFileType.restype = wintypes.DWORD
+            api.PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                         ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+            api.PeekNamedPipe.restype = wintypes.BOOL
+            handle = msvcrt.get_osfhandle(descriptor)
+            is_pipe = api.GetFileType(handle) == 3
+
+            def read_windows(count):
+                if is_pipe:
+                    available = wintypes.DWORD()
+                    while True:
+                        if not api.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+                            error = ctypes.get_last_error()
+                            if error in (109, 232):
+                                return b""
+                            raise ctypes.WinError(error)
+                        if available.value:
+                            count = min(count, available.value)
+                            break
+                        time.sleep(0.02)
+                buffer = ctypes.create_string_buffer(count)
+                received = wintypes.DWORD()
+                if not api.ReadFile(handle, buffer, count, ctypes.byref(received), None):
+                    error = ctypes.get_last_error()
+                    if error in (109, 232):  # Broken pipe / no data after close.
+                        return b""
+                    raise ctypes.WinError(error)
+                return buffer.raw[:received.value]
+
+            self._read = read_windows
+
+    def readline(self):
+        while b"\n" not in self.pending and len(self.pending) <= MAX_REQUEST_BYTES:
+            chunk = self._read(min(4096, MAX_REQUEST_BYTES + 1 - len(self.pending)))
+            if not chunk:
+                line, self.pending = self.pending, b""
+                return line
+            self.pending += chunk
+        if b"\n" in self.pending:
+            line, self.pending = self.pending.split(b"\n", 1)
+            return line + b"\n"
+        line, self.pending = self.pending, b""
+        return line
+
+    def watch_cancel(self, request, loop, task):
+        try:
+            while raw := self.readline():
+                if len(raw) > MAX_REQUEST_BYTES:
+                    return
+                try:
+                    control = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    continue
+                if (isinstance(control, dict) and control.get("protocolVersion") == PROTOCOL_VERSION
+                        and control.get("action") == "cancel"
+                        and control.get("jobId") == request["jobId"]
+                        and control.get("attemptId") == request["attemptId"]):
+                    loop.call_soon_threadsafe(task.cancel)
+                    return
+        except (OSError, RuntimeError):
+            # Pipe/loop teardown after the one request has already completed.
+            return
 
 
 def checked_completion_create(create):
@@ -79,7 +167,7 @@ def install_response_guard():
 def guarded_translate_wrapper(settings, *args):
     """Install the checked adapter inside the actual translation subprocess.
 
-    macOS uses spawn: a parent-only monkeypatch would silently do nothing in the
+    macOS and Windows use spawn: a parent-only monkeypatch does nothing in the
     process that translates paragraphs. Keep this target at module scope so it
     can be pickled; the original entrypoint is fresh on spawn and saved on fork.
     """
@@ -545,11 +633,15 @@ async def translate(request, events):
         events.emit("result", progress=1.0, translatedPath=str(destination / "translated.pdf"), bilingualPath=str(destination / "bilingual.pdf"), message="翻译完成，译文和双语 PDF 均已通过验证。")
 
 
-async def run(request, events):
+async def run(request, events, control_input=None):
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, task.cancel)
+    if sys.platform != "win32":
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, task.cancel)
+    if control_input is not None and request["action"] != "health":
+        threading.Thread(target=control_input.watch_cancel, args=(request, loop, task),
+                         name="pagebridge-cancel", daemon=True).start()
     version = installed_versions()
     events.engine_version = version
     events.emit("ready", engineVersion=version)
@@ -566,10 +658,11 @@ async def run(request, events):
 
 
 def main():
-    try:
-        os.setsid()
-    except PermissionError:
-        pass  # Parent already launched this worker as a process-group leader.
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except PermissionError:
+            pass  # Parent already launched this worker as a process-group leader.
     # Duplicate the original pipes before redirecting both raw FDs. Python,
     # native extensions and spawned children cannot pollute NDJSON or leak logs.
     protocol = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
@@ -580,7 +673,8 @@ def main():
     os.close(null)
     events = Events(protocol)
     try:
-        raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+        control_input = ProtocolInput(sys.stdin.fileno())
+        raw = control_input.readline()
         try:
             envelope = json.loads(raw)
             if isinstance(envelope, dict) and all(isinstance(envelope.get(key), str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", envelope[key]) for key in ("jobId", "attemptId")):
@@ -589,7 +683,7 @@ def main():
             pass
         request = parse_request(raw)
         events = Events(protocol, request)
-        asyncio.run(run(request, events))
+        asyncio.run(run(request, events, control_input))
         return 0
     except (asyncio.CancelledError, KeyboardInterrupt):
         events.emit("error", stage="cancelled", message="翻译已取消。")

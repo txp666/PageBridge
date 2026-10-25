@@ -1,3 +1,4 @@
+import atexit
 import json
 import hashlib
 from pathlib import Path
@@ -20,6 +21,10 @@ from babeldoc.format.pdf.document_il.midend.il_translator import (
 )
 from babeldoc.format.pdf.document_il import (PdfCharacter, PdfFormula, PdfSameStyleCharacters, PdfStyle,
                                            Box, VisualBbox, PdfParagraphComposition, PdfLine)
+from babeldoc.translator.cache import db as _cache_database
+# SQLite must release its file handle before TemporaryDirectory's finalizer on
+# Windows. Other modules reuse this imported database throughout discovery.
+atexit.register(_cache_database.close)
 
 
 def fixture():

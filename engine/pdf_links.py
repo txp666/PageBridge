@@ -502,5 +502,9 @@ def restore_links(source_path, mono_path, dual_path, mapping_path):
         for document, path in ((mono, mono_path), (dual, dual_path)):
             temporary = Path(path).with_suffix('.links.pdf')
             document.save(temporary, garbage=3, deflate=True)
-            temporary.replace(path)
+    # Windows does not permit replacing a PDF while MuPDF still holds its
+    # source file open. Finish both saves and close all documents first; a
+    # failed save leaves the originals untouched and no result is published.
+    for path in (mono_path, dual_path):
+        Path(path).with_suffix('.links.pdf').replace(path)
     return report

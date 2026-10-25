@@ -1,5 +1,19 @@
 # 版本记录
 
+## 0.4.0 / build 13 — Mac 与 Windows 双平台发行
+
+- 新增 Windows 11 x64 正式安装器及便携包，使用 WinUI 3，复用锁定的 PDFMathTranslate-next / BabelDOC 引擎；随包提供 Python、.NET 与所需 WinUI 运行库，无需用户单独安装这些运行时。
+- Windows 安装器支持当前用户安装、选择安装目录、快捷方式及卸载入口；默认位于 `%LOCALAPPDATA%\Programs\PageBridge`，卸载保留独立文档库、配置和系统凭据。安装／卸载验收范围见验证记录。
+- Windows 接入 OpenAlex 搜索、Sci-Hub／公开 PDF 来源、直接 DOI、应用内 WebView2 验证页和下载校验。重复导入复用已有文档，保留原分类、译文和笔记。
+- Windows 提供侧栏折叠、连续滚动、页面／目录／书签导航、文内搜索与链接、缩放快捷键，以及文件夹新建／重命名／删除和资源管理器定位。
+- Windows 增加文字选择、高亮、下划线、页笔记的新增／编辑／删除、书签和批注 PDF／Markdown 导出；批注按 PDF 哈希区分原文、译文及重译版本。
+- Windows 文档助手复用已配置的模型，支持四种范围、有限上下文、引用核对、取消、清空和回答存笔记。
+- Mac 与 Windows 同步压缩助手布局：文件名与清空留在顶部，对话占据中间，模型和范围同排放在底部，快捷问题收进菜单；移除重复说明，必要的目的地与范围信息保留在提示和引用片段中。
+- 修复 Windows 主题混用、页码基线、笔记多行编辑、空助手滚动位置，以及取消时后台进程清理相关问题。
+- 两平台版本统一为 `0.4.0 / build 13`，新增联合发布所需的 Windows 资产及校验。Mac 继续使用 Sparkle 签名 OTA；Windows 当前手动更新，未提供 OTA 或 Authenticode 签名。Mac 仍为 ad-hoc 签名，尚未完成 Apple 公证。
+
+发行资产为 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、项目源码和第三方对应源码 ZIP，各附 SHA-256；Mac 另提供签名 appcast，共 11 项发布资产。此处记录版本变更；CI 与公开资产状态以该版本的 Release／Actions 为准，本地检查及验证边界见[验证记录](docs/VERIFICATION.md)。
+
 ## 0.3.0 / build 12 — 在线文献检索、应用更新与开源发布
 
 - 新增“搜索在线文献”，使用 OpenAlex 按标题、关键词、DOI 或 DOI 链接检索，支持开放获取筛选及分页。

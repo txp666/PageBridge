@@ -11,6 +11,7 @@ import argparse
 import base64
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,45 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROOT = Path(__file__).resolve().parents[1]
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+
+
+def dual_platform(version):
+    require(re.fullmatch(r"\d+\.\d+\.\d+", version) is not None, "Invalid release version")
+    return tuple(map(int, version.split("."))) >= (0, 4, 0)
+
+
+def archive_names(version):
+    kinds = ["macOS-arm64"]
+    if dual_platform(version):
+        kinds.append("windows-x64")
+    return [f"PageBridge-{version}-{kind}.zip" for kind in kinds + ["source", "third-party-sources"]]
+
+
+def asset_names(version):
+    payloads = payload_names(version)
+    return payloads + [name + ".sha256" for name in payloads] + ["appcast.xml"]
+
+
+def payload_names(version):
+    names = archive_names(version)
+    if dual_platform(version):
+        names.append(f"PageBridge-{version}-windows-x64-setup.exe")
+    return names
+
+
+def helper(filename):
+    spec = importlib.util.spec_from_file_location(filename, Path(__file__).with_name(filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def verify_zip_members(zipped):
+    names = zipped.namelist()
+    require(len(names) == len(set(names)), "Duplicate ZIP member")
+    require(all(not name.startswith(("/", "\\")) and "\\" not in name
+                and not re.match(r"^[A-Za-z]:", name) and ".." not in Path(name).parts
+                for name in names), "Unsafe ZIP member")
 
 
 def require(condition, message):
@@ -109,14 +149,14 @@ def verify_public_asset(url, expected):
                 checksum.update(chunk)
         require(size == expected["bytes"] and checksum.hexdigest() == expected["sha256"], "Public asset checksum differs")
     network_attempt(download, retry_missing=True)
-    if expected["name"].endswith(".zip"):
+    if expected["name"].endswith((".zip", ".exe")):
         def ranged_download():
             request = urllib.request.Request(url, headers={"Range": "bytes=0-31", "User-Agent": "PageBridge-release-verifier/1",
                                                            "Cache-Control": "no-cache"})
             with urllib.request.urlopen(request, timeout=120) as response:
                 require(response.geturl().startswith("https://"), "Insecure ranged redirect")
                 require(response.status == 206 and response.headers.get("Content-Range") == f"bytes 0-31/{expected['bytes']}",
-                        "Public archive lacks HTTP Range support")
+                        "Public download lacks HTTP Range support")
                 require(len(response.read(33)) == 32, "Invalid ranged response body")
         network_attempt(ranged_download, retry_missing=True)
         expected["httpRangeVerified"] = True
@@ -163,15 +203,34 @@ def current_notes(version, source_root=ROOT):
 
 def verify_source(path, version, source_root=ROOT):
     with zipfile.ZipFile(path) as zipped:
+        verify_zip_members(zipped)
         prefix = f"PageBridge-{version}-source/"
         manifest = json.loads(zipped.read(prefix + "SOURCE_MANIFEST.json"))
         require(manifest["version"] == version, "Source manifest version differs")
+        require(set(zipped.namelist()) == {prefix + name for name in manifest["files"]} | {prefix + "SOURCE_MANIFEST.json"},
+                "Source archive inventory differs from manifest")
         for name, entry in manifest["files"].items():
             data = zipped.read(prefix + name)
             require(hashlib.sha256(data).hexdigest() == entry["sha256"] and len(data) == entry["bytes"],
                     "Source file differs from manifest: " + name)
         for name in ("VERSION.json", "update-config.json", ".github/workflows/release.yml"):
             require(zipped.read(prefix + name) == (source_root / name).read_bytes(), "Source release configuration differs: " + name)
+        if dual_platform(version):
+            required = {"LICENSE", "engine/uv.lock", "engine/pyproject.toml", "engine/.python-version",
+                        "engine/setup.sh", "engine/setup-windows.ps1", "engine/worker.py",
+                        "macOS/Package.swift", "macOS/Package.resolved", "desktop/bridge.py",
+                        "windows/PageBridge.Windows/PageBridge.Windows.csproj",
+                        "windows/PageBridge.Windows/packages.lock.json", "scripts/build-windows.ps1",
+                        "scripts/windows-installer.iss", "scripts/setup-inno.ps1"}
+            require(required.issubset(manifest["files"]), "Corresponding source is missing a platform or dependency lock")
+            release = json.loads((source_root / "VERSION.json").read_text())
+            require(str(manifest.get("build")) == str(release["build"]), "Source manifest build differs")
+            # The manifest alone is self-reported: compare its complete inventory
+            # and every byte against the immutable tag checkout used by CI.
+            files = helper("package-release.py").source_files(source_root)
+            require(set(manifest["files"]) == {name for name, _ in files}, "Source archive omits or adds project files")
+            for name, source in files:
+                require(zipped.read(prefix + name) == source.read_bytes(), "Source differs from tag checkout: " + name)
     return len(manifest["files"])
 
 
@@ -181,9 +240,11 @@ def main():
     parser.add_argument("--source-root", type=Path, default=ROOT, help="Checked-out release tag source (defaults to this repository)")
     parser.add_argument("--check-latest", action="store_true")
     parser.add_argument("--published", action="store_true")
+    parser.add_argument("--require-latest", action="store_true", help="Require this published tag to be the latest release (publication CI)")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--notes-output", type=Path, help="Write current changelog section for gh release --notes-file")
     args = parser.parse_args()
+    require(not args.require_latest or args.published, "--require-latest requires --published")
     source_root = args.source_root.resolve()
     release = json.loads((source_root / "VERSION.json").read_text())
     config = json.loads((source_root / "update-config.json").read_text())
@@ -195,15 +256,16 @@ def main():
     require(config["feedURL"] == base + "/releases/latest/download/appcast.xml", "Unexpected configured feed")
     key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
     report = {"version": version, "build": build, "repository": repository, "assets": []}
-    filenames = [f"PageBridge-{version}-{kind}.zip" for kind in ("macOS-arm64", "source", "third-party-sources")]
+    filenames = payload_names(version)
     for name in filenames:
         path = args.dist / name
         checksum = digest(path)
         sidecar = path.with_name(name + ".sha256")
         require(sidecar.read_text() == checksum + "  " + name + "\n", "SHA-256 sidecar differs: " + name)
-        with zipfile.ZipFile(path) as zipped:
-            require(zipped.testzip() is None, "ZIP CRC failure: " + name)
-            require(all(not p.startswith("/") and ".." not in Path(p).parts for p in zipped.namelist()), "Unsafe ZIP member")
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(path) as zipped:
+                require(zipped.testzip() is None, "ZIP CRC failure: " + name)
+                verify_zip_members(zipped)
         for asset in (path, sidecar):
             report["assets"].append({"name": asset.name, "bytes": asset.stat().st_size, "sha256": digest(asset)})
     app = args.dist / filenames[0]
@@ -213,8 +275,13 @@ def main():
         require(info.get("SUPublicEDKey") == config["publicEDKey"] and info.get("SUFeedURL") == config["feedURL"], "App OTA configuration differs")
         require(info.get("SURequireSignedFeed") is True and info.get("SUVerifyUpdateBeforeExtraction") is True,
                 "App does not enforce feed/archive verification")
-    report["sourceFileCount"] = verify_source(args.dist / filenames[1], version, source_root)
-    with zipfile.ZipFile(args.dist / filenames[2]) as zipped:
+    if dual_platform(version):
+        report["windows"] = helper("windows_package.py").verify_archive(
+            args.dist / f"PageBridge-{version}-windows-x64.zip", source_root)
+        report["windowsInstaller"] = helper("windows_package.py").verify_installer(
+            args.dist / f"PageBridge-{version}-windows-x64-setup.exe", source_root)
+    report["sourceFileCount"] = verify_source(args.dist / f"PageBridge-{version}-source.zip", version, source_root)
+    with zipfile.ZipFile(args.dist / f"PageBridge-{version}-third-party-sources.zip") as zipped:
         prefix = f"PageBridge-{version}-third-party-sources/"
         manifest = json.loads(zipped.read(prefix + "manifest.json"))
         require(manifest["release"] == version, "Third-party source release differs")
@@ -256,14 +323,27 @@ def main():
     if args.published:
         public = json.loads(fetch_github_api(api + f"/releases/tags/v{version}", retry_missing=True))
         require(not public["draft"] and not public["prerelease"], "Release is not publicly stable")
+        require(public["tag_name"] == "v" + version, "Public release tag differs")
         assets = {asset["name"]: asset for asset in public["assets"]}
         require(set(assets) == {asset["name"] for asset in report["assets"]}, "Public release assets differ")
         for expected in report["assets"]:
             asset = assets[expected["name"]]
-            require(asset["size"] == expected["bytes"], "Public asset size differs")
+            require(asset["size"] == expected["bytes"] and asset["state"] == "uploaded", "Public asset size/state differs")
+            require(asset.get("digest") == "sha256:" + expected["sha256"], "Public asset API checksum differs")
             url = base + f"/releases/download/v{version}/" + expected["name"]
             verify_public_asset(url, expected)
-        verify_latest_feed(config["feedURL"], feed_path.read_bytes(), key)
+        latest = json.loads(fetch_github_api(api + "/releases/latest", retry_missing=True))
+        if args.require_latest or latest["tag_name"] == "v" + version:
+            require(latest["tag_name"] == "v" + version, "Published tag is not the latest release")
+            verify_latest_feed(config["feedURL"], feed_path.read_bytes(), key)
+        else:
+            # Historical releases remain independently verifiable after an OTA
+            # upgrade. Still authenticate the current feed and reject rollback.
+            current_feed = signed_feed(fetch(config["feedURL"], retry_missing=True), key)
+            current_builds = [entry.findtext(SPARKLE + "version", "") for entry in current_feed.findall("./channel/item")]
+            require(current_builds and all(number.isdecimal() for number in current_builds)
+                    and min(map(int, current_builds)) >= int(build), "Latest feed rolled back behind verified release")
+        report["latestRelease"] = latest["tag_name"]
         report["publishedURL"] = public["html_url"]
     if args.notes_output:
         args.notes_output.parent.mkdir(parents=True, exist_ok=True)

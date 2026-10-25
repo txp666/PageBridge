@@ -1,6 +1,6 @@
 # 架构与数据流
 
-本文描述 0.3.0 / build 12，包含通用文档助手、独立模型选择、OpenAlex 文献检索、Sci-Hub 全文获取与 Sparkle 自动更新。阅读工作区、引擎与归档的分版本验证见 [验证记录](VERIFICATION.md)。本次发布沿用既有翻译引擎，历史译文结论仍绑定原运行与输出哈希。
+本文描述 0.4.0 / build 13。Mac 使用 SwiftUI／PDFKit，Windows 使用 WinUI 3／本机 Python 后端，提供文档助手、独立模型选择、OpenAlex 检索与全文获取。两端复用锁定的翻译引擎；Sparkle 自动更新仅用于 Mac，Windows 本版手动下载更新。阅读工作区、引擎与归档的分版本验证见 [验证记录](VERIFICATION.md)，历史译文结论仍绑定原运行与输出哈希。
 
 PageBridge 的窗口、设置、导入导出为 SwiftUI / AppKit，PDF 阅读器使用 PDFKit。浏览器原型不参与原生运行。独立 Python worker 使用 PDFMathTranslate-next / BabelDOC 处理版面和翻译，本机 Ollama 或用户选择的 API 提供语言模型。
 

@@ -30,6 +30,8 @@ def module(filename):
 
 create = module("create-appcast.py")
 verify = module("verify-release.py")
+package = module("package-release.py")
+ci = module("release-ci.py")
 
 
 class ReleaseSignatureTests(unittest.TestCase):
@@ -246,24 +248,245 @@ class ReleaseSignatureTests(unittest.TestCase):
                 self.assertIsNone(request.get_header('Authorization'))
                 self.assertIsNone(request.get_header('Cookie'))
 
+    def test_zip_and_installer_use_anonymous_full_and_range_downloads(self):
+        data = b'a' * 64
+        for suffix in ('zip', 'exe'):
+            full = io.BytesIO(data); full.geturl = lambda:'https://release-assets.githubusercontent.com/public'
+            partial = io.BytesIO(data[:32]); partial.geturl = full.geturl
+            partial.status = 206; partial.headers = {'Content-Range':'bytes 0-31/64'}
+            expected = dict(name='fixture.'+suffix, bytes=64, sha256=hashlib.sha256(data).hexdigest())
+            with self.subTest(suffix=suffix), patch.dict(os.environ, {'GH_TOKEN':'metadata-only-test-token'}), \
+                    patch.object(verify.urllib.request, 'urlopen', side_effect=[full, partial]) as request:
+                verify.verify_public_asset('https://github.com/example/PageBridge/releases/download/v0.4.0/fixture.'+suffix, expected)
+            self.assertTrue(expected['httpRangeVerified'])
+            self.assertTrue(expected['publicSHA256Verified'])
+            self.assertEqual(request.call_args_list[1].args[0].get_header('Range'), 'bytes=0-31')
+            for call in request.call_args_list:
+                self.assertIsNone(call.args[0].get_header('Authorization'))
+                self.assertIsNone(call.args[0].get_header('Cookie'))
+
     def test_source_verification_uses_explicit_tag_root_not_new_automation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, automation = root / 'source', root / 'automation'
-            files = {'VERSION.json': b'{"version":"1.2.3"}', 'update-config.json': b'{"fixture":true}',
+            files = {'VERSION.json': b'{"version":"0.3.0"}', 'update-config.json': b'{"fixture":true}',
                      '.github/workflows/release.yml': b'name: original tag workflow\n'}
             for directory in (source, automation):
                 for name, data in files.items():
                     path = directory / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
             (automation / '.github/workflows/release.yml').write_text('name: improved recovery workflow\n')
             archive = root / 'source.zip'
-            manifest = {'version':'1.2.3', 'files':{name:dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name,data in files.items()}}
+            manifest = {'version':'0.3.0', 'files':{name:dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name,data in files.items()}}
             with zipfile.ZipFile(archive, 'w') as zipped:
-                for name, data in files.items():zipped.writestr('PageBridge-1.2.3-source/'+name,data)
-                zipped.writestr('PageBridge-1.2.3-source/SOURCE_MANIFEST.json',json.dumps(manifest))
-            self.assertEqual(verify.verify_source(archive, '1.2.3', source), 3)
+                for name, data in files.items():zipped.writestr('PageBridge-0.3.0-source/'+name,data)
+                zipped.writestr('PageBridge-0.3.0-source/SOURCE_MANIFEST.json',json.dumps(manifest))
+            self.assertEqual(verify.verify_source(archive, '0.3.0', source), 3)
             with self.assertRaisesRegex(ValueError, 'Source release configuration differs'):
-                verify.verify_source(archive, '1.2.3', automation)
+                verify.verify_source(archive, '0.3.0', automation)
+
+
+class DualPlatformSourceTests(unittest.TestCase):
+    def fixture(self, temporary):
+        root = Path(temporary) / 'source'
+        root.mkdir()
+        names = ['LICENSE', 'engine/uv.lock', 'engine/pyproject.toml', 'engine/.python-version',
+                 'engine/setup.sh', 'engine/setup-windows.ps1', 'engine/worker.py',
+                 'macOS/Package.swift', 'macOS/Package.resolved', 'desktop/bridge.py',
+                 'desktop/pagebridge/core.py', 'windows/PageBridge.Windows/PageBridge.Windows.csproj',
+                 'windows/PageBridge.Windows/packages.lock.json', 'scripts/build-windows.ps1',
+                 'scripts/windows-installer.iss', 'scripts/setup-inno.ps1',
+                 'update-config.json', '.github/workflows/release.yml']
+        files = {name: ('source fixture ' + name).encode() for name in names}
+        files['VERSION.json'] = b'{"version":"0.4.0","build":"13"}'
+        for name, data in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        subprocess.run(['git', 'init', '--quiet', str(root)], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
+        return root, files
+
+    def archive(self, destination, files):
+        prefix = 'PageBridge-0.4.0-source/'
+        manifest = dict(version='0.4.0', build='13', files={name:dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                                                         for name, data in files.items()})
+        with zipfile.ZipFile(destination, 'w') as zipped:
+            for name, data in files.items():
+                zipped.writestr(prefix + name, data)
+            zipped.writestr(prefix + 'SOURCE_MANIFEST.json', json.dumps(manifest))
+        return destination
+
+    def test_asset_schema_is_explicit_and_preserves_legacy(self):
+        self.assertEqual(len(verify.asset_names('0.3.0')), 7)
+        self.assertEqual(len(verify.asset_names('0.4.0')), 11)
+        self.assertIn('PageBridge-0.4.0-windows-x64.zip', verify.asset_names('0.4.0'))
+        with self.assertRaises(ValueError):
+            verify.asset_names('../../unsafe')
+
+    def test_both_platform_source_and_locks_are_exported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, files = self.fixture(temporary)
+            self.assertEqual({name for name, _ in package.source_files(root)}, set(files))
+            archive = self.archive(Path(temporary) / 'source.zip', files)
+            self.assertEqual(verify.verify_source(archive, '0.4.0', root), len(files))
+
+    def test_missing_windows_lock_is_not_corresponding_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, files = self.fixture(temporary)
+            files.pop('windows/PageBridge.Windows/packages.lock.json')
+            archive = self.archive(Path(temporary) / 'source.zip', files)
+            with self.assertRaisesRegex(ValueError, 'platform or dependency lock'):
+                verify.verify_source(archive, '0.4.0', root)
+
+    def test_installer_build_source_is_required(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, files = self.fixture(temporary)
+            files.pop('scripts/windows-installer.iss')
+            archive = self.archive(Path(temporary) / 'source.zip', files)
+            with self.assertRaisesRegex(ValueError, 'platform or dependency lock'):
+                verify.verify_source(archive, '0.4.0', root)
+
+    def test_self_consistent_manifest_cannot_hide_source_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, files = self.fixture(temporary)
+            files['desktop/pagebridge/core.py'] = b'different program'
+            archive = self.archive(Path(temporary) / 'source.zip', files)
+            with self.assertRaisesRegex(ValueError, 'differs from tag'):
+                verify.verify_source(archive, '0.4.0', root)
+
+    def test_manifest_cannot_omit_a_source_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, files = self.fixture(temporary)
+            files.pop('desktop/pagebridge/core.py')
+            archive = self.archive(Path(temporary) / 'source.zip', files)
+            with self.assertRaisesRegex(ValueError, 'omits or adds'):
+                verify.verify_source(archive, '0.4.0', root)
+
+    def test_tracked_windows_build_outputs_are_rejected(self):
+        for name in ('windows/PageBridge.Windows/obj/temporary.json', 'windows/PageBridge.Windows/Bin/app.exe',
+                     'desktop/__pycache__/core.pyc', 'windows/.vs/session.json'):
+            with self.subTest(name=name), patch.object(package.subprocess, 'run', return_value=Mock(stdout=name.encode()+b'\0')):
+                with self.assertRaisesRegex(RuntimeError, 'Build/cache'):
+                    package.source_files()
+
+    def test_duplicate_and_windows_escape_zip_members_are_rejected(self):
+        for names in (['same', 'same'], ['../escape'], ['C:/escape'], ['folder\\escape']):
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                verify.verify_zip_members(Mock(namelist=lambda:names))
+
+
+class DraftPublicationTests(unittest.TestCase):
+    def test_identity_binds_tag_source_workflow_and_remote(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root/'VERSION.json').write_text('{"version":"0.4.0","build":"13"}')
+            (root/'update-config.json').write_text('{"repository":"txp666/PageBridge"}')
+            workflow = root/'.github/workflows/release.yml'
+            workflow.parent.mkdir(parents=True); workflow.write_bytes(b'workflow fixture')
+            environment = dict(RELEASE_REF='refs/tags/v0.4.0', WORKFLOW_COMMIT='b'*40,
+                               GITHUB_REPOSITORY='txp666/PageBridge', GITHUB_EVENT_NAME='push')
+            for defect in (None, 'local-tag', 'remote-tag', 'workflow'):
+                head, tag = 'a'*40, 'a'*40
+                remote = 'a'*40
+                if defect == 'local-tag': tag = 'c'*40
+                if defect == 'remote-tag': remote = 'c'*40
+                shown = b'wrong workflow' if defect == 'workflow' else workflow.read_bytes()
+                values = [head, tag, remote+'\trefs/tags/v0.4.0']
+                with self.subTest(defect=defect), patch.object(ci,'ROOT',root), patch.dict(os.environ, environment), \
+                        patch.object(ci,'output', side_effect=values), patch.object(ci.subprocess,'check_output',return_value=shown), \
+                        patch.object(ci,'release_lookup',return_value=(None,None)):
+                    if defect:
+                        with self.assertRaises(ValueError):ci.identity()
+                    else:
+                        result = ci.identity()
+                        self.assertEqual(result['sourceCommit'], head)
+                        self.assertEqual(result['workflowCommit'], environment['WORKFLOW_COMMIT'])
+
+    def test_verification_dependencies_are_hash_pinned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root/'engine').mkdir()
+            (root/'engine/uv.lock').write_text('\n'.join(
+                f'[[package]]\nname="{name}"\nversion="1.0.0"\nwheels=[{{hash="sha256:{"a"*64}"}}]\n'
+                for name in ('cryptography','cffi','pycparser')))
+            lines = ci.requirements(root).splitlines()
+            self.assertEqual(len(lines), 3)
+            self.assertTrue(all('==1.0.0 --hash=sha256:' in line for line in lines))
+
+    def metadata(self):
+        return dict(draft=True, prerelease=False, tag_name='v0.4.0', target_commitish='a'*40,
+                    body='<!-- pagebridge-source:'+'a'*40+' -->', assets=[])
+
+    def fixture(self, root):
+        (root / 'dist').mkdir()
+        assets = []
+        for name in verify.asset_names('0.4.0'):
+            data = ('offline fixture ' + name).encode()
+            (root / 'dist' / name).write_bytes(data)
+            assets.append(dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+        report = dict(version='0.4.0', build='13', repository='txp666/PageBridge', assets=assets,
+                      windows=dict(status='passed'), windowsInstaller=dict(status='passed'), feedSignatureVerified=True, archiveSignatureVerified=True)
+        path = root / 'report.json'; path.write_text(json.dumps(report))
+        notes = root / 'notes.md'; notes.write_text('Release fixture.\n')
+        identity = dict(tag='v0.4.0', version='0.4.0', build='13', sourceCommit='a'*40,
+                        workflowCommit='b'*40, repository='txp666/PageBridge')
+        metadata = self.metadata()
+        metadata['assets'] = [dict(name=item['name'], size=item['bytes'], state='uploaded', digest='sha256:'+item['sha256']) for item in assets]
+        return path, notes, report, identity, metadata
+
+    def test_published_and_unrelated_drafts_are_never_overwritten(self):
+        for field, value in (('draft',False), ('prerelease',True), ('target_commitish','c'*40), ('body','unrelated')):
+            metadata = self.metadata(); metadata[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                ci.require_owned_draft(metadata, 'v0.4.0', 'a'*40)
+
+    def test_complete_upload_is_verified_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, notes, report, identity, metadata = self.fixture(root)
+            with patch.object(ci, 'ROOT', root), patch.object(ci, 'identity', return_value=identity) as identify, \
+                    patch.object(ci, 'release_lookup', return_value=('https://api.github.com/draft', self.metadata())), \
+                    patch.object(ci, 'output', return_value=json.dumps(metadata)), patch.object(ci, 'run') as run:
+                ci.publish(path, notes)
+            self.assertEqual(identify.call_count, 2)
+            self.assertIn('--draft=false', run.call_args.args[0])
+            self.assertEqual(len([call for call in run.call_args_list if '--draft=false' in call.args[0]]), 1)
+
+    def test_missing_platform_or_failed_uploaded_digest_leaves_draft(self):
+        for defect in ('missing-windows', 'missing-installer', 'unverified-installer', 'wrong-upload-digest', 'unexpected-asset', 'changed-local-asset', 'tag-moved'):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path, notes, report, identity, metadata = self.fixture(root)
+                if defect == 'missing-windows':
+                    report['assets'] = [a for a in report['assets'] if a['name'] != 'PageBridge-0.4.0-windows-x64.zip']
+                    path.write_text(json.dumps(report))
+                elif defect == 'missing-installer':
+                    report['assets'] = [a for a in report['assets'] if not a['name'].endswith('.exe')]
+                    path.write_text(json.dumps(report))
+                elif defect == 'unverified-installer':
+                    report['windowsInstaller']['status'] = 'failed'
+                    path.write_text(json.dumps(report))
+                elif defect == 'wrong-upload-digest':
+                    metadata['assets'][0]['digest'] = 'sha256:'+'0'*64
+                elif defect == 'unexpected-asset':
+                    metadata['assets'].append(dict(name='old-stale.zip'))
+                elif defect == 'changed-local-asset':
+                    (root/'dist'/report['assets'][0]['name']).write_bytes(b'changed')
+                identities = [identity, ValueError('Remote tag changed')] if defect == 'tag-moved' else [identity, identity]
+                with patch.object(ci, 'ROOT', root), patch.object(ci, 'identity', side_effect=identities), \
+                        patch.object(ci, 'release_lookup', return_value=('https://api.github.com/draft', self.metadata())), \
+                        patch.object(ci, 'output', return_value=json.dumps(metadata)), patch.object(ci, 'run') as run, self.assertRaises(ValueError):
+                    ci.publish(path, notes)
+                self.assertFalse(any('--draft=false' in call.args[0] for call in run.call_args_list))
+
+    def test_upload_error_never_reaches_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, notes, _, identity, _ = self.fixture(root)
+            with patch.object(ci, 'ROOT', root), patch.object(ci, 'identity', return_value=identity), \
+                    patch.object(ci, 'release_lookup', return_value=('https://api.github.com/draft', self.metadata())), \
+                    patch.object(ci, 'run', side_effect=subprocess.CalledProcessError(1, ['gh'])) as run, self.assertRaises(subprocess.CalledProcessError):
+                ci.publish(path, notes)
+            self.assertFalse(any('--draft=false' in call.args[0] for call in run.call_args_list))
 
 
 if __name__ == "__main__":

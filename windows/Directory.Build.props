@@ -1,0 +1,15 @@
+<Project>
+  <!-- VERSION.json is shared with macOS and the release tooling. -->
+  <PropertyGroup>
+    <PageBridgeVersionFile>$(MSBuildThisFileDirectory)..\VERSION.json</PageBridgeVersionFile>
+    <_PageBridgeVersionJSON>$([System.IO.File]::ReadAllText('$(PageBridgeVersionFile)'))</_PageBridgeVersionJSON>
+    <PageBridgeVersion>$([System.Text.RegularExpressions.Regex]::Replace('$(_PageBridgeVersionJSON)', '(?s).*&quot;version&quot;\s*:\s*&quot;([0-9]+\.[0-9]+\.[0-9]+)&quot;.*', '$1'))</PageBridgeVersion>
+    <PageBridgeBuildNumber>$([System.Text.RegularExpressions.Regex]::Replace('$(_PageBridgeVersionJSON)', '(?s).*&quot;build&quot;\s*:\s*&quot;([0-9]+)&quot;.*', '$1'))</PageBridgeBuildNumber>
+    <Version>$(PageBridgeVersion)</Version>
+    <AssemblyVersion>$(PageBridgeVersion).$(PageBridgeBuildNumber)</AssemblyVersion>
+    <FileVersion>$(AssemblyVersion)</FileVersion>
+    <InformationalVersion>$(PageBridgeVersion)+build.$(PageBridgeBuildNumber)</InformationalVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(RestoreLockedMode)' == ''">true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

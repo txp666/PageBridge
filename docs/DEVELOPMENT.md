@@ -1,12 +1,10 @@
 # 开发与构建
 
-当前版本为 **0.3.0 / build 12**。在既有阅读、批注、翻译及文档助手基础上，加入 OpenAlex 标题／关键词／DOI 检索、Sci-Hub／公开 PDF 来源选择、直接 DOI 打开和临时 WebKit 验证窗口。以下命令均从项目根目录执行。
+本指南的版本为 **0.4.0 / build 13**，包含 Mac 原生应用、Windows 11 x64 安装器和便携应用，以及配套源码。两端共享锁定翻译引擎，分别使用 SwiftUI／PDFKit 与 WinUI 3；Windows 的文档服务位于 `desktop/`。两端助手已同步采用底部操作的紧凑布局。以下命令从项目根目录执行。
 
-文献功能的实机验收已完成公开图表设计示例的搜索、站点验证、下载和去重打开。引入 Sparkle 更新器后的 Swift 测试共 **129 项，127 通过、2 项可选集成测试跳过**；引擎 655 项单元测试在此前本轮打包阶段通过。实际 CI 运行与最终包验收以 [GitHub Actions](https://github.com/txp666/PageBridge/actions)和[验证记录](VERIFICATION.md)为准，不能将本地编译结果当作 OTA 安装或 CI 发布已完成。
+历史 v0.3.0 的 CI 数量和 OTA 安装记录只属于该历史版本；本轮本地候选 GUI、后端及运行时证据见[验证记录](VERIFICATION.md)。v0.4.0 的具体标签提交、Actions run、二进制哈希和公开下载状态以对应发行记录为准，不能由工作流存在或本地编译成功推断。
 
-公开发行候选使用 build 12，取代先前仅在本机验证、不含 OTA 的 build 11。两者产物和哈希应分开记录；此前的安装包大小不适用于加入 Sparkle 后的新包。引擎模块未因更新器改变，本轮没有重新执行全文模型翻译。0.2.2 的 7 页复译与 116 页源解析影响回放继续作为历史证据保存。
-
-## 环境
+## Mac 开发环境
 
 - Apple Silicon Mac、Xcode Command Line Tools / Swift 6。
 - 部署目标 macOS 14+；实际验证系统以每次验收记录为准，不把声明目标当作已测矩阵。
@@ -18,7 +16,7 @@
 bash engine/setup.sh
 ```
 
-## 开发验证
+## 开发验证（Mac）
 
 ```sh
 engine/.venv/bin/python -B -m unittest discover -s engine/tests -v
@@ -60,7 +58,7 @@ engine/.venv/bin/python -B scripts/check-pdf-quality.py \
 
 检查器退出成功只表示基础结构检查通过。`--focus-pages all` 会为每一页生成高分辨率复核图；长篇初筛可改为具体页码，例如 `1,14,26,32,39,54,58`，但不能因此把未看的页面写成已检查。仍需复核数字/公式疑点、逐页渲染、列表和图表；链接必须检查目标类型、页码和可见文本位置，不能只数注释数量。
 
-0.1.4 的翻译验收集合为原有 6 页与 68 页文档，加上 `avalanches.pdf`、`wind-data-mining.pdf`、`regnann.pdf` 三篇公开论文，共 112 页；另有 4 页 `reproducible-research.pdf` 验证示例流程。0.3.0 本轮没有重新执行该整篇集合。页码探针用于定位问题，不能替代受影响文档的整篇重译。完整历史表格见 [验证记录](VERIFICATION.md)。
+0.1.4 的翻译验收集合为原有 6 页与 68 页文档，加上 `avalanches.pdf`、`wind-data-mining.pdf`、`regnann.pdf` 三篇公开论文，共 112 页；另有 4 页 `reproducible-research.pdf` 验证示例流程。本次界面移植和助手布局验证没有重新执行该整篇集合。页码探针用于定位问题，不能替代受影响文档的整篇重译。完整历史表格见 [验证记录](VERIFICATION.md)。
 
 每次补丁先记录新旧模块哈希并审计实际影响范围。已通过的文档只有在原生源重放和相关路径审计证明补丁不触发、请求和排版等不受影响时，才能保留原输出哈希绑定的结论；受影响或影响无法确定的文档须全文重跑、复核。局部探针成功不足以接受整篇；也不能把旧结论标成由最新模块哈希生成。比较两个完整输出时，只有单语及双语页面像素、文字、文字位置、链接全部一致的页面可以继承原结论，旧失败仍须重新核实。
 
@@ -68,7 +66,7 @@ engine/.venv/bin/python -B scripts/check-pdf-quality.py \
 
 当前候选、测试数量和每份文档的验收状态统一记录在 [验证记录](VERIFICATION.md)。记录真实模型证据时应区分普通重试与整段恢复：若完整段落仅通过普通重试恢复，不能据此声称数字保护标记已在真实模型请求中触发。保存响应的离线回放也不能写成一次新的模型请求。
 
-## 构建应用
+## 构建 Mac 应用
 
 ```sh
 bash scripts/build-app.sh
@@ -101,13 +99,35 @@ engine/.venv/bin/python -B scripts/retranslate-pdfs.py \
 
 `scripts/adopt-reviewed-results.py` 是维护工具，必须先退出应用，只接纳已完整重译、人工复核、输入/结果/四个模块哈希匹配的本轮记录；它保留旧结果并生成独立接纳报告。上述补丁影响审计不会绕过该工具的严格哈希条件，接纳成功也不代表最终应用包已通过。普通用户流程通过应用自动提交结果，不需要运行这个工具。
 
+## 构建与测试 Windows
+
+使用 Windows 11 x64 开发环境；Windows 11 ARM 上可使用 x64 兼容工具链，产物仍为 x64。准备 .NET 10 SDK 与 Windows／WinUI 构建工具；引擎脚本管理锁定的 CPython 3.12.12。不要复制 Mac 的 `engine/.venv` 到 Windows。
+
+```powershell
+./scripts/build-windows.ps1
+# 已有通过校验的开发引擎时：
+./scripts/build-windows.ps1 -SkipEngineSetup
+./engine/.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s engine/tests -v
+$env:PYTHONPATH = "$PWD/desktop"
+./engine/.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s desktop/tests -v
+Remove-Item Env:PYTHONPATH
+```
+
+正式产物为 `dist/PageBridge-0.4.0-windows-x64/`、同名便携 ZIP、`PageBridge-0.4.0-windows-x64-setup.exe` 及各自 SHA-256。构建流程通过 `scripts/setup-inno.ps1` 获取并校验固定版本的 Inno Setup，用它将同一经过验证的应用目录编译成安装器。标签触发的 Windows CI 会直接执行该步骤，不依赖维护者预先上传 EXE。默认按当前用户安装到 `%LOCALAPPDATA%\Programs\PageBridge`，用户数据仍位于独立的 `%LOCALAPPDATA%\PageBridge`。脚本发布 self-contained WinUI 应用、组装私有 Python 和桌面模块，并在组装及最终目录中执行隔离运行时检查。测试或修改包后必须重新记录完整文件清单与哈希；不要将局部文件复制进已验收 ZIP。
+
+Windows 使用系统凭据管理器。真实凭据集成测试必须在已登录的交互式桌面会话中显式设置 `PAGEBRIDGE_TEST_WINDOWS_CREDENTIALS=1`；SSH 或无凭据登录会话的 CI 只运行对应替身测试／跳过项，不能写成真实凭据通过。普通测试不应读取或删除用户保存的服务。
+
+UI 验收可使用 `--reader-validation` 独立数据目录，再分别以 `--dark`／`--light` 启动；不得关闭正常用户窗口。需要实测页内拖选、笔记编辑与导出、文内链接、文件夹和去重、助手模型与范围、原生文件对话框，并确认运行的是包内 Python。详细参数、数据路径和平台差异见 [Windows 说明](WINDOWS.md)。
+
 ## 目录与版本管理
 
 | 目录 | 内容 |
 |---|---|
 | `macOS/Sources/PageBridge` | SwiftUI/AppKit 窗口、文档库、页面导航、PDFKit 阅读器、批注与文档助手、服务设置 |
 | `macOS/Sources/PageBridgeCore` | 配置、钥匙串、进程协议、分类/批注/对话存储、助手上下文与请求 |
-| `engine` | 锁定依赖、翻译/排版/链接保护及单元测试 |
+| `windows/PageBridge.Windows` | WinUI 3 窗口、阅读器、文字与批注层、设置、在线文献和助手 |
+| `desktop/pagebridge` | Windows 文档库、系统凭据、阅读／批注／助手服务和 worker 管理 |
+| `engine` | 两端锁定依赖、翻译／排版／链接保护及单元测试 |
 | `scripts` | 构建、裁剪、真实翻译和 PDF 检查 |
 | `assets` | 生成图标原图、ICNS 和生成说明 |
 | `demos` | 公开许可原始示例、来源及哈希 |
@@ -117,15 +137,17 @@ engine/.venv/bin/python -B scripts/retranslate-pdfs.py \
 
 ## 开源交付
 
-原创程序代码采用 [AGPL-3.0-only](../LICENSE)，第三方代码、运行时和示例保留各自许可及归属。发布时同时提供 `PageBridge-0.3.0-macOS-arm64.zip`、`PageBridge-0.3.0-source.zip`、`PageBridge-0.3.0-third-party-sources.zip` 和各自的 SHA-256 校验文件；源码包应对应实际二进制构建使用的文件，不以旧的 Git 提交归档替代尚未提交的最新源码。
+原创程序代码采用 [AGPL-3.0-only](../LICENSE)，第三方代码、运行时和示例保留各自许可及归属。发布时同时提供 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、`PageBridge-0.4.0-source.zip`、`PageBridge-0.4.0-third-party-sources.zip` 和各自的 SHA-256 校验文件，加上 Mac 签名 `appcast.xml` 共 11 项发布资产；源码包应对应实际二进制构建使用的文件，不以旧的 Git 提交归档替代尚未提交的最新源码。
 
-源码归档应包含原生应用与 Core 源码、引擎适配代码、测试、构建脚本、依赖锁文件、文档、图标及有许可记录的公开示例；排除 `.git`、私有文档、模型密钥、机器配置、缓存、虚拟环境、验证输出和已构建应用。生成后独立解压并检查路径、清单与哈希，确认构建所需文件完整。第三方对应源码与分发要求见[第三方说明](../THIRD_PARTY_NOTICES.md)。
+源码归档应包含两端界面、Mac Core、Windows 桌面服务、引擎适配代码、测试、构建脚本、依赖锁文件、文档、图标及有许可记录的公开示例；排除 `.git`、私有文档、模型密钥、机器配置、缓存、虚拟环境、验证输出和已构建应用。生成后独立解压并检查路径、清单与哈希，确认构建所需文件完整。第三方对应源码与分发要求见[第三方说明](../THIRD_PARTY_NOTICES.md)。
 
 贡献流程见[贡献指南](../CONTRIBUTING.md)，敏感信息报告见[安全说明](../SECURITY.md)。公开上传应使用已复核的产物及匹配源码；发布自动化与签名流程见下文。
 
-## 应用内更新与签名
+## 应用内更新与签名（Mac）
 
-原生应用固定使用 Sparkle 2.10.0；SwiftPM 版本与提交锁定在 `macOS/Package.swift` 和 `macOS/Package.resolved`。`update-config.json` 记录公开仓库、HTTPS feed、公钥和 Sparkle 版本，打包时写入应用 Info.plist。更新源为：
+Windows 当前不提供 OTA 或 Authenticode 签名，使用新版安装器或手动更新完整便携目录；Windows 资产不使用 Mac 的 Sparkle feed 或私钥。
+
+Mac 应用固定使用 Sparkle 2.10.0；SwiftPM 版本与提交锁定在 `macOS/Package.swift` 和 `macOS/Package.resolved`。`update-config.json` 记录公开仓库、HTTPS feed、公钥和 Sparkle 版本，打包时写入应用 Info.plist。更新源为：
 
 ```text
 https://github.com/txp666/PageBridge/releases/latest/download/appcast.xml
@@ -148,8 +170,9 @@ CI 不传 `--account`，由 `create-appcast.py` 从环境中的 `SPARKLE_PRIVATE
 ## GitHub CI 与发布
 
 - `.github/workflows/ci.yml`：`main` 推送及 Pull Request 触发 Swift、锁定引擎与发布脚本测试，使用官方 `macos-15` runner 并检查 `uname -m` 为 `arm64`；普通 CI 不持有 OTA 私钥。
-- `.github/workflows/release.yml`：`v*` 标签触发仓库／标签身份检查、完整测试、构建、三份归档及 SHA-256、签名 appcast，并独立解压验证应用。先上传 draft Release，再通过 GitHub API 比对每项资产的状态、字节数与 SHA-256，全部一致后公开。
-- 版本由 `VERSION.json` 提供；每次发布同时更新语义版本、严格递增的 build、CHANGELOG 与使用说明。标签必须与版本匹配，例如版本 `0.3.0` 对应 `v0.3.0`。发布前检查已有 latest 的 build，拒绝相同或更小的 build。
+- `.github/workflows/windows.yml`：Windows 常规测试与便携包构建，上传运行时验证和构建产物；不持有 Mac OTA 私钥。
+- `.github/workflows/release.yml`：`v*` 标签触发两平台联合发布，检查仓库／标签身份，分别测试、构建 Mac 与 Windows，Windows job 直接用 Inno Setup 编译安装器，提供四份 ZIP、Windows setup.exe、各自 SHA-256 和 Mac 签名 appcast，共 11 项。两端产物齐备且通过草稿资产核验后才公开；独立检查每项资产状态、大小和哈希。
+- 版本由 `VERSION.json` 提供；每次发布同时更新语义版本、严格递增的 build、CHANGELOG 与使用说明。标签必须与版本匹配，例如版本 `0.4.0` 对应 `v0.4.0`。发布前检查已有 latest 的 build，拒绝相同或更小的 build。
 - 先合入通过 CI 的提交，再对同一提交创建发布标签。已经公开的标签和资产不重打、不移动或覆盖；需要修复时发布新版本和更高 build。失败的 draft 应保留证据并查明失败点，不能通过改写旧公开资产跳过校验。
 - 发布后用 `engine/.venv/bin/python scripts/verify-release.py --published --output validation/published-release-check.json` 检查公开 Release、全部下载文件哈希、ZIP 的 HTTP Range `206` 与 latest feed。配套项目源码和第三方源码应与该二进制同页提供，签名 feed 指向该版本的固定应用 ZIP URL。
 
@@ -157,18 +180,18 @@ CI 不传 `--account`，由 `create-appcast.py` 从环境中的 `SPARKLE_PRIVATE
 
 CI 使用 `macos-15` 的 arm64 runner，明确选择 Xcode 16.4，并安装固定 uv 0.9.17，再按锁文件安装引擎。若上传中断，只有相同标签、相同提交且带本工作流来源标记的未发布 draft 可恢复；已公开发行不能覆盖。
 
-发布工作流修复后，可从 main 手动重跑已有版本标签，无需移动标签：
+可以从 main 手动重跑已有的未发布版本标签，但当前发布器要求执行工作流与标签中的 `release.yml` 字节相同，不能借此替换标签原有的发布指令：
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.3.0
+gh workflow run release.yml --ref main -f tag=v0.4.0
 ```
 
-手动运行仍完整测试、构建和验证该标签的源码，并记录源码提交与工作流提交。只有同标签、同源码提交且带本工作流来源标记的 draft 可继续；已公开版本会被拒绝。草稿通过 `gh release view --json apiUrl` 定位，不能依赖只查已发布版本的 tag REST 端点。
+手动运行仍完整测试、构建和验证该标签的源码，并记录源码提交与工作流提交。工作流与标签不一致时会拒绝；需要修改发布流程时，应重新评审并按不可变标签规则安排后续版本。只有同标签、同源码提交且带本工作流来源标记的 draft 可继续；已公开版本会被拒绝。草稿通过 `gh release view --json apiUrl` 定位，不能依赖只查已发布版本的 tag REST 端点。
 
 公开发行后可独立重跑只读校验，不构建或替换已发布资产：
 
 ```sh
-gh workflow run verify-release.yml --ref main -f tag=v0.3.0
+gh workflow run verify-release.yml --ref main -f tag=v0.4.0
 ```
 
-它分别检出当前验证工具和原标签源码，检查公开下载、SHA-256、ZIP CRC、三份 ZIP 的 HTTP Range 206、源码配置、上游源码及 OTA 签名。GitHub REST 元数据可使用仓库只读 Token，严格限定 `api.github.com`；安装包、源码、feed 的请求仍不携带 Token，以验证真实公开可下载。当前验证还要求该版本与 latest OTA feed 一致。
+它分别检出当前验证工具和原标签源码，检查公开下载、SHA-256、ZIP CRC、应用／源码下载的 HTTP Range 206、Windows 安装器及便携负载关联、源码配置、上游源码及 OTA 签名。GitHub REST 元数据可使用仓库只读 Token，严格限定 `api.github.com`；安装包、源码、feed 的请求仍不携带 Token，以验证真实公开可下载。发布 CI 使用 `--require-latest` 要求该版本与 latest OTA feed 一致；独立校验历史版本时允许 latest 已更新，但仍校验当前 feed 签名并拒绝版本回退。

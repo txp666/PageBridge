@@ -42,6 +42,8 @@ jobs:
         run: swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable-sandbox 2>&1 | tee validation/ci/swift-tests.log
       - name: Test translation engine with local fixtures
         run: engine/.venv/bin/python -B -m unittest discover -s engine/tests -v 2>&1 | tee validation/ci/engine-tests.log
+      - name: Test desktop backend
+        run: PYTHONPATH=desktop engine/.venv/bin/python -B -m unittest discover -s desktop/tests -v 2>&1 | tee validation/ci/desktop-tests.log
       - name: Test packaging and release validation
         run: engine/.venv/bin/python -B -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee validation/ci/release-tests.log
       - name: Upload test logs

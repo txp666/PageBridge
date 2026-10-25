@@ -197,19 +197,20 @@ class WorkerTests(unittest.TestCase):
     def test_subprocess_protocol_and_no_secret_echo(self):
         data = request()
         data["service"]["baseURL"] = "https://user:fixture-secret-do-not-log@example.com"
-        result = subprocess.run([sys.executable, str(Path(worker.__file__))], input=json.dumps(data) + "\n", text=True, capture_output=True, timeout=20)
+        result = subprocess.run([sys.executable, str(Path(worker.__file__))], input=json.dumps(data) + "\n", text=True, encoding="utf-8", capture_output=True, timeout=20)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("fixture-secret", result.stdout + result.stderr)
         lines = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(lines[-1]["type"], "error")
         self.assertEqual(lines[-1]["jobId"], data["jobId"])
 
+    @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process-group signal test; Windows uses stdin cancellation")
     def test_sigterm_cancels_inflight_probe(self):
         release = threading.Event()
         with api_server(delay=release) as (port, _):
             data = request()
             data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
-            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
             try:
                 process.stdin.write(json.dumps(data) + "\n")
                 process.stdin.flush()
@@ -230,6 +231,7 @@ class WorkerTests(unittest.TestCase):
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
 
+    @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process-group signal test; Windows uses stdin cancellation")
     def test_sigterm_cancels_actual_translation_subprocess(self):
         # Real official engine process and real PDF, delayed local HTTP fixture.
         # This validates cancellation, not translation quality or model success.
@@ -245,7 +247,7 @@ class WorkerTests(unittest.TestCase):
             data = request("translate")
             data.update(inputPath=str(source), outputDirectory=str(root / "output"), sourceLanguage="en", targetLanguage="zh-CN", pages=None)
             data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
-            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
             try:
                 process.stdin.write(json.dumps(data) + "\n")
                 process.stdin.flush()
@@ -266,6 +268,122 @@ class WorkerTests(unittest.TestCase):
                 release.set()
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+
+
+class CrossPlatformProtocolTests(unittest.TestCase):
+    def test_raw_input_preserves_coalesced_lines_and_bounds_input(self):
+        with tempfile.TemporaryFile() as stream:
+            stream.write(b'{"first":1}\n{"second":2}\n')
+            stream.seek(0)
+            reader = worker.ProtocolInput(stream.fileno())
+            self.assertEqual(json.loads(reader.readline()), {"first": 1})
+            self.assertEqual(json.loads(reader.readline()), {"second": 2})
+            self.assertEqual(reader.readline(), b"")
+            stream.seek(0)
+            stream.write(b"x" * (worker.MAX_REQUEST_BYTES + 100))
+            stream.seek(0)
+            self.assertEqual(len(worker.ProtocolInput(stream.fileno()).readline()), worker.MAX_REQUEST_BYTES + 1)
+
+    def test_windows_run_does_not_register_unavailable_signal_handlers(self):
+        from unittest.mock import AsyncMock
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            data = request()
+            with patch.object(worker.sys, "platform", "win32"), \
+                    patch.object(loop, "add_signal_handler") as handler, \
+                    patch.object(worker, "probe", new_callable=AsyncMock) as probe:
+                await worker.run(data, worker.Events(io.StringIO(), data))
+                handler.assert_not_called()
+                probe.assert_awaited_once()
+        asyncio.run(exercise())
+
+    def test_control_cancel_ignores_wrong_attempt_then_cancels_inflight_probe(self):
+        release = threading.Event()
+        with api_server(delay=release) as (port, _):
+            data = request()
+            data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
+            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            try:
+                process.stdin.write(json.dumps(data) + "\n")
+                process.stdin.flush()
+                self.assertEqual(json.loads(process.stdout.readline())["type"], "ready")
+                self.assertEqual(json.loads(process.stdout.readline())["stage"], "probe")
+                control = {"protocolVersion": 1, "jobId": data["jobId"], "attemptId": "wrong-attempt", "action": "cancel"}
+                process.stdin.write(json.dumps(control) + "\n")
+                process.stdin.flush()
+                time.sleep(0.1)
+                self.assertIsNone(process.poll())
+                control["attemptId"] = data["attemptId"]
+                stdout, stderr = process.communicate(json.dumps(control) + "\n", timeout=10)
+                self.assertEqual(process.returncode, 130)
+                self.assertEqual(json.loads(stdout.splitlines()[-1])["stage"], "cancelled")
+                self.assertNotIn('"type": "result"', stdout)
+                self.assertNotIn("fixture-secret", stdout + stderr)
+            finally:
+                release.set()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+
+    def test_completed_worker_exits_while_host_keeps_stdin_open(self):
+        with api_server() as (port, _):
+            data = request()
+            data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
+            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            try:
+                process.stdin.write(json.dumps(data) + "\n")
+                process.stdin.flush()
+                events = [json.loads(process.stdout.readline()) for _ in range(3)]
+                self.assertEqual(events[-1]["type"], "result")
+                self.assertEqual(process.wait(timeout=10), 0)
+                self.assertEqual(process.stderr.read(), "")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdin.close()
+                process.stdout.close()
+                process.stderr.close()
+
+    def test_control_cancel_cleans_actual_translation_subprocess(self):
+        import pymupdf
+        release = threading.Event()
+        with tempfile.TemporaryDirectory(prefix="pagebridge-中文-") as directory, api_server(delay=release) as (port, calls):
+            root = Path(directory)
+            source = root / "原始文档.pdf"
+            with pymupdf.open() as pdf:
+                pdf.new_page().insert_text((60, 60), "The pressure sensor measures water pressure.")
+                pdf.save(source)
+            source_hash = worker.sha256(source)
+            data = request("translate")
+            data.update(inputPath=str(source), outputDirectory=str(root / "output"), sourceLanguage="en", targetLanguage="zh-CN", pages=None)
+            data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
+            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            try:
+                process.stdin.write(json.dumps(data, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+                deadline = time.monotonic() + 60
+                while not calls and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(calls, "Translation subprocess did not reach local fixture")
+                control = {"protocolVersion": 1, "jobId": data["jobId"], "attemptId": data["attemptId"], "action": "cancel"}
+                stdout, stderr = process.communicate(json.dumps(control) + "\n", timeout=20)
+                self.assertEqual(process.returncode, 130)
+                events = [json.loads(line) for line in stdout.splitlines()]
+                self.assertEqual(events[-1]["stage"], "cancelled")
+                self.assertFalse(any(event["type"] == "result" for event in events))
+                self.assertFalse((root / "output" / ("result-" + data["attemptId"])).exists())
+                self.assertFalse(list((root / "output").glob(".pagebridge-*")))
+                self.assertEqual(worker.sha256(source), source_hash)
+                self.assertNotIn("fixture-secret", stdout + stderr)
+            finally:
+                release.set()
+                if process.poll() is None:
+                    process.kill()
                     process.wait()
 
 

@@ -1,4 +1,4 @@
-name: Release macOS
+name: Release macOS and Windows
 
 on:
   push:
@@ -6,31 +6,34 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag to build and publish (for example v0.3.0)
+        description: Existing version tag to build and publish (for example v0.4.0)
         required: true
         type: string
 
 permissions:
   contents: read
 
-# Serialize all versions so two tags cannot race to replace the latest feed.
+# Serialize every version and rerun: only one workflow may replace the OTA feed.
 concurrency:
+  # Retain the original group so old tagged workflow reruns also serialize.
   group: public-macos-release
   cancel-in-progress: false
 
+env:
+  RELEASE_REF: ${{ inputs.tag || github.ref }}
+  WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+
 jobs:
-  release:
+  identity:
     if: github.repository == 'txp666/PageBridge'
-    runs-on: macos-15
-    timeout-minutes: 90
-    permissions:
-      contents: write
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
-      CLANG_MODULE_CACHE_PATH: /tmp/pagebridge-clang-cache
-      SWIFT_MODULECACHE_PATH: /tmp/pagebridge-swift-cache
-      RELEASE_REF: ${{ inputs.tag || github.ref }}
-      WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      build: ${{ steps.identity.outputs.build }}
+      sourceCommit: ${{ steps.identity.outputs.sourceCommit }}
+      workflowCommit: ${{ steps.identity.outputs.workflowCommit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,144 +43,239 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Validate tag and release identity
+      - name: Validate immutable tag, workflow and owned draft
         id: identity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release-ci.py identity --output validation/release/identity.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-identity-${{ github.run_id }}
+          path: validation/release/identity.json
+          retention-days: 30
+
+  macos:
+    needs: identity
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      CLANG_MODULE_CACHE_PATH: /tmp/pagebridge-clang-cache
+      SWIFT_MODULECACHE_PATH: /tmp/pagebridge-swift-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.sourceCommit }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Check architecture, toolchain and signing configuration
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           test "$(uname -m)" = arm64
-          mkdir -p validation/release
+          mkdir -p validation/release-macos
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           swift --version
-          python3 - <<'PY'
-          import json, os, re, subprocess
-          from pathlib import Path
-          release = json.loads(Path('VERSION.json').read_text())
-          config = json.loads(Path('update-config.json').read_text())
-          version, build = release['version'], str(release['build'])
-          assert re.fullmatch(r'\d+\.\d+\.\d+', version) and build.isdecimal() and int(build) > 0
-          ref = os.environ['RELEASE_REF']
-          tag = ref.removeprefix('refs/tags/')
-          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Release ref must be a version tag'
-          assert tag == 'v' + version, 'Tag must exactly match VERSION.json'
-          assert config['repository'] == os.environ['GITHUB_REPOSITORY'] == 'txp666/PageBridge'
-          tag_commit = subprocess.check_output(['git','rev-parse','refs/tags/'+tag+'^{commit}'], text=True).strip()
-          assert tag_commit == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
-          # REST /releases/tags/{tag} does not find unpublished drafts. gh's
-          # draft-aware lookup gives the stable release ID endpoint instead.
-          found = subprocess.run(['gh','release','view',tag,'--repo',config['repository'],'--json','apiUrl'], capture_output=True, text=True)
-          if found.returncode:
-              assert 'release not found' in found.stderr.lower(), 'Release lookup failed: ' + found.stderr
-          else:
-              api_url = json.loads(found.stdout)['apiUrl']
-              existing = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
-              assert existing['draft'], 'Refusing to overwrite a published release. Publish a new version instead.'
-              assert existing['tag_name'] == tag, 'Draft tag differs'
-              marker = '<!-- pagebridge-source:' + tag_commit + ' -->'
-              assert existing['target_commitish'] == tag_commit and marker in existing['body'], 'Draft does not belong to this workflow and commit'
-          identity = dict(tag=tag, sourceCommit=tag_commit, workflowCommit=os.environ['WORKFLOW_COMMIT'], event=os.environ['GITHUB_EVENT_NAME'])
-          Path('validation/release/identity.json').write_text(json.dumps(identity, indent=2) + '\n')
-          print(json.dumps(identity))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'version={version}\nbuild={build}\ntag={tag}\n')
-          PY
-      - name: Install pinned uv bootstrap
-        run: python3 -m pip install --target engine/.tools uv==0.9.17
-      - name: Check signing configuration
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: |
-          python3 - <<'PY'
-          import os
-          if not os.environ.get('SPARKLE_PRIVATE_KEY','').strip():
-              raise SystemExit('Set the SPARKLE_PRIVATE_KEY repository secret before publishing.')
-          PY
+          python3 -c 'import os; assert os.environ.get("SPARKLE_PRIVATE_KEY", "").strip(), "Set the SPARKLE_PRIVATE_KEY repository secret before publishing"'
       - name: Install locked translation engine
-        run: bash engine/setup.sh 2>&1 | tee validation/release/engine-setup.log
-      - name: Test Swift application
-        run: swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable-sandbox 2>&1 | tee validation/release/swift-tests.log
-      - name: Test engine and release tooling
         run: |
-          engine/.venv/bin/python -B -m unittest discover -s engine/tests -v 2>&1 | tee validation/release/engine-tests.log
-          engine/.venv/bin/python -B -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee validation/release/release-tests.log
-      - name: Build native application and verify bundle
+          python3 -m pip install --target engine/.tools uv==0.9.17
+          bash engine/setup.sh 2>&1 | tee validation/release-macos/engine-setup.log
+      - name: Test Swift application and shared backends
         run: |
-          bash scripts/build-app.sh 2>&1 | tee validation/release/build.log
-          python3 scripts/verify-bundle.py --output validation/release/bundle.json
-      - name: Package application and corresponding sources
+          swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable-sandbox 2>&1 | tee validation/release-macos/swift-tests.log
+          engine/.venv/bin/python -B -m unittest discover -s engine/tests -v 2>&1 | tee validation/release-macos/engine-tests.log
+          PYTHONPATH=desktop engine/.venv/bin/python -B -m unittest discover -s desktop/tests -v 2>&1 | tee validation/release-macos/desktop-tests.log
+          engine/.venv/bin/python -B -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee validation/release-macos/release-tests.log
+      - name: Build, package and recheck the extracted Mac app
         run: |
-          python3 scripts/package-release.py
-          python3 scripts/fetch-third-party-sources.py
-      - name: Sign and verify OTA feed
+          bash scripts/build-app.sh 2>&1 | tee validation/release-macos/build.log
+          python3 scripts/verify-bundle.py --output validation/release-macos/bundle.json
+          python3 scripts/package-release.py --app-only
+          ditto -x -k "dist/PageBridge-${{ needs.identity.outputs.version }}-macOS-arm64.zip" validation/release-macos/unpacked
+          python3 scripts/verify-bundle.py --app validation/release-macos/unpacked/PageBridge.app --output validation/release-macos/unpacked-bundle.json
+      - name: Sign OTA archive and feed with public-key verification
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: engine/.venv/bin/python scripts/create-appcast.py
-      - name: Verify complete release and increasing build number
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          engine/.venv/bin/python scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md
-          ditto -x -k "dist/PageBridge-${{ steps.identity.outputs.version }}-macOS-arm64.zip" validation/release/unpacked
-          python3 scripts/verify-bundle.py --app validation/release/unpacked/PageBridge.app --output validation/release/unpacked-bundle.json
-      - name: Create draft, verify uploaded assets, and publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
-        run: |
-          python3 - <<'PY'
-          import json, os, subprocess
-          from pathlib import Path
-          tag, version = os.environ['RELEASE_TAG'], os.environ['RELEASE_VERSION']
-          repo = os.environ['GITHUB_REPOSITORY']
-          # Check the tag still resolves to the commit that was built.
-          refs = subprocess.check_output(['git','ls-remote','origin','refs/tags/'+tag,'refs/tags/'+tag+'^{}'], text=True)
-          mapping = {line.split()[1]:line.split()[0] for line in refs.splitlines()}
-          remote = mapping.get('refs/tags/'+tag+'^{}', mapping.get('refs/tags/'+tag))
-          commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
-          assert remote == commit, 'Remote tag changed during build'
-          report = json.loads(Path('validation/release/assets.json').read_text())
-          assets = [str(Path('dist')/item['name']) for item in report['assets']]
-          marker = '<!-- pagebridge-source:' + commit + ' -->'
-          notes = Path('validation/release/notes.md')
-          notes.write_text(notes.read_text() + '\n' + marker + '\n')
-          found = subprocess.run(['gh','release','view',tag,'--repo',repo,'--json','apiUrl'], capture_output=True, text=True)
-          if found.returncode == 0:
-              api_url = json.loads(found.stdout)['apiUrl']
-              existing = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
-              assert existing['draft'] and existing['tag_name'] == tag and existing['target_commitish'] == commit and marker in existing['body'], 'Refusing to modify an unrelated or published release'
-              subprocess.run(['gh','release','upload',tag,'--repo',repo,'--clobber',*assets], check=True)
-              subprocess.run(['gh','release','edit',tag,'--repo',repo,'--title','PageBridge '+version,'--notes-file',str(notes)], check=True)
-          else:
-              assert 'release not found' in found.stderr.lower(), 'Release lookup failed: ' + found.stderr
-              # Create fails safely if a release appeared since the identity check.
-              subprocess.run(['gh','release','create',tag,'--repo',repo,'--verify-tag','--draft','--target',commit,
-                              '--title','PageBridge '+version,'--notes-file',str(notes),*assets], check=True)
-              api_url = json.loads(subprocess.check_output(['gh','release','view',tag,'--repo',repo,'--json','apiUrl'], text=True))['apiUrl']
-          # A failed upload leaves a draft, never a partially populated public feed.
-          metadata = json.loads(subprocess.check_output(['gh','api',api_url], text=True))
-          assert metadata['draft'] and not metadata['prerelease']
-          uploaded = {item['name']:item for item in metadata['assets']}
-          assert set(uploaded) == {item['name'] for item in report['assets']}
-          for expected in report['assets']:
-              actual = uploaded[expected['name']]
-              assert actual['size'] == expected['bytes'] and actual['state'] == 'uploaded', 'Uploaded asset size/state differs'
-              assert actual.get('digest') == 'sha256:' + expected['sha256'], 'Uploaded asset SHA-256 differs'
-          subprocess.run(['gh','release','edit',tag,'--repo',repo,'--draft=false','--latest'], check=True)
-          PY
-      - name: Verify public downloads and latest OTA feed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: engine/.venv/bin/python scripts/verify-release.py --published --output validation/release/published.json
-      - name: Upload release validation logs
+      - name: Save Mac release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets-macos-${{ github.run_id }}
+          path: |
+            dist/PageBridge-*-macOS-arm64.zip
+            dist/PageBridge-*-macOS-arm64.zip.sha256
+            dist/appcast.xml
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save Mac validation evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-validation-${{ github.run_id }}
+          name: release-validation-macos-${{ github.run_id }}
           path: |
-            validation/release/*.log
-            validation/release/*.json
+            validation/release-macos/*.log
+            validation/release-macos/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  windows:
+    needs: identity
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes for package verification
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.sourceCommit }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install locked Windows engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path validation/windows -Force | Out-Null
+          & engine/setup-windows.ps1 *> validation/windows/setup.log
+      - name: Install the hash-pinned official Inno Setup compiler
+        run: |
+          $Iscc = & scripts/setup-inno.ps1
+          if (!(Test-Path -LiteralPath $Iscc -PathType Leaf)) { throw 'Inno Setup compiler is missing.' }
+          "PAGEBRIDGE_ISCC=$Iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test worker, desktop backend and packaging boundaries
+        run: |
+          & engine/.venv/Scripts/python.exe -B -m unittest discover -s engine/tests -v *> validation/windows/engine-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'Engine tests failed.' }
+          $env:PYTHONPATH = Join-Path $PWD 'desktop'
+          & engine/.venv/Scripts/python.exe -B -m unittest discover -s desktop/tests -v *> validation/windows/desktop-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop tests failed.' }
+          Remove-Item Env:PYTHONPATH
+          & engine/.venv/Scripts/python.exe -B -m unittest discover -s scripts -p 'test_windows*.py' -v *> validation/windows/packaging-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging tests failed.' }
+      - name: Compile WinUI, package ZIP and compile Setup.exe with Inno Setup
+        run: |
+          & scripts/build-windows.ps1 -SkipEngineSetup *> validation/windows/build.log
+      - name: Recheck the private engine extracted from the release ZIP
+        env:
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          $Package = "PageBridge-$env:RELEASE_VERSION-windows-x64"
+          Expand-Archive -LiteralPath "dist/$Package.zip" -DestinationPath validation/windows/unpacked
+          & engine/.venv/Scripts/python.exe scripts/verify-windows-engine.py --engine "validation/windows/unpacked/$Package/resources/engine" --output validation/windows/unpacked-engine.json
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted Windows package engine verification failed.' }
+      - name: Install, verify every installed file, test the engine and uninstall
+        env:
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          $Package = "PageBridge-$env:RELEASE_VERSION-windows-x64"
+          & scripts/test-windows-installer.ps1 -Installer "dist/$Package-setup.exe" -PackageDirectory "dist/$Package" -Output validation/windows/installer.json *> validation/windows/installer-test.log
+      - name: Save Windows release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets-windows-${{ github.run_id }}
+          path: |
+            dist/PageBridge-*-windows-x64.zip
+            dist/PageBridge-*-windows-x64.zip.sha256
+            dist/PageBridge-*-windows-x64-setup.exe
+            dist/PageBridge-*-windows-x64-setup.exe.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save Windows validation evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-windows-${{ github.run_id }}
+          path: |
+            validation/windows/*.json
+            validation/windows/*.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+  sources:
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.sourceCommit }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Package both platform sources and pinned upstream source materials
+        run: |
+          python3 scripts/package-release.py --source-only
+          python3 scripts/fetch-third-party-sources.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets-sources-${{ github.run_id }}
+          path: |
+            dist/PageBridge-*-source.zip
+            dist/PageBridge-*-source.zip.sha256
+            dist/PageBridge-*-third-party-sources.zip
+            dist/PageBridge-*-third-party-sources.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [identity, macos, windows, sources]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.sourceCommit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Collect only this run's verified platform and source artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-assets-*-${{ github.run_id }}
+          merge-multiple: true
+          path: dist
+          digest-mismatch: error
+      - name: Install only hash-pinned public verification libraries
+        run: |
+          python3 scripts/release-ci.py requirements --output /tmp/pagebridge-release-verification.txt
+          python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r /tmp/pagebridge-release-verification.txt
+      - name: Verify all eleven assets, both platform sources and increasing OTA build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md
+      - name: Upload one draft, check every digest, then publish both platforms together
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release-ci.py publish
+      - name: Verify anonymous public downloads, SHA-256, Range and latest OTA feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify-release.py --published --require-latest --output validation/release/published.json
+      - name: Save complete publication evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-publish-${{ github.run_id }}
+          path: validation/release/*.json
           if-no-files-found: ignore
           retention-days: 30
 

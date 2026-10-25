@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive the verified Mac app and the current, non-ignored project source."""
+"""Archive the verified Mac app and corresponding source for both platforms."""
 import argparse
 import hashlib
 import json
@@ -31,15 +31,17 @@ def finish(temporary, destination):
     print(f"{destination.name}: {destination.stat().st_size:,} bytes")
 
 
-def source_files():
+def source_files(source_root=None):
     # Include the working copy of tracked files AND new non-ignored files. git
     # archive HEAD would silently omit unreleased application source.
+    source_root = Path(source_root) if source_root is not None else ROOT
     result = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-                            cwd=ROOT, check=True, capture_output=True)
-    allowed_roots = {"macOS", "engine", "scripts", "docs", "assets", "demos", ".github"}
+                            cwd=source_root, check=True, capture_output=True)
+    allowed_roots = {"macOS", "windows", "desktop", "engine", "scripts", "docs", "assets", "demos", ".github"}
     allowed_files = {".gitignore", "VERSION.json", "update-config.json", "LICENSE", "README.md", "CHANGELOG.md",
                      "DESIGN.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"}
-    banned_parts = {".git", "node_modules", ".venv", ".build", "__pycache__", ".cache", ".tools", ".artifacts"}
+    banned_parts = {".git", "node_modules", ".venv", ".build", "__pycache__", ".cache", ".tools", ".artifacts",
+                    "bin", "obj", ".vs", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
     files = []
     for name in sorted(set(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw)):
         relative = Path(name)
@@ -47,13 +49,13 @@ def source_files():
             raise RuntimeError("Unsafe source path")
         if relative.parts[0] not in allowed_roots and name not in allowed_files:
             raise RuntimeError(f"Unreviewed source root: {name}")
-        if banned_parts.intersection(relative.parts):
+        if banned_parts.intersection(part.lower() for part in relative.parts):
             raise RuntimeError(f"Build/cache files must not be tracked: {name}")
         if relative.suffix.lower() in {".key", ".pem", ".p12", ".pfx", ".mobileprovision", ".keychain", ".keychain-db"}:
             raise RuntimeError(f"Credential-shaped file must not be tracked: {name}")
         if relative.name == ".env" or relative.name.startswith(".env.") and relative.name != ".env.example":
             raise RuntimeError(f"Environment file must not be tracked: {name}")
-        path = ROOT / relative
+        path = source_root / relative
         if not path.exists():
             continue  # Deleted working-tree files are not current source.
         if path.is_symlink() or not path.is_file():
