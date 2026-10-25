@@ -123,7 +123,9 @@ public sealed class BackendClient : IDisposable
         // ExchangeAsync replaces this same-length placeholder with a fresh ID.
         _ = SerializeRequest(request);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, shutdown.Token);
-        lifetime.CancelAfter(TimeSpan.FromSeconds(action is "import" or "export" or "export_annotations" or "export_notes" ? 120 : 30));
+        // A timeout kills the session; update_prepare_install re-hashes an
+        // installer of up to 2 GB, which can be slow on HDDs or under AV scans.
+        lifetime.CancelAfter(TimeSpan.FromSeconds(action is "import" or "export" or "export_annotations" or "export_notes" or "update_prepare_install" ? 120 : 30));
         bool acquired = false, received = false;
         LocalSession? session = null;
         try

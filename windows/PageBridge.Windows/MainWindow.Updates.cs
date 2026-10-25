@@ -39,6 +39,7 @@ public sealed partial class MainWindow
         JsonNode? snapshot = null;
         string state = "checking";
         bool requestPending = false, cancelPending = false, installRequested = false;
+        string? commandError = null;
         Task? pollTask = null;
         bool Active() => state is "checking" or "downloading";
         void Render()
@@ -57,7 +58,7 @@ public sealed partial class MainWindow
                 "current" => "当前已是最新版本", "cancelled" => "已取消", "unsupported" => "需要更新 Windows",
                 "error" => "暂时无法获取更新", _ => "检查 PageBridge 更新"
             };
-            details.Text = state switch
+            details.Text = !Active() && commandError is not null ? commandError : state switch
             {
                 "checking" => cancelPending ? "正在取消检查，请稍候。" : "从官方发布页获取更新信息。",
                 "available" => $"安装包大小 {((snapshot?["update"]?["bytes"]?.GetValue<long>() ?? 0) / 1048576d):N1} MB。点击下载后开始传输。",
@@ -81,13 +82,17 @@ public sealed partial class MainWindow
         }
         void ReportError(Exception error)
         {
-            snapshot = new JsonObject { ["state"] = "error", ["error"] = error.Message };
+            // A failed call leaves the backend state unchanged, so the next poll
+            // must not erase the message. Keep it until the next command or
+            // until a poll shows a new operation under way.
+            commandError = error.Message;
+            snapshot ??= new JsonObject { ["state"] = "error" };
             cancelPending = false; Render();
         }
         async Task CommandAsync(string action)
         {
             if (requestPending || polling.IsCancellationRequested) return;
-            requestPending = true; Render();
+            requestPending = true; commandError = null; Render();
             try { snapshot = await backend.CallAsync(action); }
             catch (Exception error) { if (!windowClosed) ReportError(error); }
             finally { requestPending = false; Render(); }
@@ -104,7 +109,8 @@ public sealed partial class MainWindow
                         try
                         {
                             snapshot = await backend.CallAsync("update_status");
-                            if (Text(snapshot, "state") is not ("checking" or "downloading")) cancelPending = false;
+                            if (Text(snapshot, "state") is "checking" or "downloading") commandError = null;
+                            else cancelPending = false;
                             Render();
                         }
                         catch (Exception error) { if (!windowClosed && !polling.IsCancellationRequested) ReportError(error); }
@@ -166,23 +172,23 @@ public sealed partial class MainWindow
             await PersistReadingAsync();
             if (pendingReading.Count != 0 || savingReading) throw new InvalidOperationException("阅读位置未保存成功，已暂停安装。请稍后重试。");
             var prepared = await backend.CallAsync("update_prepare_install");
-            string path = Path.GetFullPath(Text(prepared, "path"));
-            string cache = Path.GetFullPath(Path.Combine(backend.DataRoot, "updates"));
-            if (!path.StartsWith(cache + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("更新安装包路径无效。");
-            // Reject cache junctions/symlinks. Opening without write/delete
-            // sharing also refuses pre-existing writable handles to the EXE.
-            for (string? candidate = path; candidate is not null; candidate = Path.GetDirectoryName(candidate))
-            {
-                if ((File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("更新缓存包含链接，请重新下载。");
-                if (string.Equals(candidate, backend.DataRoot, StringComparison.OrdinalIgnoreCase)) break;
-            }
             long expectedBytes = prepared?["bytes"]?.GetValue<long>() ?? 0;
             string expectedHash = Text(prepared, "sha256");
             if (expectedBytes <= 0 || expectedBytes > 2L * 1024 * 1024 * 1024 || expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit)
                 || (prepared?["build"]?.GetValue<int>() ?? 0) <= AppVersion.BuildNumber)
                 throw new InvalidOperationException("更新包校验信息无效，已停止安装。");
+            // Python reports a fully resolved path, but the data root may sit
+            // behind a junction, subst or mapped drive. Accept only the expected
+            // file name and rebuild the path under the configured root.
+            string cache = Path.Combine(backend.DataRoot, "updates");
+            string name = Path.GetFileName(Text(prepared, "path"));
+            if (!string.Equals(name, $"PageBridge-{Text(prepared, "version")}-{expectedHash[..16]}-setup.exe", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("更新安装包路径无效。");
+            string path = Path.Combine(cache, name);
+            // Reject junctions/symlinks inside the cache. Opening without write/delete
+            // sharing also refuses pre-existing writable handles to the EXE.
+            foreach (string candidate in new[] { cache, path })
+                if ((File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("更新缓存包含链接，请重新下载。");
             using var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
             if (locked.Length != expectedBytes) throw new InvalidOperationException("更新包长度已变化，请重新下载。");
             byte[] digest = await SHA256.HashDataAsync(locked);

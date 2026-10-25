@@ -283,7 +283,9 @@ def dispatch(request, root):
         store = DocumentStore(root, recover_interrupted=False)
         identifier = request.get("document_id")
         if action == "list": result = store.documents()
-        elif action == "recover": result = DocumentStore(root, recover_interrupted=True).documents()
+        elif action == "recover":
+            updates.recover(root)
+            result = DocumentStore(root, recover_interrupted=True).documents()
         elif action == "import": result = store.import_pdf(request["path"])
         elif action == "get": result = store.get(identifier)
         elif action == "rename": result = store.rename(identifier, request["name"])

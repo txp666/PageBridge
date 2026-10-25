@@ -109,6 +109,9 @@ class UpdateTests(unittest.TestCase):
         for value in (raw, b"x" * (updates.MAX_MANIFEST_BYTES + 1), b'{"payload": NaN}', b"{}", b"\xff"):
             with self.assertRaises(updates.UpdateError):
                 updates.verify_manifest(value, self.public)
+        # Integer literals beyond Python's digit limit raise a plain ValueError.
+        with self.assertRaisesRegex(updates.UpdateError, "格式"):
+            updates.verify_manifest(b'{"payload": ' + b"1" * (sys.get_int_max_str_digits() + 1) + b"}", self.public)
         envelope = json.loads(self.signed())
         for value in (None, True, "bad-key", base64.b64encode(bytes(63)).decode()):
             envelope["signature"] = value
@@ -116,13 +119,20 @@ class UpdateTests(unittest.TestCase):
                 updates.verify_manifest(json.dumps(envelope).encode(), self.public)
 
     def test_current_version_and_block_rollback(self):
-        for version, build, expected in (("0.4.0", 13, "current"), ("0.3.9", 12, "error"), ("0.3.9", 14, "error"), ("0.4.1", 13, "error")):
+        # Older feeds (CDN lag, newer local builds) are current; mismatched
+        # version/build pairs and newer builds with lower versions are errors.
+        for version, build, expected in (("0.4.0", 13, "current"), ("0.3.9", 12, "current"), ("0.4.0", 12, "current"),
+                                         ("0.3.9", 14, "error"), ("0.4.1", 13, "error"), ("0.4.1", 12, "error")):
             payload = dict(self.payload, version=version, build=build,
                            url=f"https://github.com/txp666/PageBridge/releases/download/v{version}/PageBridge-{version}-windows-x64-setup.exe",
                            releaseNotesURL=f"https://github.com/txp666/PageBridge/releases/tag/v{version}")
             manager = self.manager(manifest=self.signed(payload))
             manager.check()
-            self.assertEqual(self.finish(manager)["state"], expected)
+            status = self.finish(manager)
+            with self.subTest(version=version, build=build):
+                self.assertEqual(status["state"], expected)
+                if expected == "current":
+                    self.assertEqual(status["update"], payload if build == 13 else None)
             with self.assertRaises(updates.UpdateError):
                 manager.download()
 
@@ -153,6 +163,35 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(updates.UpdateError):
             manager.prepare_install()
         self.assertEqual(manager.status()["state"], "error")
+        self.assertEqual(list((manager.root / "updates").iterdir()), [])
+
+    def stale_cache(self):
+        cache = self.root / "data" / "updates"
+        cache.mkdir(parents=True)
+        stale = [cache / ".download-killed.part", cache / "PageBridge-0.4.0-0123456789abcdef-setup.exe"]
+        for path in stale:
+            path.write_bytes(b"stale")
+        (cache / "keep.txt").write_text("unrelated")
+        return cache
+
+    def test_download_prunes_files_left_by_earlier_processes(self):
+        cache = self.stale_cache()
+        manager = self.manager()
+        self.available(manager)
+        self.assertEqual({path.name for path in cache.iterdir()}, {"keep.txt"})
+        manager.download()
+        self.assertEqual(self.finish(manager)["state"], "ready")
+        self.assertEqual({path.name for path in cache.iterdir()}, {"keep.txt", manager.target.name})
+
+    def test_recover_prunes_cache_unless_a_manager_owns_it(self):
+        cache = self.stale_cache()
+        manager = self.manager()
+        with patch.dict(updates._MANAGERS, {str(manager.root.resolve()): manager}):
+            updates.recover(manager.root)
+            self.assertEqual(len(list(cache.iterdir())), 3)
+        import bridge
+        bridge.dispatch({"action": "recover"}, manager.root)
+        self.assertEqual({path.name for path in cache.iterdir()}, {"keep.txt"})
 
     def test_removed_download_can_be_downloaded_again(self):
         manager = self.manager()
