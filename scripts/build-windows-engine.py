@@ -160,7 +160,9 @@ def main():
     if not (base / "python.exe").is_file() or not packages.is_dir():
         raise ValueError("Missing Windows base runtime or site-packages.")
     output.parent.mkdir(parents=True, exist_ok=True)
-    stage = create_stage(output.parent)
+    # Native extension loading still hits MAX_PATH in some dependencies. Keep
+    # this staging runtime beside the bundle, not inside two UUID stage names.
+    stage = create_stage(ROOT / "dist")
     try:
         runtime = stage / "runtime"
         ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store")

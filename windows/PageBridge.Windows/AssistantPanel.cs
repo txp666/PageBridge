@@ -45,6 +45,8 @@ internal sealed class AssistantPanel : Grid, IDisposable
     private bool busy, loadingModels, disposed, clearDialogOpen;
     private CancellationTokenSource? pending;
     private CancellationTokenSource binding = new();
+    internal bool IsBusy => busy || pending is not null;
+    internal bool HasDraft => !string.IsNullOrWhiteSpace(question.Text);
 
     internal AssistantPanel(BackendClient backend, Action<int, string> navigate, Func<int> currentPage,
         Func<string> currentVariant, Func<string> selectedText, Func<string, Task>? saveNote = null,

@@ -25,7 +25,9 @@ GUI 驱动的初始失败也保留：原生 ComboBox 的 UIA 焦点边界在 192
 
 版本提升后，Mac 本地候选已完成 Release 构建、`verify-bundle.py` 检查，并实际打开 About 确认 `0.4.0 (13)`，打开紧凑助手窗口检查布局。该轮 Swift 129 项中 127 通过、2 项可选集成测试跳过；引擎 661 项通过；桌面后端 119 项中 116 通过、3 项平台检查跳过。证据在 `validation/release-0.4.0/` 的 `local-swift-tests.log`、`local-engine-tests-network.log`、`local-desktop-tests.log`、`local-mac-bundle.json`、`local-mac-about.png` 和 `local-mac-assistant.png`。这仍是本地构建，不表示 GitHub CI、公开下载或本版真实 OTA 升级已经完成。
 
-发行验收分别记录两端标签构建 CI、Mac ZIP、Windows setup.exe／便携 ZIP 与源码的字节数／SHA-256、独立解压、公开下载与 Range 检查、Mac appcast 签名及实际更新范围。Windows 安装器提供当前用户安装、路径与快捷方式选项、升级／卸载入口；上述本地布局记录未验证安装／升级／卸载。安装器验收需在普通用户会话实际安装、从安装路径启动、检查快捷方式和卸载，并验证用户文档／配置／凭据保留。Mac 目前仍为 ad-hoc 签名且未公证，Windows 安装器与程序未签名、没有 OTA；macOS 14、Intel Mac 和原生 Windows ARM64 不新增实机支持结论。
+发行验收分别记录两端标签构建 CI、Mac ZIP、Windows setup.exe／便携 ZIP 与源码的字节数／SHA-256、独立解压、公开下载与 Range 检查、Mac appcast／Windows 更新清单签名及实际更新范围。Windows 安装器提供当前用户安装、路径与快捷方式选项、升级／卸载入口；上述本地布局记录未验证安装／升级／卸载。安装器验收需在普通用户会话实际安装、从安装路径启动、检查快捷方式和卸载，并验证用户文档／配置／凭据保留。Mac 目前仍为 ad-hoc 签名且未公证，Windows 安装器与程序没有 Authenticode 签名；macOS 14、Intel Mac 和原生 Windows ARM64 不新增实机支持结论。
+
+Windows 的应用内更新现包含手动检查／下载／取消、签名清单与安装包哈希验证，以及用户确认后启动交互安装器。新增签名样本单元测试与原生入口检查分别留证；历史安装器与 UI7 记录不冒充已包含 OTA 的完整升级验收。公开清单出现前，404／暂无更新信息是受控失败路径，不能写成更新服务已在线或真实升级完成。
 
 ## 0.3.0 / build 12 — GitHub CI 与应用内更新
 

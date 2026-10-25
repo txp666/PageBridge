@@ -56,9 +56,9 @@ Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证
 | 平台 | 本机数据 | API 密钥 | 更新 |
 |---|---|---|---|
 | Mac | `~/Library/Application Support/PageBridge/` | macOS 钥匙串 | Sparkle 检查更新，校验更新签名；由用户确认安装 |
-| Windows | `%LOCALAPPDATA%\PageBridge` | Windows 凭据管理器 | 从 Releases 下载新版安装器升级，或更换便携程序目录；暂无 Windows OTA |
+| Windows | `%LOCALAPPDATA%\PageBridge` | Windows 凭据管理器 | “检查更新”校验签名与文件后，由用户下载并启动安装向导 |
 
-Windows 安装器默认目录为 `%LOCALAPPDATA%\Programs\PageBridge`，卸载只移除程序与快捷方式，保留文档、译文、配置和系统凭据。替换程序保留独立用户数据。两端文档库格式不同，暂不支持直接互拷数据目录或自动跨平台同步。Mac OTA 签名不替代 Apple 公证，Windows 不使用 Mac 的更新源。
+Windows 安装器默认目录为 `%LOCALAPPDATA%\Programs\PageBridge`，卸载只移除程序与快捷方式，保留文档、译文、配置和系统凭据。替换程序保留独立用户数据。两端文档库格式不同，暂不支持直接互拷数据目录或自动跨平台同步。两端更新签名均不替代 Apple 公证或 Windows Authenticode。Windows 使用独立更新清单；便携版也可检查更新，但 OTA 会运行安装器，不会就地替换便携目录。
 
 文档解析与排版在本机执行。使用云模型时，翻译文本或助手选取的片段、问题与有限近期对话会发送给所选服务；OpenAlex 接收检索词，所选全文来源接收 DOI 或下载请求。应用不携带云服务额度。
 

@@ -90,7 +90,8 @@ jobs:
           metadata = json.loads(verifier.fetch_github_api('https://api.github.com/repos/'+repo+'/releases/tags/'+tag, retry_missing=True))
           assert not metadata['draft'] and not metadata['prerelease'] and metadata['tag_name'] == tag
           # v0.3.x shipped seven assets; v0.4.0+ requires both platform ZIPs
-          # plus the installer, totaling eleven assets. Never infer the required set from server contents.
+          # plus the installer and signed Windows feed (twelve assets). Never
+          # infer the required set from server contents.
           names = verifier.asset_names(version)
           assets = {asset['name']:asset for asset in metadata['assets']}
           assert set(assets) == set(names), 'Unexpected public assets'

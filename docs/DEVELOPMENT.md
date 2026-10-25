@@ -137,15 +137,13 @@ UI 验收可使用 `--reader-validation` 独立数据目录，再分别以 `--da
 
 ## 开源交付
 
-原创程序代码采用 [AGPL-3.0-only](../LICENSE)，第三方代码、运行时和示例保留各自许可及归属。发布时同时提供 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、`PageBridge-0.4.0-source.zip`、`PageBridge-0.4.0-third-party-sources.zip` 和各自的 SHA-256 校验文件，加上 Mac 签名 `appcast.xml` 共 11 项发布资产；源码包应对应实际二进制构建使用的文件，不以旧的 Git 提交归档替代尚未提交的最新源码。
+原创程序代码采用 [AGPL-3.0-only](../LICENSE)，第三方代码、运行时和示例保留各自许可及归属。发布时同时提供 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、`PageBridge-0.4.0-source.zip`、`PageBridge-0.4.0-third-party-sources.zip` 和各自的 SHA-256 校验文件，加上 Mac 签名 `appcast.xml` 和 Windows 签名 `windows-update.json` 共 12 项发布资产；源码包应对应实际二进制构建使用的文件，不以旧的 Git 提交归档替代尚未提交的最新源码。
 
 源码归档应包含两端界面、Mac Core、Windows 桌面服务、引擎适配代码、测试、构建脚本、依赖锁文件、文档、图标及有许可记录的公开示例；排除 `.git`、私有文档、模型密钥、机器配置、缓存、虚拟环境、验证输出和已构建应用。生成后独立解压并检查路径、清单与哈希，确认构建所需文件完整。第三方对应源码与分发要求见[第三方说明](../THIRD_PARTY_NOTICES.md)。
 
 贡献流程见[贡献指南](../CONTRIBUTING.md)，敏感信息报告见[安全说明](../SECURITY.md)。公开上传应使用已复核的产物及匹配源码；发布自动化与签名流程见下文。
 
 ## 应用内更新与签名（Mac）
-
-Windows 当前不提供 OTA 或 Authenticode 签名，使用新版安装器或手动更新完整便携目录；Windows 资产不使用 Mac 的 Sparkle feed 或私钥。
 
 Mac 应用固定使用 Sparkle 2.10.0；SwiftPM 版本与提交锁定在 `macOS/Package.swift` 和 `macOS/Package.resolved`。`update-config.json` 记录公开仓库、HTTPS feed、公钥和 Sparkle 版本，打包时写入应用 Info.plist。更新源为：
 
@@ -167,11 +165,25 @@ CI 不传 `--account`，由 `create-appcast.py` 从环境中的 `SPARKLE_PRIVATE
 
 客户端保留 Sparkle 首次自动检查同意流程，关闭静默下载／安装和系统配置画像上报。翻译期间拒绝检查、暂缓已经请求的安装；只有用户已同意安装且当前翻译结束后才继续更新重启。检查到同一 build 的结果只能证明 feed 可读，不能证明下载、替换、重新启动或翻译并发防护已在实机通过；完整 OTA 验收须记录升级前后版本、签名、用户数据及重启结果。
 
+## 应用内更新与签名（Windows）
+
+`desktop/pagebridge/updates.py` 使用随应用分发的 `VERSION.json` 和 `update-config.json` 公钥，通过持久 RPC 在独立线程检查、下载与取消；文档阅读不等待网络任务。WinUI 的 `MainWindow.Updates.cs` 提供手动入口，不在启动时定期检查、不自动下载、不静默安装。固定更新源为：
+
+```text
+https://github.com/txp666/PageBridge/releases/latest/download/windows-update.json
+```
+
+清单包含平台、版本／build、最低 Windows build、安装器 URL、长度／SHA-256 和更新说明 URL，使用独立域分隔消息进行 Ed25519 签名。`scripts/windows-update.py` 在正式发布签名步骤从既有 `SPARKLE_PRIVATE_KEY` Secret 读取材料，内存中签名并核对公开密钥；普通 CI 和 Windows 构建作业不接触私钥。两端共用公钥不代表 Windows 消费 Sparkle appcast。清单签名也不提供 Authenticode 发行者认证。
+
+下载在用户数据的 `updates/` 缓存内完成，失败或取消不启动程序。安装前后端重新验签／验哈希；WinUI 限制路径、拒绝缓存链接、持只读共享文件锁再计算 SHA-256，然后用 `Process.Start(UseShellExecute=true)` 打开普通交互安装器，并正常退出应用。安装器不从 Python Job 内启动。翻译、助手、其他写入任务和未保存草稿必须处理完；阅读位置保存失败时停止安装。便携版同样下载 Setup，按向导安装到既有安装目录或默认目录，不就地替换便携目录。
+
+单元测试应使用注入的网络响应及临时签名样本覆盖签名、损坏、降级、取消和下载后替换，产品中不加入跳过签名的开关。检查到当前版本或看到未发布清单的 404 提示，不等同完成一次真实升级；实际升级仍需安装前后版本、文件与用户数据证据。
+
 ## GitHub CI 与发布
 
 - `.github/workflows/ci.yml`：`main` 推送及 Pull Request 触发 Swift、锁定引擎与发布脚本测试，使用官方 `macos-15` runner 并检查 `uname -m` 为 `arm64`；普通 CI 不持有 OTA 私钥。
-- `.github/workflows/windows.yml`：Windows 常规测试与便携包构建，上传运行时验证和构建产物；不持有 Mac OTA 私钥。
-- `.github/workflows/release.yml`：`v*` 标签触发两平台联合发布，检查仓库／标签身份，分别测试、构建 Mac 与 Windows，Windows job 直接用 Inno Setup 编译安装器，提供四份 ZIP、Windows setup.exe、各自 SHA-256 和 Mac 签名 appcast，共 11 项。两端产物齐备且通过草稿资产核验后才公开；独立检查每项资产状态、大小和哈希。
+- `.github/workflows/windows.yml`：Windows 常规测试与便携包构建，上传运行时验证和构建产物；不持有 OTA 私钥。
+- `.github/workflows/release.yml`：`v*` 标签触发两平台联合发布，检查仓库／标签身份，分别测试、构建 Mac 与 Windows，Windows job 直接用 Inno Setup 编译安装器，提供四份 ZIP、Windows setup.exe、各自 SHA-256、Mac 签名 appcast 和 Windows 签名更新清单，共 12 项。两端产物齐备且通过草稿资产核验后才公开；独立检查每项资产状态、大小和哈希。
 - 版本由 `VERSION.json` 提供；每次发布同时更新语义版本、严格递增的 build、CHANGELOG 与使用说明。标签必须与版本匹配，例如版本 `0.4.0` 对应 `v0.4.0`。发布前检查已有 latest 的 build，拒绝相同或更小的 build。
 - 先合入通过 CI 的提交，再对同一提交创建发布标签。已经公开的标签和资产不重打、不移动或覆盖；需要修复时发布新版本和更高 build。失败的 draft 应保留证据并查明失败点，不能通过改写旧公开资产跳过校验。
 - 发布后用 `engine/.venv/bin/python scripts/verify-release.py --published --output validation/published-release-check.json` 检查公开 Release、全部下载文件哈希、ZIP 的 HTTP Range `206` 与 latest feed。配套项目源码和第三方源码应与该二进制同页提供，签名 feed 指向该版本的固定应用 ZIP URL。
@@ -194,4 +206,4 @@ gh workflow run release.yml --ref main -f tag=v0.4.0
 gh workflow run verify-release.yml --ref main -f tag=v0.4.0
 ```
 
-它分别检出当前验证工具和原标签源码，检查公开下载、SHA-256、ZIP CRC、应用／源码下载的 HTTP Range 206、Windows 安装器及便携负载关联、源码配置、上游源码及 OTA 签名。GitHub REST 元数据可使用仓库只读 Token，严格限定 `api.github.com`；安装包、源码、feed 的请求仍不携带 Token，以验证真实公开可下载。发布 CI 使用 `--require-latest` 要求该版本与 latest OTA feed 一致；独立校验历史版本时允许 latest 已更新，但仍校验当前 feed 签名并拒绝版本回退。
+它分别检出当前验证工具和原标签源码，检查公开下载、SHA-256、ZIP CRC、应用／源码下载的 HTTP Range 206、Windows 安装器及便携负载关联、源码配置、上游源码，以及 Mac appcast／Windows 清单与安装器哈希绑定的 OTA 签名。GitHub REST 元数据可使用仓库只读 Token，严格限定 `api.github.com`；安装包、源码、feed 的请求仍不携带 Token，以验证真实公开可下载。发布 CI 使用 `--require-latest` 要求该版本与 latest OTA feed 一致；独立校验历史版本时允许 latest 已更新，但仍校验当前 feed 签名并拒绝版本回退。

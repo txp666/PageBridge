@@ -44,7 +44,7 @@ def archive_names(version):
 
 def asset_names(version):
     payloads = payload_names(version)
-    return payloads + [name + ".sha256" for name in payloads] + ["appcast.xml"]
+    return payloads + [name + ".sha256" for name in payloads] + ["appcast.xml"] + (["windows-update.json"] if dual_platform(version) else [])
 
 
 def payload_names(version):
@@ -176,6 +176,18 @@ def verify_latest_feed(url, expected, key):
     raise ValueError("Latest feed differs from release feed after bounded CDN retries")
 
 
+def verify_latest_windows_manifest(url, expected, public_key):
+    validator = helper("windows-update.py")
+    for attempt in range(4):
+        data = fetch(url, limit=64 * 1024, retry_missing=True)
+        validator.verify_manifest(data, public_key)
+        if data == expected:
+            return
+        if attempt < 3:
+            time.sleep(2 ** attempt)
+    raise ValueError("Latest Windows update differs from release manifest after bounded CDN retries")
+
+
 def signed_feed(data, key):
     # Sparkle 2.10 SPUExtractSignedFeed.m: all bytes before the final signature
     # comment are signed, including the signing-warning comment and newlines.
@@ -221,7 +233,7 @@ def verify_source(path, version, source_root=ROOT):
                         "macOS/Package.swift", "macOS/Package.resolved", "desktop/bridge.py",
                         "windows/PageBridge.Windows/PageBridge.Windows.csproj",
                         "windows/PageBridge.Windows/packages.lock.json", "scripts/build-windows.ps1",
-                        "scripts/windows-installer.iss", "scripts/setup-inno.ps1"}
+                        "scripts/windows-installer.iss", "scripts/setup-inno.ps1", "desktop/pagebridge/updates.py"}
             require(required.issubset(manifest["files"]), "Corresponding source is missing a platform or dependency lock")
             release = json.loads((source_root / "VERSION.json").read_text())
             require(str(manifest.get("build")) == str(release["build"]), "Source manifest build differs")
@@ -280,6 +292,12 @@ def main():
             args.dist / f"PageBridge-{version}-windows-x64.zip", source_root)
         report["windowsInstaller"] = helper("windows_package.py").verify_installer(
             args.dist / f"PageBridge-{version}-windows-x64-setup.exe", source_root)
+        update_path = args.dist / "windows-update.json"
+        update_payload = helper("windows-update.py").verify_installer_binding(update_path.read_bytes(), config["publicEDKey"],
+            release, args.dist / f"PageBridge-{version}-windows-x64-setup.exe")
+        report["windowsUpdateSignatureVerified"] = True
+        report["windowsUpdate"] = update_payload
+        report["assets"].append({"name": update_path.name, "bytes": update_path.stat().st_size, "sha256": digest(update_path)})
     report["sourceFileCount"] = verify_source(args.dist / f"PageBridge-{version}-source.zip", version, source_root)
     with zipfile.ZipFile(args.dist / f"PageBridge-{version}-third-party-sources.zip") as zipped:
         prefix = f"PageBridge-{version}-third-party-sources/"
@@ -319,6 +337,13 @@ def main():
             builds = [entry.findtext(SPARKLE + "version", "") for entry in old_feed.findall("./channel/item")]
             require(builds and all(value.isdecimal() for value in builds), "Previous feed has invalid build numbers")
             require(int(build) > max(map(int, builds)), "New build must exceed every build in the current public feed")
+            if dual_platform(version) and latest["tag_name"].startswith("v") and dual_platform(latest["tag_name"][1:]):
+                require(any(asset["name"] == "windows-update.json" for asset in latest["assets"]), "Previous Windows update manifest is missing")
+                previous_windows = helper("windows-update.py").verify_manifest(
+                    fetch(base + "/releases/latest/download/windows-update.json", limit=64 * 1024), config["publicEDKey"])
+                require(int(build) > previous_windows["build"], "New Windows build must exceed the current signed update build")
+                require(tuple(map(int, version.split("."))) >= tuple(map(int, previous_windows["version"].split("."))),
+                        "New Windows version would be rejected by the client's downgrade guard")
             report["previousRelease"] = latest["tag_name"]
     if args.published:
         public = json.loads(fetch_github_api(api + f"/releases/tags/v{version}", retry_missing=True))
@@ -336,6 +361,8 @@ def main():
         if args.require_latest or latest["tag_name"] == "v" + version:
             require(latest["tag_name"] == "v" + version, "Published tag is not the latest release")
             verify_latest_feed(config["feedURL"], feed_path.read_bytes(), key)
+            if dual_platform(version):
+                verify_latest_windows_manifest(base + "/releases/latest/download/windows-update.json", update_path.read_bytes(), config["publicEDKey"])
         else:
             # Historical releases remain independently verifiable after an OTA
             # upgrade. Still authenticate the current feed and reject rollback.
@@ -343,6 +370,10 @@ def main():
             current_builds = [entry.findtext(SPARKLE + "version", "") for entry in current_feed.findall("./channel/item")]
             require(current_builds and all(number.isdecimal() for number in current_builds)
                     and min(map(int, current_builds)) >= int(build), "Latest feed rolled back behind verified release")
+            if dual_platform(version):
+                current_windows = helper("windows-update.py").verify_manifest(
+                    fetch(base + "/releases/latest/download/windows-update.json", limit=64 * 1024, retry_missing=True), config["publicEDKey"])
+                require(current_windows["build"] >= int(build), "Windows feed rolled back behind verified release")
         report["latestRelease"] = latest["tag_name"]
         report["publishedURL"] = public["html_url"]
     if args.notes_output:

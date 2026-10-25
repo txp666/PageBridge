@@ -70,16 +70,13 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Check architecture, toolchain and signing configuration
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      - name: Check architecture and toolchain
         run: |
           test "$(uname -m)" = arm64
           mkdir -p validation/release-macos
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           swift --version
-          python3 -c 'import os; assert os.environ.get("SPARKLE_PRIVATE_KEY", "").strip(), "Set the SPARKLE_PRIVATE_KEY repository secret before publishing"'
       - name: Install locked translation engine
         run: |
           python3 -m pip install --target engine/.tools uv==0.9.17
@@ -127,6 +124,9 @@ jobs:
     needs: identity
     runs-on: windows-2025
     timeout-minutes: 90
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     defaults:
       run:
         shell: pwsh
@@ -258,7 +258,11 @@ jobs:
         run: |
           python3 scripts/release-ci.py requirements --output /tmp/pagebridge-release-verification.txt
           python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r /tmp/pagebridge-release-verification.txt
-      - name: Verify all eleven assets, both platform sources and increasing OTA build
+      - name: Verify the Windows installer, then sign its domain-separated update manifest
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: python3 scripts/windows-update.py --output validation/release/windows-update-signing.json
+      - name: Verify all twelve assets, both platform sources and increasing OTA builds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md

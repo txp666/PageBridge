@@ -105,6 +105,8 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private Provider ChosenProvider => Providers.First(p => p.Id == Text(current, "provider"));
     private bool IsLocal => Text(current, "kind") == "ollama";
     private bool Dirty => isNew || key.Password.Length > 0 || credentialInvalidated || !JsonNode.DeepEquals(Capture(), baseline);
+    internal bool IsBusy => saving || operation is not null;
+    internal Func<Task>? CheckUpdates { get; set; }
 
     public ServiceSettingsView(XamlRoot xamlRoot, BackendClient backend, Action onClose)
     {
@@ -166,7 +168,12 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         var railScroll = new ScrollViewer { Content = profilesPanel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(railScroll, 1); rail.Children.Add(railScroll);
         var railNote = Copy("服务设置仅影响新任务。", 11); railNote.Foreground = secondary; railNote.Margin = new Thickness(9, 12, 0, 0);
-        Grid.SetRow(railNote, 2); rail.Children.Add(railNote);
+        var railFooter = new StackPanel { Spacing = 9 };
+        var updates = SmallButton("检查更新…");
+        AutomationProperties.SetAutomationId(updates, "SettingsCheckUpdates");
+        updates.Click += async (_, _) => { if (CheckUpdates is not null) await CheckUpdates(); };
+        railFooter.Children.Add(railNote); railFooter.Children.Add(updates);
+        Grid.SetRow(railFooter, 2); rail.Children.Add(railFooter);
         body.Children.Add(new Border { Child = rail, BorderBrush = line, BorderThickness = new Thickness(0, 0, 1, 0) });
 
         var content = new StackPanel { Spacing = 18, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Stretch };

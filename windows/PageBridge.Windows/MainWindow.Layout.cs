@@ -66,7 +66,7 @@ public sealed partial class MainWindow
         if (Environment.GetCommandLineArgs().Contains("--dark")) root.RequestedTheme = ElementTheme.Dark;
         root.ColumnDefinitions.Add(new() { Width = new GridLength(252) });
         root.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        Content = root;
+        interactionHost.Content = root; Content = interactionHost;
         var sidebar = new Grid { BorderBrush = LineBrush, BorderThickness = new Thickness(0, 0, 1, 0) };
         sidebar.RowDefinitions.Add(new() { Height = GridLength.Auto });
         sidebar.RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -80,7 +80,11 @@ public sealed partial class MainWindow
         var addMenu = new MenuFlyout();
         addMenu.Items.Add(MenuItem("添加 PDF", ImportAsync));
         addMenu.Items.Add(MenuItem("搜索在线文献…", LiteratureSearchAsync));
-        addMenu.Items.Add(MenuItem("新建文件夹", CreateFolderAsync)); add.Flyout = addMenu;
+        addMenu.Items.Add(MenuItem("新建文件夹", CreateFolderAsync));
+        addMenu.Items.Add(new MenuFlyoutSeparator());
+        var updates = MenuItem("检查更新…", ShowUpdatesAsync);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(updates, "MenuCheckUpdates");
+        addMenu.Items.Add(updates); add.Flyout = addMenu;
         Grid.SetColumn(add, 2); brand.Children.Add(add); sidebar.Children.Add(brand);
         var searchArea = new StackPanel { Spacing = 6, Margin = new Thickness(12, 0, 12, 0) };
         search.FontSize = 12; search.Height = 32; search.MinHeight = 0; search.Padding = new Thickness(9, 5, 9, 5); search.CornerRadius = new CornerRadius(7); search.BorderThickness = new Thickness(0);
@@ -288,6 +292,7 @@ public sealed partial class MainWindow
         try
         {
             settingsOverlay = await ServiceSettings.CreateViewAsync(root.XamlRoot, backend, () => { if (settingsOverlay is not null) root.Children.Remove(settingsOverlay); settingsOverlay = null; UpdateDocumentState(); });
+            if (settingsOverlay is ServiceSettingsView view) view.CheckUpdates = () => Attempt(ShowUpdatesAsync);
             Grid.SetColumn(settingsOverlay, 1); root.Children.Add(settingsOverlay); UpdateDocumentState();
         }
         finally { settingsOpening = false; }

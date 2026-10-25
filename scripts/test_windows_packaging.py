@@ -29,7 +29,8 @@ class StableWindowsPackageTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)/'source'; self.root.mkdir()
-        for name in ('VERSION.json','README.md','LICENSE','THIRD_PARTY_NOTICES.md','windows/Directory.Build.props',
+        for name in ('VERSION.json','update-config.json','README.md','LICENSE','THIRD_PARTY_NOTICES.md','windows/Directory.Build.props',
+                     'assets/PageBridge-icon.png','engine/.python-version','engine/runtime_info.py','engine/setup-windows.ps1',
                      'windows/PageBridge.Windows/packages.lock.json','scripts/build-windows.ps1','scripts/windows_package.py',
                      'scripts/build-windows-engine.py','scripts/verify-windows-engine.py','scripts/bundle-profile.json',
                      'scripts/setup-inno.ps1','scripts/windows-installer.iss','docs/WINDOWS.md','docs/USER_GUIDE.md',
@@ -55,7 +56,8 @@ class StableWindowsPackageTests(unittest.TestCase):
     def test_archive_matches_exact_sources_documentation_and_version(self):
         result=self.archive_package()
         self.assertEqual((result['status'],result['version'],result['build']),('passed','0.4.0','13'))
-        self.assertFalse(result['signed']);self.assertEqual(result['updateMode'],'manual')
+        self.assertFalse(result['signed']);self.assertTrue(result['automaticUpdates'])
+        self.assertEqual(result['updateMode'],'signed-feed-user-confirmed-installer')
         self.assertEqual(release.verify_archive(self.archive,self.root),result)
         self.assertIn(result['sha256'],Path(str(self.archive)+'.sha256').read_text())
 
@@ -69,6 +71,11 @@ class StableWindowsPackageTests(unittest.TestCase):
     def test_changed_release_sources_invalidate_archive(self):
         self.archive_package();(self.root/'scripts/windows-installer.iss').write_text('changed installer')
         with self.assertRaisesRegex(ValueError,'exact release source'):release.verify_archive(self.archive,self.root)
+
+    def test_update_trust_config_cannot_be_substituted_in_the_bundle(self):
+        (self.folder/'resources/update-config.json').write_text('{"publicEDKey":"another signing authority"}')
+        with self.assertRaisesRegex(ValueError,'source differs: resources/update-config.json'):
+            self.archive_package()
 
     def test_duplicate_case_and_traversal_zip_members_rejected(self):
         self.archive_package()
@@ -111,12 +118,13 @@ class StableWindowsPackageTests(unittest.TestCase):
 
     def test_installer_pe_version_is_bound_to_verified_zip_and_source(self):
         report=self.archive_package(); setup=self.archive.with_name(self.folder.name+'-setup.exe')
-        strings={'FileDescription':'PageBridge Setup; source='+release.source_identity_hash(self.root)+'; bundle='+report['bundleManifestSHA256'],
-                 'OriginalFilename':setup.name,'ProductVersion':'0.4.0+build.13'}
+        strings={'FileDescription':'PageBridge src='+release.hash_token(release.source_identity_hash(self.root)),
+                 'ProductName':'PageBridge pkg='+release.hash_token(report['bundleManifestSHA256']),
+                 'OriginalFileName':setup.name+'    ','ProductVersion':'0.4.0+build.13    '}
         setup.write_bytes(self.pe_fixture(strings))
         result=release.verify_installer(setup,self.root)
         self.assertEqual(result['status'],'passed');self.assertEqual(result['bootstrapMachine'],'0x14c')
-        strings['FileDescription']=strings['FileDescription'].replace(report['bundleManifestSHA256'],'0'*64)
+        strings['ProductName']='PageBridge pkg='+release.hash_token('0'*64)
         setup.write_bytes(self.pe_fixture(strings))
         with self.assertRaisesRegex(ValueError,'release source or ZIP'):release.verify_installer(setup,self.root)
 

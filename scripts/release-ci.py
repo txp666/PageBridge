@@ -88,13 +88,14 @@ def publish(report_path, notes_path):
     require(report["version"] == version and str(report["build"]) == verified["build"] and report["repository"] == repository,
             "Verified release identity differs")
     require(report.get("feedSignatureVerified") and report.get("archiveSignatureVerified"), "OTA signature validation is missing")
+    require(report.get("windowsUpdateSignatureVerified") is True, "Windows OTA signature validation is missing")
     # Deliberately do not import the cryptography verifier here; the CI publication
     # step consumes an already verified report and independently binds every file.
     names = [f"PageBridge-{version}-{kind}.zip" for kind in ("macOS-arm64", "windows-x64", "source", "third-party-sources")]
     names.append(f"PageBridge-{version}-windows-x64-setup.exe")
-    expected_names = set(names + [name + ".sha256" for name in names] + ["appcast.xml"])
-    require(len(report["assets"]) == 11 and {item["name"] for item in report["assets"]} == expected_names,
-            "Both platforms and all eleven release assets must pass verification")
+    expected_names = set(names + [name + ".sha256" for name in names] + ["appcast.xml", "windows-update.json"])
+    require(len(report["assets"]) == 12 and {item["name"] for item in report["assets"]} == expected_names,
+            "Both platforms and all twelve release assets must pass verification")
     require(report.get("windows", {}).get("status") == "passed", "Windows archive validation is missing")
     require(report.get("windowsInstaller", {}).get("status") == "passed", "Windows installer validation is missing")
     assets = []

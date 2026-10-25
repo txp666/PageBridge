@@ -10,9 +10,9 @@
 - Windows 文档助手复用已配置的模型，支持四种范围、有限上下文、引用核对、取消、清空和回答存笔记。
 - Mac 与 Windows 同步压缩助手布局：文件名与清空留在顶部，对话占据中间，模型和范围同排放在底部，快捷问题收进菜单；移除重复说明，必要的目的地与范围信息保留在提示和引用片段中。
 - 修复 Windows 主题混用、页码基线、笔记多行编辑、空助手滚动位置，以及取消时后台进程清理相关问题。
-- 两平台版本统一为 `0.4.0 / build 13`，新增联合发布所需的 Windows 资产及校验。Mac 继续使用 Sparkle 签名 OTA；Windows 当前手动更新，未提供 OTA 或 Authenticode 签名。Mac 仍为 ad-hoc 签名，尚未完成 Apple 公证。
+- 两平台版本统一为 `0.4.0 / build 13`，新增联合发布所需的 Windows 资产及校验。Mac 继续使用 Sparkle 签名 OTA；Windows 新增手动检查、用户确认下载／安装、进度和取消，校验 Ed25519 更新清单及安装包 SHA-256，并在翻译或助手忙碌时阻止安装。便携版的 OTA 同样启动安装向导，不原地替换便携文件。Windows 尚无 Authenticode 签名；Mac 仍为 ad-hoc 签名，尚未完成 Apple 公证。
 
-发行资产为 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、项目源码和第三方对应源码 ZIP，各附 SHA-256；Mac 另提供签名 appcast，共 11 项发布资产。此处记录版本变更；CI 与公开资产状态以该版本的 Release／Actions 为准，本地检查及验证边界见[验证记录](docs/VERIFICATION.md)。
+发行资产为 `PageBridge-0.4.0-macOS-arm64.zip`、`PageBridge-0.4.0-windows-x64-setup.exe`、`PageBridge-0.4.0-windows-x64.zip`、项目源码和第三方对应源码 ZIP，各附 SHA-256；另提供 Mac 签名 appcast 和 Windows 签名 `windows-update.json`，共 12 项发布资产。此处记录版本变更；CI 与公开资产状态以该版本的 Release／Actions 为准，本地检查及验证边界见[验证记录](docs/VERIFICATION.md)。
 
 ## 0.3.0 / build 12 — 在线文献检索、应用更新与开源发布
 

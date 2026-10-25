@@ -13,6 +13,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly BackendClient backend;
     private readonly Grid root = new();
+    private readonly ContentControl interactionHost = new() { IsTabStop = false, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
     private readonly ListView library = new() { SelectionMode = ListViewSelectionMode.Single };
     private readonly TextBox search = new() { PlaceholderText = "搜索文档名称" };
     private readonly ComboBox filter = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -46,6 +47,7 @@ public sealed partial class MainWindow : Window
     private bool loading, translationPreparing, windowClosed;
     private WindowSizing? sizing;
     private int renderGeneration, selectionGeneration;
+    private int activeUiOperations;
     private double magnification = 1;
 
     private sealed record DocumentRow(JsonObject Document)
@@ -78,10 +80,11 @@ public sealed partial class MainWindow : Window
             pane.PreviewError += message => status.Text = "预览加载失败：" + message;
         }
         sync.Toggled += (_, _) => { if (sync.IsOn && mode.SelectedIndex == 1) OtherPane(activePages).MoveTo(activePages.Position); UpdatePDFPaneLabels(); };
-        Closed += (_, _) => { windowClosed = true; documentSearchCancellation?.Cancel(); readingTimer?.Stop(); assistantPanel.Dispose(); annotationsPanel.Dispose(); originalPages.Clear(); translatedPages.Clear(); backend.Dispose(); };
+        Closed += (_, _) => { windowClosed = true; DisposeUpdates(); documentSearchCancellation?.Cancel(); readingTimer?.Stop(); assistantPanel.Dispose(); annotationsPanel.Dispose(); originalPages.Clear(); translatedPages.Clear(); backend.Dispose(); };
         AppWindow.Closing += async (_, e) =>
         {
             if (allowClose) return;
+            if (updateInstallPreparing) { e.Cancel = true; status.Text = "正在校验更新包，请稍候。"; return; }
             if (translationCancellation is not null || translationPreparing) { e.Cancel = true; status.Text = "请先结束或取消翻译，任务结束后再关闭窗口。"; return; }
             if (pendingReading.Count == 0 && !savingReading) return;
             e.Cancel = true;
@@ -112,6 +115,7 @@ public sealed partial class MainWindow : Window
     }
     private async Task Attempt(Func<Task> action)
     {
+        activeUiOperations++;
         try { await action(); }
         catch (Exception error)
         {
@@ -119,6 +123,7 @@ public sealed partial class MainWindow : Window
             status.Text = error.Message;
             await ShowDialogAsync(new ContentDialog { XamlRoot = root.XamlRoot, Title = "无法完成操作", Content = error.Message, CloseButtonText = "好" });
         }
+        finally { activeUiOperations--; }
     }
     private async Task ReloadAsync(string? selectId = null)
     {

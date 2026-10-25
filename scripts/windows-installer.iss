@@ -48,7 +48,9 @@ RestartApplications=no
 VersionInfoVersion={#AppVersion}.{#BuildNumber}
 VersionInfoProductVersion={#AppVersion}.{#BuildNumber}
 VersionInfoProductTextVersion={#AppVersion}+build.{#BuildNumber}
-VersionInfoDescription=PageBridge Setup; source={#SourceHash}; bundle={#BundleHash}
+; Inno loader resource slots are 60 chars; URL-safe base64 keeps every hash bit.
+VersionInfoDescription=PageBridge src={#SourceHash}
+VersionInfoProductName=PageBridge pkg={#BundleHash}
 VersionInfoOriginalFileName=PageBridge-{#AppVersion}-windows-x64-setup.exe
 UninstallLogMode=append
 

@@ -4,6 +4,8 @@ param([switch]$SkipEngineSetup, [switch]$NoArchive, [switch]$SkipInstaller)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $Root = Split-Path $PSScriptRoot -Parent
 $Python = Join-Path $Root 'engine\.venv\Scripts\python.exe'
 $Project = Join-Path $Root 'windows\PageBridge.Windows\PageBridge.Windows.csproj'
@@ -22,6 +24,11 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
         $ErrorActionPreference = $PreviousPreference
     }
     if ($NativeExitCode -ne 0) { throw "Command failed with exit code ${NativeExitCode}: $Command" }
+}
+
+function Convert-HashToken([string]$Hex) {
+    [byte[]]$Bytes = for ($Index = 0; $Index -lt $Hex.Length; $Index += 2) { [Convert]::ToByte($Hex.Substring($Index, 2), 16) }
+    return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
 function Move-BundleDirectory([string]$Source, [string]$Target) {
@@ -97,7 +104,7 @@ shutil.copyfile(root/'desktop/bridge.py', resources/'desktop/bridge.py')
 shutil.copytree(root/'demos', resources/'demos', ignore=ignore, copy_function=shutil.copyfile)
 (resources/'assets').mkdir()
 shutil.copyfile(root/'assets/PageBridge-icon.png', resources/'assets/PageBridge-icon.png')
-for name in ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION.json']:
+for name in ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION.json', 'update-config.json']:
     shutil.copyfile(root/name, resources/name)
 assets = json.loads((root/'windows/PageBridge.Windows/obj/project.assets.json').read_text(encoding='utf-8-sig'))
 license_root = resources/'licenses/nuget'
@@ -163,7 +170,7 @@ for identity, library in assets.get('libraries', {}).items():
             $BundleHash = (Get-FileHash (Join-Path $Final 'BUNDLE_MANIFEST.json') -Algorithm SHA256).Hash.ToLowerInvariant()
             Invoke-Checked $Iscc @('/Qp', ('/DPackageDirectory=' + $Final), ('/DOutputDirectory=' + $Dist),
                 ('/DAppVersion=' + $Version.version), ('/DBuildNumber=' + $Version.build),
-                ('/DSourceHash=' + $SourceHash), ('/DBundleHash=' + $BundleHash), (Join-Path $Root 'scripts\windows-installer.iss'))
+                ('/DSourceHash=' + (Convert-HashToken $SourceHash)), ('/DBundleHash=' + (Convert-HashToken $BundleHash)), (Join-Path $Root 'scripts\windows-installer.iss'))
             Invoke-Checked $Python @($PackageTool, 'installer', '--root', $Root, '--archive', $Setup,
                 '--report', (Join-Path $Evidence 'packaged-installer.json'))
         }

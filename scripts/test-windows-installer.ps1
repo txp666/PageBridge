@@ -23,7 +23,8 @@ $Sentinel = Join-Path $Data 'documents-and-settings.txt'
 $SentinelHash = (Get-FileHash $Sentinel -Algorithm SHA256).Hash
 $Before = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'PageBridge.Windows.exe' } | Select-Object ProcessId, CreationDate, ExecutablePath)
 $Installed = $false
-$Report = [ordered]@{ status='running'; installer=$Installer; installedPath=$Target; userDataPath=$Data; checks=@() }
+$Report = [ordered]@{ status='running'; installer=$Installer; installedPath=$Target; userDataPath=$Data;
+    preExistingProcessCount=$Before.Count; checks=@() }
 function Run-Setup {
     param([string]$Log)
     $Process = Start-Process -FilePath $Installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',

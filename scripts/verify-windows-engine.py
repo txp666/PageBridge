@@ -60,14 +60,33 @@ def verify(engine):
         environment.update(HOME=temporary, USERPROFILE=temporary, APPDATA=temporary, LOCALAPPDATA=temporary,
                            PYTHONHOME=str(runtime), PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1")
         probe = """import json, pathlib, sys, site, sysconfig, struct, platform, importlib.metadata
-import pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx
-modules = [pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx]
+import pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx, cryptography
+import cryptography.hazmat.bindings._rust as crypto_native
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidSignature
+key = Ed25519PrivateKey.generate()
+signature = key.sign(b'PageBridge update verification probe')
+key.public_key().verify(signature, b'PageBridge update verification probe')
+try:
+ key.public_key().verify(signature, b'altered update')
+except InvalidSignature:
+ pass
+else:
+ raise RuntimeError('Ed25519 accepted a modified message')
+sha = hashes.Hash(hashes.SHA256()); sha.update(b'abc')
+if sha.finalize().hex() != 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad':
+ raise RuntimeError('SHA256 known-answer check failed')
+modules = [pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx, cryptography, crypto_native]
 print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable, 'userSiteEnabled': site.ENABLE_USER_SITE,
  'pythonPlatform': sysconfig.get_platform(), 'processBits': struct.calcsize('P')*8, 'nativeOSArchitecture': platform.machine(),
+ 'updateCrypto': {'ed25519': 'passed', 'sha256': 'passed'},
  'paths': {m.__name__: str(pathlib.Path(m.__file__).resolve()) for m in modules},
  'versions': {n:importlib.metadata.version(n) for n in ['pdf2zh-next','babeldoc','PyMuPDF','bitstring']}}))
 """
-        result = subprocess.run([str(python), "-B", "-c", probe], cwd=home, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=90, check=True)
+        result = subprocess.run([str(python), "-B", "-c", probe], cwd=home, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=90)
+        if result.returncode:
+            raise ValueError("Private runtime import probe failed: " + result.stderr[-5000:])
         imports = json.loads(result.stdout)
         if imports["pythonPlatform"] != "win-amd64" or imports["processBits"] != 64:
             raise ValueError("The bundled Python process is not 64-bit win-amd64.")
@@ -97,6 +116,10 @@ print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable, 'userSiteE
 
 
 def main():
+    # GitHub's English Windows runner otherwise uses cp1252 for redirected
+    # stdout, while the worker health message intentionally contains Chinese.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--output", type=Path)

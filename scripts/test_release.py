@@ -32,6 +32,7 @@ create = module("create-appcast.py")
 verify = module("verify-release.py")
 package = module("package-release.py")
 ci = module("release-ci.py")
+windows_update = module("windows-update.py")
 
 
 class ReleaseSignatureTests(unittest.TestCase):
@@ -285,6 +286,106 @@ class ReleaseSignatureTests(unittest.TestCase):
                 verify.verify_source(archive, '0.3.0', automation)
 
 
+class WindowsUpdateSigningTests(unittest.TestCase):
+    def setUp(self):
+        self.seed = bytes(range(32))
+        self.secret = base64.b64encode(self.seed).decode()
+        self.private = Ed25519PrivateKey.from_private_bytes(self.seed)
+        self.public = self.private.public_key()
+        self.key = base64.b64encode(self.public.public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+        self.payload = dict(schema=1, platform='windows-x64', version='0.4.0', build=13, minWindowsBuild=19041,
+            url='https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe',
+            sha256=hashlib.sha256(b'public installer fixture').hexdigest(), bytes=len(b'public installer fixture'),
+            releaseNotesURL='https://github.com/txp666/PageBridge/releases/tag/v0.4.0')
+
+    def test_producer_matches_client_and_independent_canonical_signature(self):
+        raw = windows_update.sign_payload(self.payload, self.secret, self.key)
+        self.assertEqual(windows_update.contract().verify_manifest(raw, self.key), self.payload)
+        envelope = json.loads(raw)
+        self.assertEqual(set(envelope), {'payload','signature'})
+        canonical = b'PageBridge.Windows.Update.v1\n'+json.dumps(self.payload,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode('ascii')
+        self.public.verify(base64.b64decode(envelope['signature']), canonical)
+        with self.assertRaises(InvalidSignature):
+            self.public.verify(base64.b64decode(envelope['signature']), canonical.split(b'\n',1)[1])
+
+    def test_wrong_signing_key_and_secret_errors_are_redacted(self):
+        for secret in ('private-sensitive-malformed-fixture', base64.b64encode(bytes(reversed(self.seed))).decode(),
+                       base64.b64encode(bytes(96)).decode()):
+            with self.subTest(length=len(secret)), self.assertRaises(ValueError) as error:
+                windows_update.sign_payload(self.payload, secret, self.key)
+            self.assertNotIn(secret, str(error.exception))
+
+    def test_generator_cannot_sign_an_invalid_client_payload(self):
+        for field,value in [('schema',True),('platform','macos-arm64'),('build',True),('build',0),('bytes',2*1024**3+1),
+                            ('sha256','A'*64),('version','00.4.0'),('url','https://example.invalid/installer.exe'),('extra','field')]:
+            payload = dict(self.payload); payload[field]=value
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                windows_update.sign_payload(payload,self.secret,self.key)
+
+    def test_changed_installer_or_release_identity_is_rejected(self):
+        raw = windows_update.sign_payload(self.payload,self.secret,self.key)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'PageBridge-0.4.0-windows-x64-setup.exe'
+            path.write_bytes(b'public installer fixture')
+            self.assertEqual(windows_update.verify_installer_binding(raw,self.key,dict(version='0.4.0',build='13'),path),self.payload)
+            with self.assertRaisesRegex(ValueError,'version/build'):
+                windows_update.verify_installer_binding(raw,self.key,dict(version='0.4.0',build='14'),path)
+            path.write_bytes(b'tampered installer bytes')
+            with self.assertRaisesRegex(ValueError,'bytes/checksum'):
+                windows_update.verify_installer_binding(raw,self.key,dict(version='0.4.0',build='13'),path)
+
+    def fixture(self, root):
+        dist=root/'dist';dist.mkdir()
+        (root/'VERSION.json').write_text('{"version":"0.4.0","build":"13"}')
+        (root/'update-config.json').write_text(json.dumps(dict(repository='txp666/PageBridge',publicEDKey=self.key)))
+        (dist/'PageBridge-0.4.0-windows-x64-setup.exe').write_bytes(b'public installer fixture')
+        packages=Mock()
+        packages.verify_installer.return_value=dict(status='passed',sha256=self.payload['sha256'],bytes=self.payload['bytes'])
+        original=windows_update.load_module
+        def loader(name,path):return packages if name=='windows_package' else original(name,path)
+        return dist,packages,loader
+
+    def test_cli_outputs_only_public_evidence_and_does_not_spawn_with_secret(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);dist,packages,loader=self.fixture(root)
+            before={p.relative_to(root) for p in root.rglob('*')}
+            stdout=io.StringIO()
+            with patch.object(windows_update,'load_module',side_effect=loader),patch.dict(os.environ,{'SPARKLE_PRIVATE_KEY':self.secret}), \
+                    patch('sys.argv',['windows-update.py','--dist',str(dist),'--source-root',str(root)]), \
+                    patch('subprocess.run') as run,contextlib.redirect_stdout(stdout):
+                windows_update.main()
+            run.assert_not_called()
+            self.assertTrue(json.loads(stdout.getvalue())['clientParserVerified'])
+            self.assertNotIn(self.secret,stdout.getvalue())
+            self.assertEqual({p.relative_to(root) for p in root.rglob('*')}-before,{Path('dist/windows-update.json')})
+            self.assertEqual(windows_update.verify_manifest((dist/'windows-update.json').read_bytes(),self.key),self.payload)
+
+    def test_unverified_installer_is_never_signed_and_existing_manifest_not_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);dist,packages,loader=self.fixture(root)
+            packages.verify_installer.side_effect=ValueError('installer source mismatch')
+            with patch.object(windows_update,'load_module',side_effect=loader),patch.object(windows_update,'sign_payload') as sign:
+                with self.assertRaisesRegex(ValueError,'installer source'):
+                    windows_update.generate(dist,root)
+            sign.assert_not_called()
+            self.assertFalse((dist/'windows-update.json').exists())
+            (dist/'windows-update.json').write_bytes(b'existing immutable manifest')
+            with self.assertRaisesRegex(ValueError,'overwrite'):
+                windows_update.generate(dist,root)
+            self.assertEqual((dist/'windows-update.json').read_bytes(),b'existing immutable manifest')
+
+    def test_latest_windows_feed_retries_valid_stale_signature_but_not_tampering(self):
+        raw=windows_update.sign_payload(self.payload,self.secret,self.key)
+        old=windows_update.sign_payload(dict(self.payload,build=12),self.secret,self.key)
+        with patch.object(verify,'fetch',side_effect=[old,raw]) as fetch,patch.object(verify.time,'sleep'):
+            verify.verify_latest_windows_manifest('https://example.invalid/feed',raw,self.key)
+        self.assertEqual(fetch.call_count,2)
+        tampered=raw.replace(b'"build": 13',b'"build": 14')
+        with patch.object(verify,'fetch',return_value=tampered) as fetch,patch.object(verify.time,'sleep') as sleep, self.assertRaises(ValueError):
+            verify.verify_latest_windows_manifest('https://example.invalid/feed',raw,self.key)
+        self.assertEqual(fetch.call_count,1);sleep.assert_not_called()
+
+
 class DualPlatformSourceTests(unittest.TestCase):
     def fixture(self, temporary):
         root = Path(temporary) / 'source'
@@ -292,7 +393,7 @@ class DualPlatformSourceTests(unittest.TestCase):
         names = ['LICENSE', 'engine/uv.lock', 'engine/pyproject.toml', 'engine/.python-version',
                  'engine/setup.sh', 'engine/setup-windows.ps1', 'engine/worker.py',
                  'macOS/Package.swift', 'macOS/Package.resolved', 'desktop/bridge.py',
-                 'desktop/pagebridge/core.py', 'windows/PageBridge.Windows/PageBridge.Windows.csproj',
+                 'desktop/pagebridge/core.py', 'desktop/pagebridge/updates.py', 'windows/PageBridge.Windows/PageBridge.Windows.csproj',
                  'windows/PageBridge.Windows/packages.lock.json', 'scripts/build-windows.ps1',
                  'scripts/windows-installer.iss', 'scripts/setup-inno.ps1',
                  'update-config.json', '.github/workflows/release.yml']
@@ -318,7 +419,7 @@ class DualPlatformSourceTests(unittest.TestCase):
 
     def test_asset_schema_is_explicit_and_preserves_legacy(self):
         self.assertEqual(len(verify.asset_names('0.3.0')), 7)
-        self.assertEqual(len(verify.asset_names('0.4.0')), 11)
+        self.assertEqual(len(verify.asset_names('0.4.0')), 12)
         self.assertIn('PageBridge-0.4.0-windows-x64.zip', verify.asset_names('0.4.0'))
         with self.assertRaises(ValueError):
             verify.asset_names('../../unsafe')
@@ -424,7 +525,7 @@ class DraftPublicationTests(unittest.TestCase):
             (root / 'dist' / name).write_bytes(data)
             assets.append(dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
         report = dict(version='0.4.0', build='13', repository='txp666/PageBridge', assets=assets,
-                      windows=dict(status='passed'), windowsInstaller=dict(status='passed'), feedSignatureVerified=True, archiveSignatureVerified=True)
+                      windows=dict(status='passed'), windowsInstaller=dict(status='passed'), windowsUpdateSignatureVerified=True, feedSignatureVerified=True, archiveSignatureVerified=True)
         path = root / 'report.json'; path.write_text(json.dumps(report))
         notes = root / 'notes.md'; notes.write_text('Release fixture.\n')
         identity = dict(tag='v0.4.0', version='0.4.0', build='13', sourceCommit='a'*40,
@@ -452,7 +553,7 @@ class DraftPublicationTests(unittest.TestCase):
             self.assertEqual(len([call for call in run.call_args_list if '--draft=false' in call.args[0]]), 1)
 
     def test_missing_platform_or_failed_uploaded_digest_leaves_draft(self):
-        for defect in ('missing-windows', 'missing-installer', 'unverified-installer', 'wrong-upload-digest', 'unexpected-asset', 'changed-local-asset', 'tag-moved'):
+        for defect in ('missing-windows', 'missing-installer', 'unverified-installer', 'missing-windows-feed', 'unsigned-windows-feed', 'wrong-upload-digest', 'unexpected-asset', 'changed-local-asset', 'tag-moved'):
             with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 path, notes, report, identity, metadata = self.fixture(root)
@@ -464,6 +565,12 @@ class DraftPublicationTests(unittest.TestCase):
                     path.write_text(json.dumps(report))
                 elif defect == 'unverified-installer':
                     report['windowsInstaller']['status'] = 'failed'
+                    path.write_text(json.dumps(report))
+                elif defect == 'missing-windows-feed':
+                    report['assets'] = [a for a in report['assets'] if a['name'] != 'windows-update.json']
+                    path.write_text(json.dumps(report))
+                elif defect == 'unsigned-windows-feed':
+                    report['windowsUpdateSignatureVerified'] = False
                     path.write_text(json.dumps(report))
                 elif defect == 'wrong-upload-digest':
                     metadata['assets'][0]['digest'] = 'sha256:'+'0'*64

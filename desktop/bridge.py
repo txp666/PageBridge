@@ -34,6 +34,7 @@ from pagebridge.core import AppError, DocumentStore, sha256
 from pagebridge.reading import READING_ACTIONS, dispatch_reading
 from pagebridge import assistant
 from pagebridge import literature
+from pagebridge import updates
 from pagebridge.services import ServiceStore, list_models, new_profile, probe_service, worker_service
 from pagebridge.worker import WorkerTask
 
@@ -43,7 +44,7 @@ MAX_RESPONSE_BYTES = 1048576
 LOCAL_ACTIONS = frozenset({"list", "recover", "import", "get", "rename", "folders",
                            "create_folder", "move", "trash", "favorite", "reading",
                            "export", "render", "page_info", "assistant_history",
-                           "assistant_clear", "assistant_preview", "rename_folder", "delete_folder"}) | READING_ACTIONS | literature.LOCAL_ACTIONS
+                           "assistant_clear", "assistant_preview", "rename_folder", "delete_folder"}) | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
 
 
 def make_protocol_reader(descriptor):
@@ -258,6 +259,15 @@ def literature_request(request, root):
 
 def dispatch(request, root):
     action = request["action"]
+    if action in updates.ACTIONS:
+        try:
+            if action == "update_prepare_install":
+                with library_lock(root):
+                    if any(doc["status"] in {"running", "cancelling"} for doc in DocumentStore(root, recover_interrupted=False).documents()):
+                        raise AppError("请先完成或取消翻译，再安装更新。")
+            return updates.dispatch(root, action)
+        except updates.UpdateError as error:
+            raise AppError(str(error)) from error
     if action == "translate":
         translate(request, root)
         return

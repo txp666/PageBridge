@@ -4,7 +4,7 @@ Windows 界面使用 **WinUI 3**，复用 Mac 版的 PDFMathTranslate-next / Bab
 
 界面锁定 `Microsoft.WindowsAppSDK.WinUI 2.3.9` 与 `Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9` 组件包（Windows App SDK 2.5.1 稳定发行所用的对应组件），其依赖提供 Foundation、AppWindow／Mica、构建工具和自包含 WinRT 启动。没有引用包含 AI、ML、Search、Widgets 的全量 Windows App SDK 元包，避免将未用组件加入安装目录。`.NET 10` 与所需 WinUI 运行库随包提供。
 
-当前目标为 **Windows 11 x64**。Apple Silicon Mac 上的 Windows 11 ARM 虚拟机以系统 x64 兼容模式运行此包，不代表已提供原生 ARM64 引擎；锁定的 PyMuPDF 等依赖尚未提供对应 ARM64 wheel。v0.4.0 提供正式安装器和便携 ZIP；尚未提供 Authenticode 签名或 Windows OTA；Mac 的 Sparkle 更新源不用于 Windows。
+当前目标为 **Windows 11 x64**。Apple Silicon Mac 上的 Windows 11 ARM 虚拟机以系统 x64 兼容模式运行此包，不代表已提供原生 ARM64 引擎；锁定的 PyMuPDF 等依赖尚未提供对应 ARM64 wheel。v0.4.0 提供正式安装器和便携 ZIP；提供应用内检查、下载与安装确认，尚未提供 Authenticode 签名；Windows 使用独立签名更新清单，不使用 Mac 的 Sparkle 更新源。
 
 ## 功能与平台差异
 
@@ -14,7 +14,7 @@ Windows 界面使用 **WinUI 3**，复用 Mac 版的 PDFMathTranslate-next / Bab
 
 **阅读改进**：支持连续滚动跨页、文档库侧栏折叠／恢复、相邻页预取与快速切页；复用后台进程的持久 RPC，减少重复启动解释器。隔离 Windows 虚拟机已分别在深色与浅色启动模式验证这些操作、对照滚动及关闭时保存页码。主界面、设置和弹窗已完成深浅主题截图检查，页码数字与旁边文字的基线也已校正。
 
-阅读器以页面图像叠加 PDF 文字层和批注显示，当前文字选择限于单页。现已接入文内搜索、PDF 页面内跳转及网页链接、OpenAlex／Sci-Hub 检索与全文导入。当前没有通用 OCR，也尚未提供 Windows 自动更新；目录来自 PDF 已有的大纲，不自动生成目录。导入 PDF 自带的批注会保留在页面及导出文件中，本版笔记面板只管理在 PageBridge 中新建的批注。仍未完全对齐的细节包括跨页拖选、示例目录卡片、侧栏拖动调宽和部分编辑器快捷键；两端的标题栏与系统文件选择器也遵循各自平台。
+阅读器以页面图像叠加 PDF 文字层和批注显示，当前文字选择限于单页。现已接入文内搜索、PDF 页面内跳转及网页链接、OpenAlex／Sci-Hub 检索与全文导入。当前没有通用 OCR；目录来自 PDF 已有的大纲，不自动生成目录。导入 PDF 自带的批注会保留在页面及导出文件中，本版笔记面板只管理在 PageBridge 中新建的批注。仍未完全对齐的细节包括跨页拖选、示例目录卡片、侧栏拖动调宽和部分编辑器快捷键；两端的标题栏与系统文件选择器也遵循各自平台。
 
 ## 下载与使用
 
@@ -28,7 +28,9 @@ Windows 界面使用 **WinUI 3**，复用 Mac 版的 PDFMathTranslate-next / Bab
 
 ### 升级与卸载
 
-退出 PageBridge 后运行新版安装器升级。安装器使用固定应用标识识别升级，不强制结束正在运行的旧窗口；遇到文件占用时请自行关闭应用再继续。便携版则将新版完整解压到新目录，更新需要的快捷方式。Windows 暂无 OTA，不使用 Mac 的 Sparkle 更新源。
+从 `+` 菜单或翻译服务设置的“检查更新…”手动检查。发现新版后由用户下载，可查看进度、取消；Ed25519 清单签名、文件长度和 SHA-256 均验证通过后，再确认启动安装向导并退出应用。翻译、助手或保存任务仍在运行时不能安装，未保存设置和助手草稿会确认。没有定时后台检查、自动下载或静默安装。
+
+安装器使用固定应用标识识别升级，不强制结束正在运行的旧窗口；手动下载安装时请先退出旧版。便携版也可检查更新，但 OTA 下载的是 Setup，会按向导安装到已有 Inno 目录或默认本地程序目录，**不原地替换便携文件夹**。若保持便携使用，仍可下载完整新版 ZIP 并解压到新目录。Windows 使用独立的 `windows-update.json`；签名清单不等同 Authenticode，安装器仍可能显示系统安全提示。
 
 安装器提供系统卸载入口。卸载只移除程序和快捷方式，**不会删除** `%LOCALAPPDATA%\PageBridge` 中的文档、译文、批注、对话或配置，也不会清除系统凭据。便携版退出后可直接移除程序目录，同样保留独立用户数据。不要将 Mac 的整个应用数据目录直接覆盖到 Windows。安装／升级／卸载的实际验证结果见[验证记录](VERIFICATION.md)，不能由安装脚本配置推断已经通过。
 
@@ -121,7 +123,7 @@ Remove-Item Env:PYTHONPATH
   --output validation/windows/packaged-engine.json
 ```
 
-Windows 常规工作流在 Windows runner 上测试和打包，并上传 Actions artifact；推送版本标签后，联合发布 CI 会在 Windows runner 上直接用 Inno Setup 编译安装器，再将安装器、便携 ZIP 与 Mac、项目源码、第三方源码一起核验和发布。Windows 不更新 Sparkle feed，也不读取 OTA 签名私钥。日志和隔离引擎验证报告保存在 artifact 中；工作流定义不代表某次运行已经通过。
+Windows 常规工作流在 Windows runner 上测试和打包，并上传 Actions artifact；推送版本标签后，联合发布 CI 会在 Windows runner 上直接用 Inno Setup 编译安装器，再将安装器、便携 ZIP 与 Mac、项目源码、第三方源码一起核验和发布。Windows 构建作业不读取 OTA 签名私钥；联合发布的签名作业生成独立 `windows-update.json`，客户端只持有公钥。日志和隔离引擎验证报告保存在 artifact 中；工作流定义不代表某次运行已经通过。
 
 Windows 凭据管理器的真实集成测试需要已登录的交互式桌面会话。CI 或 SSH 的普通后台会话使用测试专用内存凭据替身；这不会改变应用生产环境的系统凭据存储。在已登录桌面的 PowerShell 中，可设置 `$env:PAGEBRIDGE_TEST_WINDOWS_CREDENTIALS = '1'` 后运行上述 desktop 测试，结束后用 `Remove-Item Env:PAGEBRIDGE_TEST_WINDOWS_CREDENTIALS` 清除本次测试开关。不要把 SSH 的“没有凭据登录会话”误判为生产环境已通过凭据测试。
 

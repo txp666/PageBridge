@@ -33,6 +33,7 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
 
     internal string SelectedVariant => variant;
     internal string SourceSHA => sourceSHA;
+    internal bool IsBusy => busy || editing;
     internal event Action<string>? VariantChanged;
     internal event Action<string, string, JsonArray>? AnnotationsChanged;
 

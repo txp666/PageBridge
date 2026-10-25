@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ MANIFEST = 'BUNDLE_MANIFEST.json'
 UI_FILES = ('PageBridge.Windows.exe', 'PageBridge.Windows.dll', 'PageBridge.Windows.pri', 'App.xbf')
 ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'pyproject.toml', 'uv.lock')
 REQUIRED = (*UI_FILES, 'WINDOWS_BUILD.json', 'README.md', 'README-Windows.md', 'docs/USER_GUIDE.md',
-            'resources/VERSION.json', 'resources/windows/app.manifest', 'resources/windows/packages.lock.json',
+            'resources/VERSION.json', 'resources/update-config.json', 'resources/windows/app.manifest', 'resources/windows/packages.lock.json',
             'resources/desktop/bridge.py', 'resources/engine/runtime/python.exe', 'resources/engine/uv.lock')
 
 
@@ -50,7 +51,7 @@ def load_version(root):
 
 def build_metadata(root):
     return dict(**load_version(root), channel='stable', architecture='x64', ui='WinUI 3',
-                automaticUpdates=False, signed=False, updateMode='manual', distribution='portable-zip')
+                automaticUpdates=True, signed=False, updateMode='signed-feed-user-confirmed-installer', distribution='portable-zip')
 
 
 def package_name(root):
@@ -72,7 +73,8 @@ def ordinary(path):
 
 def source_inputs(root):
     root = Path(root)
-    paths = {root/name for name in ('VERSION.json', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+    paths = {root/name for name in ('VERSION.json', 'update-config.json', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+        'assets/PageBridge-icon.png', 'engine/.python-version', 'engine/runtime_info.py', 'engine/setup-windows.ps1',
         'windows/Directory.Build.props', 'windows/PageBridge.Windows/packages.lock.json',
         'scripts/build-windows.ps1', 'scripts/windows_package.py', 'scripts/build-windows-engine.py',
         'scripts/verify-windows-engine.py', 'scripts/bundle-profile.json',
@@ -94,8 +96,9 @@ def source_inputs(root):
 def payload_sources(root):
     root = Path(root)
     result = {f'resources/engine/{name}': f'engine/{name}' for name in ENGINE_FILES}
-    result.update({f'resources/{name}': name for name in ('VERSION.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md')})
+    result.update({f'resources/{name}': name for name in ('VERSION.json', 'update-config.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md')})
     result.update({'resources/desktop/bridge.py': 'desktop/bridge.py', 'README.md': 'README.md',
+                   'resources/assets/PageBridge-icon.png': 'assets/PageBridge-icon.png',
                    'README-Windows.md': 'docs/WINDOWS.md',
                    'resources/windows/packages.lock.json': 'windows/PageBridge.Windows/packages.lock.json'})
     for directory, prefix in (('desktop/pagebridge', 'resources/desktop/pagebridge'), ('docs', 'docs'), ('demos', 'resources/demos')):
@@ -189,7 +192,7 @@ def verify_archive(path, source_root):
             if expected[name]['sha256'] != digest(root/relative): raise ValueError('Packaged source differs from release: '+name)
         _validate_metadata(lambda name: archive.read(members[name]), root)
     return dict(status='passed', version=load_version(root)['version'], build=load_version(root)['build'],
-                channel='stable', signed=False, automaticUpdates=False, updateMode='manual',
+                channel='stable', signed=False, automaticUpdates=True, updateMode='signed-feed-user-confirmed-installer',
                 files=len(members), expandedBytes=total+members[MANIFEST].file_size,
                 archiveBytes=path.stat().st_size, sha256=digest(path), sourceIdentity='matched', zipCRC='passed',
                 bundleManifestSHA256=hashlib.sha256(manifest_bytes).hexdigest())
@@ -197,6 +200,10 @@ def verify_archive(path, source_root):
 
 def source_identity_hash(root):
     return hashlib.sha256(json.dumps(source_inputs(root), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def hash_token(value):
+    return base64.urlsafe_b64encode(bytes.fromhex(value)).decode('ascii').rstrip('=')
 
 
 def pe_version_info(data):
@@ -260,7 +267,7 @@ def pe_version_info(data):
         if key == 'VS_VERSION_INFO':
             if len(value) < 52 or struct.unpack_from('<I',value)[0] != 0xfeef04bd: raise ValueError('Invalid fixed version info.')
             fixed=struct.unpack_from('<IIII',value,8)
-        elif value_type and value_length: strings[key]=value.decode('utf-16-le').rstrip('\0')
+        elif value_type and value_length: strings[key]=value.decode('utf-16-le').rstrip('\0 ')
         position=(position+value_size+3)&~3
         while position+6 <= limit:
             child_length=struct.unpack_from('<H',blob,position)[0]
@@ -289,13 +296,17 @@ def verify_installer(path, source_root):
     if info['hasCertificate']: raise ValueError('Unsigned release metadata differs from installer signature.')
     archive=path.with_name(package_name(root)+'.zip')
     archive_report=verify_archive(archive,root)
-    description='PageBridge Setup; source='+source_identity_hash(root)+'; bundle='+archive_report['bundleManifestSHA256']
-    strings=info['strings']
-    if (strings.get('FileDescription') != description or strings.get('OriginalFilename') != expected_name
-            or strings.get('ProductVersion') != version['version']+'+build.'+version['build']):
+    # Inno's loader has fixed 60-character resource fields; compact tokens retain
+    # all 256 bits rather than accepting a silently truncated hexadecimal hash.
+    description='PageBridge src='+hash_token(source_identity_hash(root))
+    product='PageBridge pkg='+hash_token(archive_report['bundleManifestSHA256'])
+    strings={key.casefold():value for key,value in info['strings'].items()}
+    if (strings.get('filedescription') != description or strings.get('originalfilename') != expected_name
+            or strings.get('productname') != product
+            or strings.get('productversion') != version['version']+'+build.'+version['build']):
         raise ValueError('Installer resource does not match release source or ZIP manifest.')
     return dict(status='passed',version=version['version'],build=version['build'],channel='stable',signed=False,
-                automaticUpdates=False,updateMode='manual',bytes=path.stat().st_size,sha256=digest(path),
+                automaticUpdates=True,updateMode='signed-feed-user-confirmed-installer',bytes=path.stat().st_size,sha256=digest(path),
                 bootstrapMachine=hex(info['machine']),sourceIdentity='matched',
                 bundleManifestSHA256=archive_report['bundleManifestSHA256'],
                 payloadVerification='metadata bound to verified ZIP; actual install verified separately')
