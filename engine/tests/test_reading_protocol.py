@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -16,8 +17,12 @@ def envelope(**fields):
     return dict(protocolVersion=1, jobId='reading-job', attemptId='reading-attempt', **fields)
 
 
+def fixture_path(*parts):
+    return str(Path(tempfile.gettempdir()).resolve().joinpath('pagebridge-reading-protocol', *parts))
+
+
 def reading_request(**fields):
-    data=envelope(action='translate', inputPath='/tmp/source.pdf', outputDirectory='/tmp/reading-output',
+    data=envelope(action='translate', inputPath=fixture_path('source.pdf'), outputDirectory=fixture_path('reading-output'),
                   service=dict(kind='openai',baseURL='https://example.com/v1',model='model',apiKey='fixture-key',timeoutSeconds=30,concurrency=2),
                   outputMode='reading')
     data.update(fields)
@@ -36,13 +41,13 @@ class ReadingProtocolTests(unittest.TestCase):
         self.assertEqual(result['outputMode'],'pdf')
 
     def test_retry_is_bound_to_reading_artifact_and_explicit_blocks(self):
-        result=reading_request(readingPath='/tmp/previous/reading.json',retryBlockIds=['p0001-b0002'])
+        result=reading_request(readingPath=fixture_path('previous','reading.json'),retryBlockIds=['p0001-b0002'])
         self.assertEqual(result['retryBlockIds'],['p0001-b0002'])
         for changes in (dict(readingPath='relative.json',retryBlockIds=['p1-b2']),
-                        dict(readingPath='/tmp/reading.json',retryBlockIds=[]),
-                        dict(readingPath='/tmp/reading.json',retryBlockIds=['p1-b2','p1-b2']),
-                        dict(readingPath='/tmp/reading.json',retryBlockIds=['../bad']),
-                        dict(outputMode='pdf',readingPath='/tmp/reading.json',retryBlockIds=['p1-b2']),
+                        dict(readingPath=fixture_path('reading.json'),retryBlockIds=[]),
+                        dict(readingPath=fixture_path('reading.json'),retryBlockIds=['p1-b2','p1-b2']),
+                        dict(readingPath=fixture_path('reading.json'),retryBlockIds=['../bad']),
+                        dict(outputMode='pdf',readingPath=fixture_path('reading.json'),retryBlockIds=['p1-b2']),
                         dict(retryBlockIds=['p1-b2'])):
             with self.subTest(changes=changes),self.assertRaises(worker.WorkerError):
                 reading_request(**changes)

@@ -191,12 +191,13 @@ class ReadingUnitTests(unittest.TestCase):
         secrets = {"PYTHONHOME": "app/python", "PYTHONPATH": "app/modules", "VIRTUAL_ENV": "app/venv",
                    "OPENAI_API_KEY": "secret", "SOME_API_TOKEN": "secret", "HF_TOKEN": "secret",
                    "AWS_SECRET_ACCESS_KEY": "secret", "MINERU_REMOTE_URL": "https://external.invalid"}
-        with patch.dict(os.environ, secrets):
-            env = reading.runtime_environment(Path("/tmp/optional-parser"))
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, secrets):
+            root = Path(folder).resolve()
+            env = reading.runtime_environment(root)
         self.assertTrue(all(key not in env for key in secrets))
         self.assertEqual(env["MINERU_MODEL_SOURCE"], "local")
         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
-        self.assertEqual(env["UV_PYTHON_INSTALL_DIR"], "/tmp/optional-parser/python")
+        self.assertEqual(Path(env["UV_PYTHON_INSTALL_DIR"]), root / "python")
 
     def test_model_integrity_detects_same_size_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
