@@ -16,10 +16,10 @@ import zipfile
 
 MANIFEST = 'BUNDLE_MANIFEST.json'
 UI_FILES = ('PageBridge.Windows.exe', 'PageBridge.Windows.dll', 'PageBridge.Windows.pri', 'App.xbf')
-ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'pyproject.toml', 'uv.lock')
+ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 REQUIRED = (*UI_FILES, 'WINDOWS_BUILD.json', 'README.md', 'README-Windows.md', 'docs/USER_GUIDE.md',
             'resources/VERSION.json', 'resources/update-config.json', 'resources/windows/app.manifest', 'resources/windows/packages.lock.json',
-            'resources/desktop/bridge.py', 'resources/engine/runtime/python.exe', 'resources/engine/uv.lock')
+            'resources/desktop/bridge.py', 'resources/engine/tools/uv.exe', 'resources/engine/runtime/python.exe', 'resources/engine/uv.lock')
 
 
 def digest(path):

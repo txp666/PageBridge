@@ -1,0 +1,401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PageBridge structured reading artifact v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "artifactType",
+    "sourceSHA256",
+    "pageCount",
+    "selectedPages",
+    "sourceLanguage",
+    "targetLanguage",
+    "model",
+    "parser",
+    "status",
+    "pages"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "artifactType": {
+      "const": "structured-reading"
+    },
+    "sourceSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pageCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "selectedPages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "sourceLanguage": {
+      "type": "string"
+    },
+    "targetLanguage": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "parser": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "tier"
+      ],
+      "properties": {
+        "name": {
+          "const": "MinerU"
+        },
+        "version": {
+          "type": "string"
+        },
+        "tier": {
+          "const": "basic"
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "partial"
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "pageNumber",
+          "width",
+          "height",
+          "status",
+          "blocks"
+        ],
+        "properties": {
+          "pageNumber": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "partial",
+              "source_fallback"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "decorations": {
+            "description": "Optional native PDF strokes and fill boundaries, in the same top-left PDF-point coordinates as blocks. Restore source pixels after translation overlays; never fill their interiors.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/decoration"
+            }
+          },
+          "decorationsCoordinateSpace": {
+            "const": "page",
+            "description": "Present on normalized page-local paths. Legacy artifacts without this field used native displayed PDF coordinates, including a possible nonzero page origin."
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind",
+                "sourceText",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^p[0-9]+-b[0-9]+$"
+                },
+                "kind": {
+                  "enum": [
+                    "text",
+                    "heading",
+                    "list",
+                    "table",
+                    "formula",
+                    "figure",
+                    "code"
+                  ]
+                },
+                "sourceText": {
+                  "type": "string"
+                },
+                "translatedText": {
+                  "type": "string"
+                },
+                "sourceTemplate": {
+                  "type": "string",
+                  "description": "Complete source passage with each inlineMath token exactly once."
+                },
+                "translatedTemplate": {
+                  "type": "string",
+                  "description": "Complete translated passage with each inlineMath token exactly once. Clients replace tokens with original PDF image attachments; readable translatedText contains LaTeX instead."
+                },
+                "inlineMath": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "token",
+                      "latex",
+                      "bbox"
+                    ],
+                    "properties": {
+                      "token": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "latex": {
+                        "type": "string"
+                      },
+                      "bbox": {
+                        "$ref": "#/$defs/bbox"
+                      }
+                    }
+                  }
+                },
+                "sourceType": {
+                  "enum": [
+                    "page_number",
+                    "native_table",
+                    "table_cell"
+                  ],
+                  "description": "page_number keeps the original page label. native_table preserves native values/grid and is not translated as a model-produced matrix; table_cell is a separately positioned native text label."
+                },
+                "translationContext": {
+                  "type": "string",
+                  "maxLength": 1600,
+                  "description": "Optional native table headings and nearby rows, supplied as untrusted reference context when translating a short table cell."
+                },
+                "status": {
+                  "enum": [
+                    "translated",
+                    "source_fallback",
+                    "preserved"
+                  ]
+                },
+                "error": {
+                  "type": "string"
+                },
+                "bbox": {
+                  "description": "Optional reliable source region: PDF points, top-left origin. Missing coordinates mean page-level reference only.",
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "backgroundColor": {
+                  "description": "Optional source-region background hint, sampled at its outer edges. RGB channels; clients default to white when absent.",
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "foregroundColor": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  },
+                  "description": "Original native text color in sRGB."
+                }
+              }
+            }
+          },
+          "backgroundImage": {
+            "type": "string",
+            "maxLength": 16777216,
+            "description": "Optional base64 PNG of the original page with only mapped visible text removed. Source PDF remains unchanged."
+          },
+          "backgroundBlocks": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Only these blocks overlay text on backgroundImage; never fill their rectangles or repaint original source regions."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bbox": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "number"
+      },
+      "description": "Actual source region, top-left PDF points in the rotated/cropped page coordinate system."
+    },
+    "decoration": {
+      "type": "object",
+      "required": [
+        "commands",
+        "width",
+        "dash",
+        "dashPhase",
+        "lineCap",
+        "lineJoin",
+        "color",
+        "opacity"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "stroke",
+            "fill_boundary"
+          ],
+          "description": "Missing means stroke. fill_boundary uses actual closed fill edges, width=0; clients restore only a fixed 1 PDF point source-pixel edge band, never the filled interior."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "op",
+                  "points"
+                ],
+                "properties": {
+                  "op": {
+                    "enum": [
+                      "M",
+                      "L"
+                    ]
+                  },
+                  "points": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "op",
+                  "points"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "C"
+                  },
+                  "points": {
+                    "type": "array",
+                    "minItems": 6,
+                    "maxItems": 6,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "op",
+                  "points"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "Z"
+                  },
+                  "points": {
+                    "type": "array",
+                    "maxItems": 0
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "width": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Source stroke width in PDF points; zero means a PDF hairline."
+        },
+        "dash": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "dashPhase": {
+          "type": "number"
+        },
+        "lineCap": {
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "lineJoin": {
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "color": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

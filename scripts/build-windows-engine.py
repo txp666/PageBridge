@@ -16,7 +16,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE_FILES = ("worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py", "pyproject.toml", "uv.lock")
+ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 
 
 def canonical(value):
@@ -49,9 +49,9 @@ def check_tree(root):
             raise ValueError(f"Runtime contains a link or junction: {path.name}")
 
 
-def rename_with_retry(source, target, timeout=15):
+def rename_with_retry(source, target, timeout=60):
     # DLL image sections can remain briefly locked after a Windows process
-    # exits. Retry only the relevant Windows errors; never delete the source
+    # exits, especially while antivirus scans a fresh runtime. Retry only the relevant Windows errors; never delete the source
     # or mask a persistent failure with an attempted cleanup.
     deadline = time.monotonic() + timeout
     while True:
@@ -173,7 +173,18 @@ def main():
         profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text())
         report = prune(runtime, profile, info["versions"])
         for name in ENGINE_FILES:
+            (stage / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "engine" / name, stage / name)
+        uv_source = Path(os.environ.get("PAGEBRIDGE_UV", ROOT / "engine/.tools/bin/uv.exe"))
+        if not uv_source.is_file():
+            resolved_uv = shutil.which("uv")
+            if not resolved_uv:
+                raise ValueError("uv 0.9.17 is required for the optional reading runtime bootstrap.")
+            uv_source = Path(resolved_uv)
+        if subprocess.check_output([str(uv_source), "--version"], text=True).split()[:2] != ["uv", "0.9.17"]:
+            raise ValueError("Expected uv 0.9.17 for the reading runtime bootstrap.")
+        (stage / "tools").mkdir()
+        shutil.copy2(uv_source, stage / "tools/uv.exe")
         (stage / "runtime-info.json").write_text(json.dumps({key: info[key] for key in ("pythonVersion", "architecture", "pythonPlatform", "processBits", "nativeOSArchitecture", "versions")}, indent=2) + "\n", encoding="utf-8")
         (stage / "bundle-profile.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         evidence = ROOT / "validation/windows/engine-staging.json"

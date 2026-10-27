@@ -147,6 +147,7 @@ public sealed partial class MainWindow
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rightScroll, "译文连续阅读"); leftPane = MakePDFPane("原文", leftScroll, false); rightPane = MakePDFPane("译文", rightScroll, true); Grid.SetRow(emptyTranslation, 1); rightPane.Children.Add(emptyTranslation);
         reader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); reader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); reader.Children.Add(leftPane); reader.Children.Add(rightPane); Grid.SetColumn(rightPane, 1);
         readerArea.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); readerArea.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); readerArea.Children.Add(pageNavigation); Grid.SetColumn(reader, 1); readerArea.Children.Add(reader); Grid.SetRow(readerArea, 2); workspace.Children.Add(readerArea);
+        InitializeStructuredReading();
         InitializeReadingWorkspace();
         var statusBar = new Grid { Padding = new Thickness(16, 6, 16, 6), ColumnSpacing = 8 }; statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.Children.Add(ReaderIcons.Make("info", 12)); status.FontSize = 11; status.Opacity = .65; Grid.SetColumn(status, 1); statusBar.Children.Add(status); Grid.SetColumn(progress, 2); statusBar.Children.Add(progress); Grid.SetRow(statusBar, 3); workspace.Children.Add(statusBar); themedBars.Add(statusBar);
         var footer = new Grid { Padding = new Thickness(20, 8, 20, 8), BorderThickness = new Thickness(0, 1, 0, 0), BorderBrush = LineBrush };
@@ -155,6 +156,8 @@ public sealed partial class MainWindow
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(page, "当前页码");
         page.Background = Clear; ToolTipService.SetToolTip(page, "输入页码，按 Enter 跳转"); pageCount.FontSize = 12; pageCount.Opacity = .65;
         var paging = Row(Tool("left", null, "上一页", () => ChangePage(-1)), new TextBlock { Text = "第", FontSize = 12, Opacity = .65, VerticalAlignment = VerticalAlignment.Center }, page, pageCount, Tool("right", null, "下一页", () => ChangePage(1))); paging.Spacing = 4; Grid.SetColumn(paging, 1); footer.Children.Add(paging);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sync, "ReaderSyncScroll");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(sync, "同步滚动");
         sync.MinWidth = 40; sync.Height = 28; sync.Padding = new Thickness(0); var syncPanel = Row(ReaderIcons.Make("link", 13), new TextBlock { Text = "同步滚动", FontSize = 11, VerticalAlignment = VerticalAlignment.Center }, sync); syncPanel.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(syncPanel, 2); footer.Children.Add(syncPanel); Grid.SetRow(footer, 4); workspace.Children.Add(footer); themedBars.Add(footer);
         BuildEmptyLibrary(); Grid.SetColumn(emptyLibrary, 1); root.Children.Add(emptyLibrary);
         root.AllowDrop = true; root.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
@@ -199,9 +202,9 @@ public sealed partial class MainWindow
     }
     private void UpdateModeButtons()
     {
-        for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || Text(selected, "translated_path") != ""; }
+        for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || HasTranslation; }
         if (leftPane is not null) ((FrameworkElement)leftPane.Children[0]).Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-        if (rightPane is not null) ((FrameworkElement)rightPane.Children[0]).Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        if (rightPane is not null) ((FrameworkElement)rightPane.Children[0]).Visibility = mode.SelectedIndex == 1 || (mode.SelectedIndex == 2 && ShowingReading) ? Visibility.Visible : Visibility.Collapsed;
         sync.IsEnabled = mode.SelectedIndex == 1;
     }
     private void UpdateDocumentState()
@@ -209,8 +212,8 @@ public sealed partial class MainWindow
         UpdatePDFPaneLabels();
         bool hasDoc = selected is not null; emptyLibrary.Visibility = !hasDoc && settingsOverlay is null ? Visibility.Visible : Visibility.Collapsed; workspace.Visibility = hasDoc && settingsOverlay is null ? Visibility.Visible : Visibility.Collapsed;
         translateButton.IsEnabled = hasDoc; exportButton.IsEnabled = hasDoc; documentStatus.Text = hasDoc ? StatusName(Text(selected, "status")) : "";
-        if (hasDoc && Text(selected, "translated_path") == "") mode.SelectedIndex = 0;
-        if (translationCancellation is null) translateButton.Content = Row(ReaderIcons.Make("translate"), new TextBlock { Text = Text(selected, "translated_path") == "" ? "翻译" : "重新翻译", FontSize = 12 });
+        if (hasDoc && !HasTranslation) mode.SelectedIndex = 0;
+        if (translationCancellation is null) translateButton.Content = Row(ReaderIcons.Make("translate"), new TextBlock { Text = !HasTranslation ? "翻译" : "重新翻译", FontSize = 12 });
         if (exportButton.Flyout is MenuFlyout menu) { menu.Items[1].IsEnabled = Text(selected, "translated_path") != ""; menu.Items[2].IsEnabled = Text(selected, "bilingual_path") != ""; }
         UpdateModeButtons();
     }
@@ -319,6 +322,6 @@ public sealed partial class MainWindow
         if (selected is not null && !Flag(selected, "trashed") && visible.Any(d => Text(d, "id") == Text(selected, "id"))) return;
         var first = visible.FirstOrDefault(d => !Flag(d, "trashed"));
         if (first is not null) await OpenAsync(first);
-        else { ResetDocumentSearch(); selected = null; selectionGeneration++; renderGeneration++; navigationGeneration++; navigationIdentity = ""; await annotationsPanel.BindAsync("", false); await assistantPanel.BindAsync("", ""); HideInspector(); annotationHashes.Clear(); annotationsByVariant.Clear(); pageThumbnails.Items.Clear(); outlineList.Items.Clear(); bookmarkList.Items.Clear(); bindingPages = false; originalPages.Clear(); translatedPages.Clear(); if (!sidebarVisible) ToggleSidebar(); UpdateDocumentState(); }
+        else { ResetDocumentSearch(); selected = null; selectionGeneration++; renderGeneration++; navigationGeneration++; navigationIdentity = ""; await annotationsPanel.BindAsync("", false); await assistantPanel.BindAsync("", ""); HideInspector(); annotationHashes.Clear(); annotationsByVariant.Clear(); pageThumbnails.Items.Clear(); outlineList.Items.Clear(); bookmarkList.Items.Clear(); bindingPages = false; originalPages.Clear(); translatedPages.Clear(); structuredReading.Clear(); ApplyStructuredVisibility(); if (!sidebarVisible) ToggleSidebar(); UpdateDocumentState(); }
     }
 }

@@ -35,6 +35,7 @@ from pagebridge.reading import READING_ACTIONS, dispatch_reading
 from pagebridge import assistant
 from pagebridge import literature
 from pagebridge import updates
+from pagebridge import structured
 from pagebridge.services import ServiceStore, list_models, new_profile, probe_service, worker_service
 from pagebridge.worker import WorkerTask
 
@@ -44,7 +45,7 @@ MAX_RESPONSE_BYTES = 1048576
 LOCAL_ACTIONS = frozenset({"list", "recover", "import", "get", "rename", "folders",
                            "create_folder", "move", "trash", "favorite", "reading",
                            "export", "render", "page_info", "assistant_history",
-                           "assistant_clear", "assistant_preview", "rename_folder", "delete_folder"}) | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
+                           "assistant_clear", "assistant_preview", "rename_folder", "delete_folder"}) | READING_ACTIONS | structured.ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
 
 
 def make_protocol_reader(descriptor):
@@ -304,6 +305,7 @@ def dispatch(request, root):
         elif action == "mark_running": result = store.mark_running(identifier, request["attempt_id"])
         elif action == "finish_failure": result = store.finish_failure(identifier, request.get("message"), request.get("cancelled", False))
         elif action == "commit_result": result = store.commit_result(identifier, request["attempt_id"], request["event"])
+        elif action in structured.ACTIONS: result = structured.dispatch(store, request)
         elif action == "render": result = render(store, request)
         elif action == "page_info": result = store.page_info(identifier, request.get("variant", "original"))
         elif action in READING_ACTIONS: result = dispatch_reading(store, request)
@@ -356,11 +358,27 @@ def translate(request, root):
             service_id = request.get("service_id") or services.active_id
             profile = services.get(service_id)
             service = worker_service(profile, services.key(service_id))
+            output_mode = request.get("outputMode", "pdf")
+            if output_mode not in {"pdf", "reading"}:
+                raise AppError("不支持的翻译输出类型。")
+            retry_ids = request.get("retryBlockIds")
+            previous_reading = None
+            if retry_ids is not None:
+                if output_mode != "reading" or not isinstance(retry_ids, list) or not retry_ids or any(not isinstance(i, str) for i in retry_ids):
+                    raise AppError("请选择需要重试的阅读块。")
+                _, artifact = structured.committed_artifact(store, identifier)
+                available = {b["id"] for p in artifact["pages"] for b in p["blocks"]}
+                if len(retry_ids) != len(set(retry_ids)) or not set(retry_ids) <= available:
+                    raise AppError("需要重试的阅读块已变化，请刷新后重试。")
+                previous_reading = doc["reading_path"]
             attempt, directory = store.new_attempt(identifier)
             store.mark_running(identifier, attempt)
         envelope = dict(protocolVersion=1, jobId=job_id, attemptId=attempt, action="translate", inputPath=doc["input_path"],
                         outputDirectory=str(directory), sourceLanguage=request.get("sourceLanguage", "en"),
-                        targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service)
+                        targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service, outputMode=output_mode)
+        if previous_reading:
+            envelope.update(readingPath=previous_reading, retryBlockIds=retry_ids,
+                            sourceLanguage=artifact.get("sourceLanguage", "en"), targetLanguage=artifact.get("targetLanguage", "zh"))
         engine_root = Path(__file__).resolve().parent.parent / "engine"
         task = WorkerTask(engine_root, envelope, on_event=send).start()
 
@@ -385,8 +403,9 @@ def translate(request, root):
                 terminal("error", stage="cancelled" if task.cancelled else "failed", message=document["last_error"], document=document)
             else:
                 document = store.commit_result(identifier, attempt, task.result)
-                terminal("result", progress=1.0, message="翻译完成，结果已保存。", document=document,
-                         translatedPath=document["translated_path"], bilingualPath=document["bilingual_path"])
+                terminal("result", progress=1.0, message="部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。", document=document,
+                         artifactType=task.result.get("artifactType", "pdf"), readingPath=document.get("reading_path"),
+                         translatedPath=document.get("translated_path"), bilingualPath=document.get("bilingual_path"))
     except BaseException as error:
         if task and task.running:
             task.cancel()

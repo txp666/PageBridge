@@ -111,13 +111,13 @@ class DocumentStore:
                 ids.add(d["id"])
                 if not isinstance(d.get("name"), str) or not isinstance(d.get("page_count"), int) or d["page_count"] < 1:
                     raise ValueError()
-                if d.get("status") not in {"ready", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"}:
+                if d.get("status") not in {"ready", "running", "cancelling", "completed", "partial", "failed", "cancelled", "interrupted"}:
                     raise ValueError()
                 if (not isinstance(d.get("input_sha256"), str) or len(d["input_sha256"]) != 64
                         or any(c not in "0123456789abcdef" for c in d["input_sha256"])
                         or not isinstance(d.get("input_path"), str) or not d["input_path"]):
                     raise ValueError()
-                for field in ("input_path", "translated_path", "bilingual_path"):
+                for field in ("input_path", "translated_path", "bilingual_path", "reading_path"):
                     if d.get(field) and not _inside(d[field], self.root / "documents"):
                         raise ValueError()
             folder_ids = set()
@@ -317,6 +317,9 @@ class DocumentStore:
         return self._change(document_id, lambda d: d.update(status="cancelled" if cancelled else "failed", last_error="翻译已取消。" if cancelled else message), allow_busy=True)
 
     def commit_result(self, document_id, attempt_id, event):
+        if event.get("artifactType") == "structured-reading":
+            from .structured import commit_reading
+            return commit_reading(self, document_id, attempt_id, event)
         with self._lock:
             doc = self.get(document_id)
             if (doc.get("attempt_id") != attempt_id or doc["status"] != "running" or event.get("attemptId") != attempt_id
@@ -371,7 +374,7 @@ class DocumentStore:
                 moved = True
                 state = copy.deepcopy(self._state)
                 updated = self._find(state, document_id)
-                updated.update(status="completed", last_error=None, translated_path=str(destination / "translated.pdf"),
+                updated.update(status="completed", last_error=None, preferred_artifact="pdf", translated_path=str(destination / "translated.pdf"),
                                bilingual_path=str(destination / "bilingual.pdf"), source_language=manifest.get("sourceLanguage", "en"),
                                target_language=manifest.get("targetLanguage", "zh"))
                 self._write(state)

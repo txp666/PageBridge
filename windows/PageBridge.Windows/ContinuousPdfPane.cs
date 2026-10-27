@@ -18,6 +18,7 @@ internal sealed partial class ContinuousPdfPane
         internal required Grid Paper;
         internal required Image Image;
         internal required TextBlock Placeholder;
+        internal readonly Viewbox Overlay = new() { Stretch = Stretch.Uniform };
         internal readonly Canvas Markup = new();
         internal readonly Canvas SelectionLayer = new() { IsHitTestVisible = false };
         internal readonly Canvas SearchLayer = new() { IsHitTestVisible = false };
@@ -28,38 +29,39 @@ internal sealed partial class ContinuousPdfPane
         internal int RenderWidth;
     }
     private readonly BackendClient backend;
+    private readonly bool allowSelection;
     private readonly StackPanel stack = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Center };
     private readonly List<PageSize> sizes = [];
     private readonly List<PageView> views = [];
     private readonly Dictionary<(int Page, int Width), string> cache = [];
     private readonly HashSet<(int Page, int Width)> failed = [];
-    private double[] offsets = [];
+    private double[] offsets = [], pageHeights = [];
     private string documentId = "", variant = "", identity = "";
     private int generation;
     private bool pumping, arranging, active = true;
     private double zoom = 1, paperWidth = 500;
     private Anchor? pending;
     internal ScrollViewer Scroll { get; }
+    internal string DocumentId => documentId;
     internal int CurrentPage => views.Count > 0 && Scroll.ScrollableHeight > 0 && Scroll.VerticalOffset >= Scroll.ScrollableHeight - 1 ? views.Count : Position.Page + 1;
     internal event Action<ContinuousPdfPane>? PositionChanged;
     internal event Action<ContinuousPdfPane>? Activated;
     internal event Action<string>? PreviewError;
+    internal Func<int, double, double, ImageSource, Task<UIElement?>>? PageOverlayRequested;
     internal Anchor Position
     {
         get
         {
-            if (offsets.Length == 0) return new Anchor(0, 0);
-            double offset = Math.Max(0, Scroll.VerticalOffset);
-            int index = Array.BinarySearch(offsets, offset);
-            if (index < 0) index = Math.Max(0, ~index - 1);
-            index = Math.Min(index, sizes.Count - 1);
-            return new Anchor(index, Math.Clamp((offset - offsets[index]) / Math.Max(1, views[index].Paper.Height), 0, 1));
+            double pixel = 1 / (Scroll.XamlRoot?.RasterizationScale ?? 1);
+            var position = PageScrollGeometry.Locate(Scroll.VerticalOffset, offsets, pageHeights, pixel);
+            return new Anchor(position.Page, position.Fraction);
         }
     }
 
-    internal ContinuousPdfPane(BackendClient backend)
+    internal ContinuousPdfPane(BackendClient backend, bool allowSelection = true)
     {
         this.backend = backend;
+        this.allowSelection = allowSelection;
         Scroll = new ScrollViewer { Content = stack, Padding = new Thickness(16), HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Enabled, HorizontalContentAlignment = HorizontalAlignment.Center };
         Scroll.SizeChanged += (_, _) => ArrangePages();
         Scroll.ViewChanged += (_, _) => { if (!arranging) { PositionChanged?.Invoke(this); RefreshVisible(); } };
@@ -68,7 +70,7 @@ internal sealed partial class ContinuousPdfPane
         Scroll.GotFocus += (_, _) => Activated?.Invoke(this);
         Scroll.Loaded += (_, _) => { ArrangePages(); RefreshVisible(); };
         Scroll.IsTabStop = true;
-        AttachSelectionKeyboard();
+        if (allowSelection) AttachSelectionKeyboard();
     }
 
     internal async Task BindAsync(string id, string kind, string key, int page)
@@ -88,8 +90,9 @@ internal sealed partial class ContinuousPdfPane
             var paper = new Grid { Background = new SolidColorBrush(Colors.White), Width = paperWidth, Height = paperWidth * height / width };
             paper.Children.Add(placeholder); paper.Children.Add(image);
             var view = new PageView { Paper = paper, Image = image, Placeholder = placeholder };
+            paper.Children.Add(view.Overlay);
             paper.Children.Add(view.SearchLayer); paper.Children.Add(view.Markup); paper.Children.Add(view.SelectionLayer);
-            views.Add(view); AttachSelection(view, views.Count - 1); stack.Children.Add(paper);
+            views.Add(view); if (allowSelection) AttachSelection(view, views.Count - 1); stack.Children.Add(paper);
         }
         ArrangePages();
     }
@@ -98,8 +101,8 @@ internal sealed partial class ContinuousPdfPane
     {
         generation++; identity = documentId = variant = ""; pending = null;
         ClearSelection(); annotationItems = []; searchHits = []; selectingPage = -1;
-        foreach (var view in views) view.Image.Source = null;
-        sizes.Clear(); views.Clear(); stack.Children.Clear(); offsets = []; cache.Clear(); failed.Clear();
+        foreach (var view in views) { view.Image.Source = null; view.Overlay.Child = null; }
+        sizes.Clear(); views.Clear(); stack.Children.Clear(); offsets = []; pageHeights = []; cache.Clear(); failed.Clear();
     }
     internal void SetActive(bool value) { active = value; if (active) Refresh(); }
     internal void SetZoom(double value) { if (Math.Abs(zoom - value) < .001) return; zoom = value; ArrangePages(); }
@@ -108,8 +111,7 @@ internal sealed partial class ContinuousPdfPane
     internal void MoveTo(Anchor anchor)
     {
         if (views.Count == 0 || offsets.Length != views.Count || Scroll.ActualWidth <= 40) { pending = anchor; return; }
-        int index = Math.Clamp(anchor.Page, 0, views.Count - 1);
-        double target = offsets[index] + views[index].Paper.Height * Math.Clamp(anchor.Fraction, 0, 1);
+        double target = PageScrollGeometry.Offset(anchor.Page, anchor.Fraction, offsets, pageHeights);
         if (Math.Abs(Scroll.VerticalOffset - target) > 1) Scroll.ChangeView(null, target, null, true);
         RefreshVisible();
     }
@@ -121,16 +123,19 @@ internal sealed partial class ContinuousPdfPane
         try
         {
             paperWidth = Math.Max(120, Scroll.ActualWidth - 36) * zoom;
-            offsets = new double[views.Count]; double top = 0;
+            double scale = Scroll.XamlRoot?.RasterizationScale ?? 1;
             for (int i = 0; i < views.Count; i++)
             {
-                offsets[i] = top; views[i].Paper.Width = paperWidth; views[i].Paper.Height = paperWidth * sizes[i].Height / sizes[i].Width;
+                views[i].Paper.Width = paperWidth;
+                // Give WinUI and our page anchors the same device-pixel height,
+                // without querying an in-progress layout from SizeChanged.
+                views[i].Paper.Height = PageScrollGeometry.PixelAlignedHeight(paperWidth * sizes[i].Height / sizes[i].Width, scale);
                 DrawSearch(i); DrawMarkup(i); DrawSelection(i);
-                top += views[i].Paper.Height + stack.Spacing;
             }
+            pageHeights = views.Select(view => view.Paper.Height).ToArray();
+            offsets = PageScrollGeometry.Offsets(pageHeights, stack.Spacing, Scroll.Padding.Top);
             Scroll.UpdateLayout(); pending = null;
-            int index = Math.Clamp(anchor.Page, 0, views.Count - 1);
-            Scroll.ChangeView(null, offsets[index] + views[index].Paper.Height * anchor.Fraction, null, true);
+            Scroll.ChangeView(null, PageScrollGeometry.Offset(anchor.Page, anchor.Fraction, offsets, pageHeights), null, true);
         }
         finally { arranging = false; }
         RefreshVisible();
@@ -149,7 +154,7 @@ internal sealed partial class ContinuousPdfPane
         var range = VisibleRange();
         for (int i = 0; i < views.Count; i++) if ((i < range.First || i > range.Last) && (views[i].Image.Source is not null || views[i].RenderWidth != 0))
         {
-            views[i].Image.Source = null; views[i].RenderWidth = 0; views[i].Placeholder.Visibility = Visibility.Visible;
+            views[i].Image.Source = null; views[i].Overlay.Child = null; views[i].RenderWidth = 0; views[i].Placeholder.Visibility = Visibility.Visible;
         }
         if (active && !pumping && range.Last >= range.First && Scroll.Visibility == Visibility.Visible) _ = PumpAsync();
     }
@@ -187,11 +192,19 @@ internal sealed partial class ContinuousPdfPane
                     };
                     view.Placeholder.Visibility = Visibility.Visible; view.Image.Source = bitmap; view.RenderWidth = width;
                     bitmap.UriSource = new Uri(path);
-                    _ = LoadTextAsync(index, view, current);
+                    if (PageOverlayRequested is not null)
+                    {
+                        var overlay = await PageOverlayRequested(index, sizes[index].Width, sizes[index].Height, bitmap);
+                        if (current != generation) continue;
+                        range = VisibleRange();
+                        if (index >= range.First && index <= range.Last && width == RenderWidth) view.Overlay.Child = overlay;
+                    }
+                    if (allowSelection) _ = LoadTextAsync(index, view, current);
                 }
                 catch (Exception error)
                 {
                     if (current != generation) continue;
+                    view.RenderWidth = 0; view.Overlay.Child = null;
                     failed.Add(key); view.Placeholder.Text = $"第 {index + 1} 页 · 预览暂不可用";
                     PreviewError?.Invoke(error.Message);
                 }

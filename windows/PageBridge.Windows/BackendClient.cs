@@ -47,7 +47,7 @@ public sealed class BackendClient : IDisposable
             throw new BackendException("翻译任务需要通过流式接口启动。");
         if (action is "list" or "recover" or "import" or "get" or "rename" or "folders"
             or "create_folder" or "move" or "trash" or "favorite" or "reading"
-            or "export" or "render" or "page_info" or "document_navigation" or "page_text"
+            or "export" or "render" or "page_info" or "reading_page" or "reading_block_image" or "document_navigation" or "page_text"
             or "annotations" or "save_annotation" or "delete_annotation" or "export_annotations"
             or "export_notes" or "search_document" or "rename_folder" or "delete_folder" or "literature_cleanup" or "literature_settings" or "literature_save_settings" or "assistant_history" or "assistant_clear" or "assistant_preview"
             or "update_check" or "update_download" or "update_status" or "update_cancel" or "update_prepare_install")
@@ -235,7 +235,7 @@ public sealed class BackendClient : IDisposable
 
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Action<JsonObject> onEvent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string outputMode = "pdf", IReadOnlyList<string>? retryBlockIds = null)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
         if (!await translationGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
@@ -249,7 +249,9 @@ public sealed class BackendClient : IDisposable
                 ["action"] = "translate", ["dataRoot"] = DataRoot,
                 ["document_id"] = documentId, ["service_id"] = serviceId,
                 ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
-                ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages
+                ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
+                ["outputMode"] = outputMode,
+                ["retryBlockIds"] = retryBlockIds is null ? null : new JsonArray(retryBlockIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray())
             };
             byte[] payload = EncodeRequest(request);
             cancellationToken.ThrowIfCancellationRequested();
@@ -348,7 +350,7 @@ public sealed class BackendClient : IDisposable
         if (StringValue(terminal["type"]) == "error")
             throw new BackendException(ErrorMessage(terminal["message"]));
         if (process.ExitCode != 0 || terminal["document"] is not JsonObject document
-            || StringValue(document["id"]) != documentId || StringValue(document["status"]) != "completed")
+            || StringValue(document["id"]) != documentId || StringValue(document["status"]) is not ("completed" or "partial"))
             throw new BackendException("翻译结果身份或保存状态无效。");
         return (JsonObject)document.DeepClone();
     }

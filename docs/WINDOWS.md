@@ -1,10 +1,20 @@
 # Windows 版
 
-Windows 界面使用 **WinUI 3**，复用 Mac 版的 PDFMathTranslate-next / BabelDOC 翻译引擎与内容完整性检查。它是独立的 Windows 移植版本，不替换现有 Mac 应用。
+Windows 界面使用 **WinUI 3**，与 Mac 共用本地 MinerU 阅读稿引擎，以及独立的 PDFMathTranslate-next / BabelDOC 重排 PDF 引擎。它是独立的 Windows 移植版本，不替换现有 Mac 应用。
 
 界面锁定 `Microsoft.WindowsAppSDK.WinUI 2.3.9` 与 `Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9` 组件包（Windows App SDK 2.5.1 稳定发行所用的对应组件），其依赖提供 Foundation、AppWindow／Mica、构建工具和自包含 WinRT 启动。没有引用包含 AI、ML、Search、Widgets 的全量 Windows App SDK 元包，避免将未用组件加入安装目录。`.NET 10` 与所需 WinUI 运行库随包提供。
 
-当前目标为 **Windows 11 x64**。Apple Silicon Mac 上的 Windows 11 ARM 虚拟机以系统 x64 兼容模式运行此包，不代表已提供原生 ARM64 引擎；锁定的 PyMuPDF 等依赖尚未提供对应 ARM64 wheel。v0.4.0 提供正式安装器和便携 ZIP；提供应用内检查、下载与安装确认，尚未提供 Authenticode 签名；Windows 使用独立签名更新清单，不使用 Mac 的 Sparkle 更新源。
+当前目标为 **Windows 11 x64**。Apple Silicon Mac 上的 Windows 11 ARM 虚拟机以系统 x64 兼容模式运行此包，不代表已提供原生 ARM64 引擎；锁定的 PyMuPDF 等依赖尚未提供对应 ARM64 wheel。v0.5.0 提供安装器和便携 ZIP；提供应用内检查、下载与安装确认，尚未提供 Authenticode 签名；Windows 使用独立签名更新清单，不使用 Mac 的 Sparkle 更新源。
+
+## v0.5.0：MinerU 原页版式阅读稿
+
+翻译窗口默认选择“原文 + 中文阅读稿”，也可选择“重排 PDF 导出”。新模式使用 **MinerU 4.0.12 Basic / ONNX CPU** 在本机解析，再由已配置的翻译服务按完整段落生成译文。原 PDF 不改写；阅读稿按原页坐标显示，保持分栏和图表位置。文字在原区域内适配，溢出时点击展开全文；图片、公式和代码保持原位。原生文字表格保留原数字、行列和格线，仅在原位置翻译文字标签；扫描表格仍保留原图，辅助译文在详情中查看。照片、色块、水印和细边框沿用去除原文字形后的原页背景，避免整块遮盖。已识别的行内公式使用原页图像随正文排列，细线框恢复原页笔画。左右页统一顶部和缩放比例，右侧不再显示固定提示行。对照阅读支持双向连续同步滚动，可关闭后分别滚动；缩放后仍按同一页内位置对齐。该模式不增加语义或数字规则门控，未译段落保留原文并可单独重试，其余段落继续可读。
+
+首次使用下载本地识别组件，请预留约 **4 GB 磁盘空间**。独立运行环境位于 `%LOCALAPPDATA%\PageBridge\mineru\4.0.12`，使用自己的 managed CPython 3.12.12、依赖和模型，不依赖程序安装目录内 Python 的位置。后续解析使用本地模型；云翻译仍会将相应文本发送给你选择的服务。
+
+重新生成会替换当前阅读稿及其页范围，不合并新选页与旧稿；只重试失败段落则保留其余内容。阅读稿与已有重排 PDF 分别保存，**阅读稿自身尚不能导出为译文／双语 PDF，也尚未接入全文搜索或批注**。原 PDF 的搜索、批注和导出继续可用；MinerU 不给原 PDF 添加文字层，因此扫描原页的文字选择不会随阅读稿生成而改变。
+
+当前版本为 **0.5.0 / build 14**；Windows 原生 GUI、模型执行和安装升级的实际结果见[验证记录](VERIFICATION.md)，安装及协议见[引擎说明](../engine/STRUCTURED_READING.md)。
 
 ## 功能与平台差异
 
@@ -12,17 +22,17 @@ Windows 界面使用 **WinUI 3**，复用 Mac 版的 PDFMathTranslate-next / Bab
 
 提供文件导入与去重、文件夹／收藏／回收站、库卡片缩略图、页面／目录／书签导航、厂商和模型配置、整篇或指定页翻译、取消与失败保护、原文／对照／译文连续阅读、缩放、同步滚动、阅读页码保存，以及原文／译文／双语 PDF 导出。阅读器增加文字选择与复制、高亮／下划线、页笔记、批注编辑与导出，以及使用已配置模型的文档助手。服务配置支持预设或手动模型 ID、获取模型、连接测试、高级设置、重置和删除；切换配置前会确认是否放弃未保存的更改。
 
-**阅读改进**：支持连续滚动跨页、文档库侧栏折叠／恢复、相邻页预取与快速切页；复用后台进程的持久 RPC，减少重复启动解释器。隔离 Windows 虚拟机已分别在深色与浅色启动模式验证这些操作、对照滚动及关闭时保存页码。主界面、设置和弹窗已完成深浅主题截图检查，页码数字与旁边文字的基线也已校正。
+**阅读改进**：支持连续滚动跨页、文档库侧栏折叠／恢复、相邻页预取与快速切页；复用后台进程的持久 RPC，减少重复启动解释器。此前 v0.4.0 在隔离 Windows 虚拟机中验证了深浅主题、这些导航操作、对照滚动及关闭时保存页码；新阅读稿的本轮验收单独见验证记录。
 
-阅读器以页面图像叠加 PDF 文字层和批注显示，当前文字选择限于单页。现已接入文内搜索、PDF 页面内跳转及网页链接、OpenAlex／Sci-Hub 检索与全文导入。当前没有通用 OCR；目录来自 PDF 已有的大纲，不自动生成目录。导入 PDF 自带的批注会保留在页面及导出文件中，本版笔记面板只管理在 PageBridge 中新建的批注。仍未完全对齐的细节包括跨页拖选、示例目录卡片、侧栏拖动调宽和部分编辑器快捷键；两端的标题栏与系统文件选择器也遵循各自平台。
+阅读器以页面图像叠加 PDF 文字层和批注显示，当前文字选择限于单页。现已接入文内搜索、PDF 页面内跳转及网页链接、OpenAlex／Sci-Hub 检索与全文导入。重排 PDF 翻译没有通用 OCR；目录来自 PDF 已有的大纲，不自动生成目录。导入 PDF 自带的批注会保留在页面及导出文件中，本版笔记面板只管理在 PageBridge 中新建的批注。仍未完全对齐的细节包括跨页拖选、示例目录卡片、侧栏拖动调宽和部分编辑器快捷键；两端的标题栏与系统文件选择器也遵循各自平台。
 
 ## 下载与使用
 
-推荐使用 [PageBridge-0.4.0-windows-x64-setup.exe](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe.sha256)）。同时提供 [便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.4.0/PageBridge-0.4.0-windows-x64.zip.sha256)）。版本列表见 [Releases](https://github.com/txp666/PageBridge/releases)；安装器和程序均未签名，可能触发系统安全提示。
+v0.5.0 推荐使用 [PageBridge-0.5.0-windows-x64-setup.exe](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe.sha256)）。同时提供 [便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip.sha256)）。版本列表见 [Releases](https://github.com/txp666/PageBridge/releases)；安装器和程序均未签名，可能触发系统安全提示。
 
 1. **安装器：** 运行 Setup，按向导选择程序目录和快捷方式。默认安装到当前用户的 `%LOCALAPPDATA%\Programs\PageBridge`，无需管理员权限。默认创建开始菜单入口，桌面快捷方式可选且默认未选；安装结束可选择启动，静默安装不会自动启动。**便携 ZIP：** 完整解压到可写目录，保留所有子目录，运行 `PageBridge.Windows.exe`；不能只复制 EXE。
 2. 程序自带 Python、.NET 和所需 WinUI 运行库，普通用户无需额外安装；语言模型不随包提供。首次翻译可能下载字体和版面资源。
-3. 导入带文字层的 PDF，再配置本机 Ollama 或兼容 API。标题前的按钮折叠／恢复文档库，页面导航按钮展开“页面／目录／书签”；滚轮连续跨页，底栏可直接跳页。
+3. 导入 PDF，再配置本机 Ollama 或兼容 API。默认生成原页版式阅读稿；需要译文 PDF 时选择“重排 PDF”，该模式要求可提取文本。标题前的按钮折叠／恢复文档库，页面导航按钮展开“页面／目录／书签”；滚轮连续跨页，底栏可直接跳页。
 4. 界面默认跟随系统深浅主题；PDF 白色页面保留原稿颜色，不反色。应用内网页验证另依赖系统 WebView2 Runtime。
 5. 安装版与便携版均将数据写入 `%LOCALAPPDATA%\PageBridge`，密钥保存在 Windows 凭据管理器，不在安装目录中。两种程序不是独立文档库，不要同时打开并操作同一份用户数据。
 
@@ -107,7 +117,7 @@ PDF 中的内部链接跳转到对应页，网页／邮件链接交给系统默�
 
 脚本先发布 unpackaged、self-contained WinUI 应用，检查应用 PRI 与编译 XAML（XBF）资源齐全，再组装私有 Python、引擎与桌面服务模块。运行时裁剪去掉未使用的 Web UI、厂商 SDK、测试与开发资源，保留所需 DLL、运行数据和许可证；Windows 保留 `tzdata`。组装后先执行隔离导入与 worker health，移动到最终目录后再验证一次，最后生成 ZIP 和 SHA-256 文件。
 
-运行时构建目录继承父目录的访问权限，避免管理员构建的文件无法在普通权限桌面会话执行；验收也应使用普通用户会话。Windows 在验证进程刚退出时可能短暂保留 DLL 占用。目录迁移对此类错误最多重试 15 秒；若仍失败，保留临时目录和日志以供诊断，不删除源引擎或改动系统防护设置。
+运行时构建目录继承父目录的访问权限，避免管理员构建的文件无法在普通权限桌面会话执行；验收也应使用普通用户会话。Windows 在验证进程刚退出时可能短暂保留 DLL 占用。目录迁移对此类错误最多重试 60 秒；若仍失败，保留临时目录和日志以供诊断，不删除源引擎或改动系统防护设置。
 
 产物包括 `dist/PageBridge-0.4.0-windows-x64/`、同名便携 ZIP，以及 `PageBridge-0.4.0-windows-x64-setup.exe` 和各自 SHA-256。版本号来自 `VERSION.json`，`WINDOWS_BUILD.json` 记录版本、build、`stable` 通道、架构与签名／更新能力。重复构建先保留旧目录；正式发行资产不可覆盖，修复应增加版本和 build。
 

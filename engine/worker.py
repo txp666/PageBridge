@@ -353,11 +353,14 @@ def parse_request(raw):
         value = require_text(request, key, 128)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise WorkerError(f"{key} 格式无效。")
-    if request.get("action") not in ("health", "probe", "translate"):
+    if request.get("action") not in ("health", "probe", "translate", "prepare_reading"):
         raise WorkerError("不支持此操作。")
-    if request["action"] != "health":
+    if request["action"] in ("probe", "translate"):
         request["service"] = normalized_service(request.get("service"))
     if request["action"] == "translate":
+        request.setdefault("outputMode", "pdf")
+        if request["outputMode"] not in ("pdf", "reading"):
+            raise WorkerError("不支持的译文格式。")
         for key in ("inputPath", "outputDirectory"):
             path = Path(require_text(request, key, 8192)).expanduser()
             if not path.is_absolute():
@@ -370,6 +373,19 @@ def parse_request(raw):
         pages = request.get("pages")
         if pages is not None and (not isinstance(pages, str) or len(pages) > 2048):
             raise WorkerError("页码范围格式无效。")
+        retry = request.get("retryBlockIds")
+        reading_path = request.get("readingPath")
+        if retry is not None or reading_path is not None:
+            if request["outputMode"] != "reading":
+                raise WorkerError("仅对照阅读支持按块重试。")
+            if (not isinstance(retry, list) or not 1 <= len(retry) <= 1000
+                    or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) for value in retry)
+                    or len(set(retry)) != len(retry)):
+                raise WorkerError("请选择有效的译文块重试。")
+            path = Path(require_text(request, "readingPath", 8192)).expanduser()
+            if not path.is_absolute():
+                raise WorkerError("对照阅读结果路径必须是绝对路径。")
+            request["readingPath"] = str(path.resolve())
     return request
 
 
@@ -406,6 +422,11 @@ def installed_versions():
 
 def safe_error(error):
     if isinstance(error, WorkerError):
+        return str(error)
+    # This module defines fixed user-facing errors; arbitrary parser/provider
+    # exception text must still stay out of the protocol.
+    from structured_reading import ReadingError
+    if isinstance(error, ReadingError):
         return str(error)
     # Classify privately; never echo upstream exceptions, request content or keys.
     message = str(error).lower()
@@ -531,11 +552,6 @@ def validate_pdf(path, root, expected_pages):
 async def translate(request, events):
     global _UPSTREAM_TRANSLATE_WRAPPER
     import pymupdf
-    events.emit("stage", stage="prepare", message="正在加载翻译组件，首次使用可能下载官方版面模型和字体。")
-    import pdf2zh_next.high_level as high_level
-    if _UPSTREAM_TRANSLATE_WRAPPER is None:
-        _UPSTREAM_TRANSLATE_WRAPPER = high_level._translate_wrapper
-        high_level._translate_wrapper = guarded_translate_wrapper
     input_path = Path(request["inputPath"])
     output = Path(request["outputDirectory"])
     if not input_path.is_file():
@@ -546,17 +562,28 @@ async def translate(request, events):
             if pdf.needs_pass or not pdf.is_pdf or pdf.page_count < 1:
                 raise WorkerError("请使用未加密且至少包含一页的 PDF。")
             page_count = pdf.page_count
-            if not any(page.get_text().strip() for page in pdf):
+            request["pages"] = page_selection(request.get("pages"), page_count)
+            selected_pages = ([int(number) - 1 for number in request["pages"].split(",")]
+                              if request["pages"] else range(page_count))
+            if not any(pdf[index].get_text().strip() for index in selected_pages):
+                if request["pages"]:
+                    raise WorkerError("所选页面没有可读取的文字，暂不支持纯扫描页。请选择带文字层的页面。")
                 raise WorkerError("PDF 没有可读取的文字，暂不支持纯扫描件。")
     except WorkerError:
         raise
     except Exception:
         raise WorkerError("无法读取输入 PDF。") from None
-    request["pages"] = page_selection(request.get("pages"), page_count)
     output.mkdir(parents=True, exist_ok=True)
     destination = output / ("result-" + request["attemptId"])
     if destination.exists():
         raise WorkerError("本次尝试已存在输出，请开始新的翻译尝试。")
+    # Reject unusable input before upstream imports can initialize their cache,
+    # layout resources or translation provider.
+    events.emit("stage", stage="prepare", message="正在加载翻译组件，首次使用可能下载官方版面模型和字体。")
+    import pdf2zh_next.high_level as high_level
+    if _UPSTREAM_TRANSLATE_WRAPPER is None:
+        _UPSTREAM_TRANSLATE_WRAPPER = high_level._translate_wrapper
+        high_level._translate_wrapper = guarded_translate_wrapper
     input_hash = sha256(input_path)
     with tempfile.TemporaryDirectory(prefix=".pagebridge-", dir=output) as temporary:
         temporary = Path(temporary)
@@ -653,6 +680,12 @@ async def run(request, events, control_input=None):
         events.emit("result", engineVersion=version, message="引擎依赖已就绪，首次翻译可能需要下载官方模型和字体。")
     elif request["action"] == "probe":
         await probe(request, events)
+    elif request["action"] == "prepare_reading":
+        from structured_reading import prepare
+        await prepare(events)
+    elif request.get("outputMode") == "reading":
+        from structured_reading import translate as translate_reading
+        await translate_reading(request, events)
     else:
         await translate(request, events)
 

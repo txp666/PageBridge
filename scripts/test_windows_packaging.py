@@ -42,7 +42,7 @@ class StableWindowsPackageTests(unittest.TestCase):
         self.folder=Path(self.temp.name)/release.package_name(self.root);self.folder.mkdir()
         for target,source in release.payload_sources(self.root).items():
             path=self.folder/target;path.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(self.root/source,path)
-        for name in release.UI_FILES+('resources/engine/runtime/python.exe',):
+        for name in release.UI_FILES+('resources/engine/runtime/python.exe','resources/engine/tools/uv.exe'):
             (self.folder/name).parent.mkdir(parents=True,exist_ok=True)
             (self.folder/name).write_bytes(b'MZ'+b'\0'*126)
         (self.folder/'WINDOWS_BUILD.json').write_text(json.dumps(release.build_metadata(self.root)))

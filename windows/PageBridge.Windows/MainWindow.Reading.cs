@@ -233,9 +233,12 @@ public sealed partial class MainWindow
     }
     private void ActivateVariant(string variant)
     {
+        bool wasStructured = structuredActive;
+        structuredActive = false;
+        if (ShowingReading && variant == "translated") variant = "original";
         if (variant is not ("original" or "translated") || (variant == "translated" && Text(selected, "translated_path") == "")) return;
         var next = variant == "original" ? originalPages : translatedPages;
-        if (!ReferenceEquals(activePages, next))
+        if (wasStructured || !ReferenceEquals(activePages, next))
         {
             activePages = next; OtherPane(next).ClearSelection();
             // With scroll sync off each pane keeps its own page. Switching
@@ -248,7 +251,7 @@ public sealed partial class MainWindow
             }
         }
         if (mode.SelectedIndex == 0 && variant == "translated") mode.SelectedIndex = 2;
-        else if (mode.SelectedIndex == 2 && variant == "original") mode.SelectedIndex = 0;
+        else if (mode.SelectedIndex == 2 && variant == "original" && !ShowingReading) mode.SelectedIndex = 0;
         if (!bindingPages && selected is not null) _ = Attempt(async () => { switchingVariant = true; try { await annotationsPanel.SetVariantAsync(variant); } finally { switchingVariant = false; } await BuildPageNavigationAsync(); });
         UpdateSelectionTools(); UpdateNavigationPage();
     }

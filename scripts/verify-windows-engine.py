@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE_FILES = ("worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py")
+ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 
 
 def pe_machine(path):
@@ -47,6 +47,8 @@ def verify(engine):
             resolved = path.parent / line
             if Path(line).is_absolute() or not resolved.resolve().is_relative_to(runtime):
                 raise ValueError("A .pth path escapes the private runtime.")
+    if subprocess.check_output([str(engine / "tools/uv.exe"), "--version"], text=True).split()[:2] != ["uv", "0.9.17"]:
+        raise ValueError("Missing or mismatched optional reading bootstrap.")
     source = {}
     for name in ENGINE_FILES:
         actual = hashlib.sha256((engine / name).read_bytes()).hexdigest()

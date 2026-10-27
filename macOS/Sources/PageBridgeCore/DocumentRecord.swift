@@ -1,13 +1,14 @@
 import Foundation
 
 public enum DocumentStatus: String, Codable, Sendable {
-    case ready, running, cancelling, completed, failed, cancelled, interrupted
+    case ready, running, cancelling, completed, partial, failed, cancelled, interrupted
     public var title: String {
         switch self {
         case .ready: "待翻译"
         case .running: "翻译中"
         case .cancelling: "正在取消"
         case .completed: "已完成"
+        case .partial: "部分完成"
         case .failed: "失败"
         case .cancelled: "已取消"
         case .interrupted: "已中断"
@@ -24,6 +25,8 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
     public var inputPath: String
     public var translatedPath: String?
     public var bilingualPath: String?
+    public var readingPath: String?
+    public var preferredOutputMode: String?
     public var sourceLanguage: String
     public var targetLanguage: String
     public var lastError: String?
@@ -36,6 +39,8 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
         self.importedAt = Date(); self.status = .ready
         self.sourceLanguage = "en"; self.targetLanguage = "zh"
     }
+    public var readingURL: URL? { readingPath.map(URL.init(fileURLWithPath:)) }
+    public var hasTranslation: Bool { readingPath != nil || translatedPath != nil }
     public var originalURL: URL { URL(fileURLWithPath: inputPath) }
     public var translatedURL: URL? { translatedPath.map(URL.init(fileURLWithPath:)) }
     public var bilingualURL: URL? { bilingualPath.map(URL.init(fileURLWithPath:)) }
