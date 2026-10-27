@@ -172,8 +172,11 @@ def page_result(store, request):
     selected = next((p for p in artifact["pages"] if p["pageNumber"] == number + 1), None)
     # The canvas and the original raster use the same rotated CropBox geometry,
     # including pages outside this translation's selection.
+    blocks = copy.deepcopy(selected["blocks"]) if selected else []
     with pymupdf.open(doc["input_path"]) as pdf:
-        rect = pdf[number].rect
+        source = pdf[number]
+        rect = source.rect
+        _add_source_font_sizes(source, blocks)
     decoration_image, decoration_error = None, None
     background_image = _background_image(store, doc, selected) if selected and selected.get("backgroundImage") else None
     if selected and selected.get("decorations") and not background_image:
@@ -187,8 +190,40 @@ def page_result(store, request):
                 decorationsImage=decoration_image, decorations_error=decoration_error,
                 backgroundImage=background_image, backgroundBlocks=selected.get("backgroundBlocks", []) if selected else [],
                 status=artifact["status"], page_status=selected.get("status", "completed") if selected else "not_selected",
-                error=selected.get("error") if selected else None, blocks=selected["blocks"] if selected else [],
+                error=selected.get("error") if selected else None, blocks=blocks,
                 source_sha256=doc["input_sha256"], artifact_sha256=doc["reading_sha256"])
+
+
+def _add_source_font_sizes(page, blocks):
+    """Match the Mac reader's character-weighted median source font per region.
+
+    This is display metadata derived from the owned original PDF, never a
+    change to the immutable reading artifact. Scans and rotated pages retain
+    the reader's existing fallback sizes when native fonts are unavailable.
+    """
+    for block in blocks:
+        block.pop("sourceFontSize", None)
+    positioned = [b for b in blocks if b.get("kind") in {"text", "heading", "list"} and b.get("bbox")]
+    if not positioned or page.rotation % 360:
+        return
+    raw = page.get_text("rawdict", flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
+    glyphs = []
+    for native in raw.get("blocks", []):
+        for line in native.get("lines", []):
+            for span in line.get("spans", []):
+                size = span.get("size", 0)
+                if not isinstance(size, (int, float)) or not math.isfinite(size) or size <= 0:
+                    continue
+                for char in span.get("chars", []):
+                    if not char.get("c") or "bbox" not in char:
+                        continue
+                    rect = pymupdf.Rect(char["bbox"])
+                    glyphs.append(((rect.tl + rect.br) / 2, size))
+    for block in positioned:
+        bounds = pymupdf.Rect(block["bbox"]) & page.rect
+        sizes = sorted(size for point, size in glyphs if bounds.contains(point))
+        if sizes:
+            block["sourceFontSize"] = sizes[len(sizes) // 2]
 
 
 def _background_image(store, document, page):

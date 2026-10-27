@@ -189,6 +189,7 @@ internal sealed partial class StructuredReadingPane
             Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) } };
         string hint = overflow ? "此段译文超出原区域，点击查看全文" : status == "source_fallback" ? "此段未译，点击查看原因或重试" : "点击查看译文与原文";
         AutomationProperties.SetName(target, KindLabel(kind) + "：" + hint); ToolTipService.SetToolTip(target, hint);
+        AutomationProperties.SetAutomationId(target, "ReadingBlock-" + Text(block, "id"));
         var flyout = DetailsFlyout(); flyout.Content = DetailsScroll(BlockDetails(block, bbox, current, pageNumber, flyout)); target.Flyout = flyout;
         Canvas.SetLeft(target, x); Canvas.SetTop(target, y); overlay.Children.Add(target);
     }
@@ -236,8 +237,24 @@ internal sealed partial class StructuredReadingPane
 
     private static string KindLabel(string kind) => kind switch { "heading" => "标题", "list" => "列表", "table" => "表格", "formula" => "公式", "figure" => "图片", "code" => "代码", _ => "段落" };
     private static bool IsSourceRegion(string kind) => kind is "table" or "formula" or "figure" or "code";
-    private static ScrollViewer DetailsScroll(UIElement details) => new() { Content = details, MaxWidth = 580, MaxHeight = 560, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-    private static Flyout DetailsFlyout(UIElement? details = null) => new() { Content = details is null ? null : DetailsScroll(details) };
+    private static ScrollViewer DetailsScroll(UIElement details)
+    {
+        var scroll = new ScrollViewer { Content = details, MaxWidth = 580, MaxHeight = 560,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch, HorizontalScrollMode = ScrollMode.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        AutomationProperties.SetAutomationId(scroll, "ReadingDetailsScroll");
+        return scroll;
+    }
+    private static Flyout DetailsFlyout(UIElement? details = null)
+    {
+        // The presenter has its own ScrollViewer. Disable horizontal scrolling
+        // there too, so paragraphs measure against the available popup width.
+        var style = new Style { TargetType = typeof(FlyoutPresenter) };
+        style.Setters.Add(new Setter(ScrollViewer.HorizontalScrollModeProperty, ScrollMode.Disabled));
+        style.Setters.Add(new Setter(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled));
+        style.Setters.Add(new Setter(Control.IsTabStopProperty, true));
+        return new Flyout { Content = details is null ? null : DetailsScroll(details), FlyoutPresenterStyle = style };
+    }
 
     private StackPanel BlockDetails(JsonNode block, JsonArray? bbox, int current, int pageNumber, Flyout flyout)
     {

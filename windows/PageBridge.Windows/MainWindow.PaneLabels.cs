@@ -17,7 +17,7 @@ public sealed partial class MainWindow
                 ? (translated ? "reading_target_language" : "reading_source_language")
                 : (translated ? "target_language" : "source_language")));
             if (selected is not null && translated && mode.SelectedIndex == 1 && !sync.IsOn)
-                label.Text += $" · 第 {(ShowingReading ? structuredReading.CurrentPage : translatedPages.CurrentPage)} 页";
+                label.Text += $" · 第 {(ShowingReading && structuredReading is { } reading ? reading.CurrentPage : translatedPages.CurrentPage)} 页";
             if (translated)
             {
                 var notice = selected is not null && ShowingReading ? structuredReading?.CurrentPageNotice : null;

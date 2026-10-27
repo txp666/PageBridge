@@ -1,10 +1,10 @@
 # 使用 PageBridge
 
-本指南对应 **0.5.0 / build 14 的 Mac 与 Windows 发行候选**，涵盖文档整理、翻译、对照阅读、批注、文档助手及在线文献获取。适用于手册、报告、教材、合同和论文等 PDF。
+本指南对应 **0.5.0 / build 14 的 Mac 与 Windows 应用**，涵盖文档整理、翻译、对照阅读、批注、文档助手及在线文献获取。适用于手册、报告、教材、合同和论文等 PDF。
 
-默认使用 **MinerU 原页版式对照阅读**，也可选择可导出译文 PDF 的重排模式。本发行候选正在补齐 Windows、首次组件下载与安装升级验收，尚未正式发布；已公开版本以 Releases 为准。
+默认使用 **MinerU 原页版式对照阅读**，也可选择可导出译文 PDF 的重排模式。平台、首次组件下载与安装升级的实测范围见[验证记录](VERIFICATION.md)。
 
-安装包、项目源码、第三方源码和 SHA-256 集中于 [v0.5.0 Release（发布后）](https://github.com/txp666/PageBridge/releases/tag/v0.5.0)；其他版本见 [Releases](https://github.com/txp666/PageBridge/releases)。最终验收范围见[验证记录](VERIFICATION.md)。
+安装包、项目源码、第三方源码和 SHA-256 集中于 [v0.5.0 Release](https://github.com/txp666/PageBridge/releases/tag/v0.5.0)；其他版本见 [Releases](https://github.com/txp666/PageBridge/releases)。最终验收范围见[验证记录](VERIFICATION.md)。
 
 ## 安装或更新
 

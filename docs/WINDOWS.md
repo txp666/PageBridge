@@ -14,7 +14,7 @@ Windows 界面使用 **WinUI 3**，与 Mac 共用本地 MinerU 阅读稿引擎�
 
 重新生成会替换当前阅读稿及其页范围，不合并新选页与旧稿；只重试失败段落则保留其余内容。阅读稿与已有重排 PDF 分别保存，**阅读稿自身尚不能导出为译文／双语 PDF，也尚未接入全文搜索或批注**。原 PDF 的搜索、批注和导出继续可用；MinerU 不给原 PDF 添加文字层，因此扫描原页的文字选择不会随阅读稿生成而改变。
 
-本分支为 **0.5.0 / build 14 发行候选，正在补齐 Windows 原生 GUI、模型执行和安装升级验收，尚未正式发布**；此前 Windows 截图、虚拟机和安装器结果只证明各自记录的旧流程。实际边界见[验证记录](VERIFICATION.md)，安装及协议见[引擎说明](../engine/STRUCTURED_READING.md)。
+当前版本为 **0.5.0 / build 14**；Windows 原生 GUI、模型执行和安装升级的实际结果见[验证记录](VERIFICATION.md)，安装及协议见[引擎说明](../engine/STRUCTURED_READING.md)。
 
 ## 功能与平台差异
 
@@ -28,7 +28,7 @@ Windows 界面使用 **WinUI 3**，与 Mac 共用本地 MinerU 阅读稿引擎�
 
 ## 下载与使用
 
-v0.5.0 正式发布后，推荐使用 [PageBridge-0.5.0-windows-x64-setup.exe](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe.sha256)）。同时提供 [便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip.sha256)）。版本列表见 [Releases](https://github.com/txp666/PageBridge/releases)；安装器和程序均未签名，可能触发系统安全提示。
+v0.5.0 推荐使用 [PageBridge-0.5.0-windows-x64-setup.exe](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe.sha256)）。同时提供 [便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip)（[SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip.sha256)）。版本列表见 [Releases](https://github.com/txp666/PageBridge/releases)；安装器和程序均未签名，可能触发系统安全提示。
 
 1. **安装器：** 运行 Setup，按向导选择程序目录和快捷方式。默认安装到当前用户的 `%LOCALAPPDATA%\Programs\PageBridge`，无需管理员权限。默认创建开始菜单入口，桌面快捷方式可选且默认未选；安装结束可选择启动，静默安装不会自动启动。**便携 ZIP：** 完整解压到可写目录，保留所有子目录，运行 `PageBridge.Windows.exe`；不能只复制 EXE。
 2. 程序自带 Python、.NET 和所需 WinUI 运行库，普通用户无需额外安装；语言模型不随包提供。首次翻译可能下载字体和版面资源。
@@ -117,7 +117,7 @@ PDF 中的内部链接跳转到对应页，网页／邮件链接交给系统默�
 
 脚本先发布 unpackaged、self-contained WinUI 应用，检查应用 PRI 与编译 XAML（XBF）资源齐全，再组装私有 Python、引擎与桌面服务模块。运行时裁剪去掉未使用的 Web UI、厂商 SDK、测试与开发资源，保留所需 DLL、运行数据和许可证；Windows 保留 `tzdata`。组装后先执行隔离导入与 worker health，移动到最终目录后再验证一次，最后生成 ZIP 和 SHA-256 文件。
 
-运行时构建目录继承父目录的访问权限，避免管理员构建的文件无法在普通权限桌面会话执行；验收也应使用普通用户会话。Windows 在验证进程刚退出时可能短暂保留 DLL 占用。目录迁移对此类错误最多重试 15 秒；若仍失败，保留临时目录和日志以供诊断，不删除源引擎或改动系统防护设置。
+运行时构建目录继承父目录的访问权限，避免管理员构建的文件无法在普通权限桌面会话执行；验收也应使用普通用户会话。Windows 在验证进程刚退出时可能短暂保留 DLL 占用。目录迁移对此类错误最多重试 60 秒；若仍失败，保留临时目录和日志以供诊断，不删除源引擎或改动系统防护设置。
 
 产物包括 `dist/PageBridge-0.4.0-windows-x64/`、同名便携 ZIP，以及 `PageBridge-0.4.0-windows-x64-setup.exe` 和各自 SHA-256。版本号来自 `VERSION.json`，`WINDOWS_BUILD.json` 记录版本、build、`stable` 通道、架构与签名／更新能力。重复构建先保留旧目录；正式发行资产不可覆盖，修复应增加版本和 build。
 

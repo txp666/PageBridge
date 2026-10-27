@@ -14,11 +14,15 @@ internal sealed partial class StructuredReadingPane
         double pageWidth, double pageHeight, ImageSource source, global::Windows.UI.Color background)
     {
         bool heading = Text(block, "kind") == "heading";
-        double initial = heading ? 18 : 11;
+        double reference = heading ? 18 : 12;
+        if (block["sourceFontSize"] is JsonValue value && value.TryGetValue<double>(out double sourceSize)
+            && double.IsFinite(sourceSize) && sourceSize > 0)
+            reference = sourceSize;
         var color = (background.R * .299 + background.G * .587 + background.B * .114) < 128 ? Colors.White : Colors.Black;
         color = ReadColor(block["foregroundColor"], color);
         var foreground = new SolidColorBrush(color);
         double minimum = Text(block, "sourceType") == "table_cell" ? 6.5 : 8;
+        double initial = Math.Max(minimum, reference);
         var weight = heading ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
         if (block["inlineMath"] is not JsonArray { Count: > 0 } spans || Text(block, "translatedTemplate") is not { Length: > 0 } template)
         {
@@ -54,7 +58,7 @@ internal sealed partial class StructuredReadingPane
         bool fits = FitContent(rich, width, height, initial, size =>
         {
             rich.FontSize = size; rich.LineHeight = size * 1.15;
-            foreach (var picture in pictures) { picture.View.Width = picture.Width * size / initial; picture.View.Height = picture.Height * size / initial; }
+            foreach (var picture in pictures) { picture.View.Width = picture.Width * size / reference; picture.View.Height = picture.Height * size / reference; }
         }, minimum);
         rich.Width = width; rich.Height = height;
         return (rich, !fits);

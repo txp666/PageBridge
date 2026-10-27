@@ -156,6 +156,8 @@ public sealed partial class MainWindow
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(page, "当前页码");
         page.Background = Clear; ToolTipService.SetToolTip(page, "输入页码，按 Enter 跳转"); pageCount.FontSize = 12; pageCount.Opacity = .65;
         var paging = Row(Tool("left", null, "上一页", () => ChangePage(-1)), new TextBlock { Text = "第", FontSize = 12, Opacity = .65, VerticalAlignment = VerticalAlignment.Center }, page, pageCount, Tool("right", null, "下一页", () => ChangePage(1))); paging.Spacing = 4; Grid.SetColumn(paging, 1); footer.Children.Add(paging);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sync, "ReaderSyncScroll");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(sync, "同步滚动");
         sync.MinWidth = 40; sync.Height = 28; sync.Padding = new Thickness(0); var syncPanel = Row(ReaderIcons.Make("link", 13), new TextBlock { Text = "同步滚动", FontSize = 11, VerticalAlignment = VerticalAlignment.Center }, sync); syncPanel.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(syncPanel, 2); footer.Children.Add(syncPanel); Grid.SetRow(footer, 4); workspace.Children.Add(footer); themedBars.Add(footer);
         BuildEmptyLibrary(); Grid.SetColumn(emptyLibrary, 1); root.Children.Add(emptyLibrary);
         root.AllowDrop = true; root.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
@@ -203,7 +205,7 @@ public sealed partial class MainWindow
         for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || HasTranslation; }
         if (leftPane is not null) ((FrameworkElement)leftPane.Children[0]).Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         if (rightPane is not null) ((FrameworkElement)rightPane.Children[0]).Visibility = mode.SelectedIndex == 1 || (mode.SelectedIndex == 2 && ShowingReading) ? Visibility.Visible : Visibility.Collapsed;
-        sync.IsEnabled = mode.SelectedIndex == 1 && !ShowingReading;
+        sync.IsEnabled = mode.SelectedIndex == 1;
     }
     private void UpdateDocumentState()
     {

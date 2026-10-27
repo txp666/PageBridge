@@ -84,6 +84,47 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(self.store.get(self.doc["id"])["reading_path"], old_path)
         self.assertTrue(Path(old_path).exists())
 
+    def test_source_font_size_is_response_only_and_preserves_committed_artifact(self):
+        attempt, event, artifact = self.prepare()
+        result = self.store.commit_result(self.doc["id"], attempt, event)
+        before = Path(result["reading_path"]).read_bytes()
+        source_before = sha256(self.doc["input_path"])
+        page = structured.page_result(self.store, dict(document_id=self.doc["id"], page=1))
+        self.assertAlmostEqual(page["blocks"][0]["sourceFontSize"], 11)
+        self.assertNotIn("sourceFontSize", page["blocks"][1])
+        self.assertEqual(Path(result["reading_path"]).read_bytes(), before)
+        self.assertEqual(sha256(self.doc["input_path"]), source_before)
+        self.assertNotIn("sourceFontSize", artifact["pages"][0]["blocks"][0])
+
+    def test_source_font_size_uses_region_and_character_weighted_median(self):
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((50, 80), "Large", fontsize=48)
+            page.insert_text((50, 140), "body text has many more characters", fontsize=12)
+            page.insert_text((50, 210), "Annual losses", fontsize=8)
+            blocks = [dict(kind="heading", bbox=[40, 20, 580, 96]),
+                      dict(kind="text", bbox=[40, 20, 580, 160]),
+                      dict(kind="text", sourceType="table_cell", bbox=[40, 190, 250, 220]),
+                      dict(kind="text", bbox=None), dict(kind="figure", bbox=[40, 20, 580, 160]),
+                      dict(kind="text", bbox=[40, 300, 580, 340], sourceFontSize=99)]
+            structured._add_source_font_sizes(page, blocks)
+            self.assertEqual([b.get("sourceFontSize") for b in blocks], [48, 12, 8, None, None, None])
+            page.set_rotation(90)
+            structured._add_source_font_sizes(page, blocks)
+            self.assertTrue(all("sourceFontSize" not in b for b in blocks))
+
+    def test_source_font_size_matches_cropped_page_coordinates_and_scan_fallback(self):
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((100, 140), "Cropped source", fontsize=18)
+            page.set_cropbox(pymupdf.Rect(50, 50, 550, 700))
+            blocks = [dict(kind="text", bbox=[40, 60, 260, 130])]
+            structured._add_source_font_sizes(page, blocks)
+            self.assertEqual(blocks[0]["sourceFontSize"], 18)
+            blank = pdf.new_page()
+            structured._add_source_font_sizes(blank, blocks)
+            self.assertNotIn("sourceFontSize", blocks[0])
+
     def test_failed_page_is_committed_without_hiding_other_pages(self):
         attempt, event, artifact = self.prepare(partial=True)
         artifact["selectedPages"] = [1, 2]

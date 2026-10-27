@@ -6,13 +6,13 @@
 
 适用于手册、报告、教材、合同和论文等 PDF。Mac 使用 SwiftUI / AppKit / PDFKit，Windows 使用 WinUI 3；默认由 [MinerU](https://github.com/opendatalab/MinerU) 在本机解析并生成原页版式阅读稿，也保留 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 重排 PDF 模式。翻译支持本机 Ollama 和 OpenAI 兼容 API。
 
-**0.5.0 / build 14（发行候选）** · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
+**0.5.0 / build 14** · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
 
-**发行准备中：** 本分支准备 v0.5.0，当前仍在补齐 Windows、首次组件下载及安装升级验收，尚未宣称正式发布。公开状态以 [Releases](https://github.com/txp666/PageBridge/releases) 为准；功能与限制见[对照阅读模式](#原页版式对照阅读)及[验证记录](docs/VERIFICATION.md)。
+v0.5.0 加入 MinerU 原页版式对照阅读。公开发行与下载以 [Releases](https://github.com/txp666/PageBridge/releases) 为准；功能与实测范围见[对照阅读模式](#原页版式对照阅读)及[验证记录](docs/VERIFICATION.md)。
 
 ## 下载与安装
 
-v0.5.0 正式发布后可从以下入口下载；也可在 [Releases](https://github.com/txp666/PageBridge/releases) 中查看已公开版本。
+v0.5.0 下载入口如下；也可在 [Releases](https://github.com/txp666/PageBridge/releases) 中查看已公开版本。
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
@@ -64,7 +64,7 @@ Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证
 
 首次使用会下载本地识别组件，**请预留约 4 GB 磁盘空间**。组件使用独立运行环境，后续本地解析无需远程解析服务；翻译仍由你选择的 Ollama 或 API 完成。重新生成阅读稿会替换当前阅读稿及其所选页范围，不会把新选页合并到旧稿；单段重试保留其余内容。
 
-现有“重排 PDF”模式继续单独提供译文／双语 PDF 导出。**阅读稿本身尚不能导出为译文或双语 PDF，也尚未接入全文搜索和批注**；原 PDF 的阅读、搜索和批注继续可用。本发行候选的 Windows 原生 GUI、模型运行和安装升级验收仍在进行，具体完成范围以[验证记录](docs/VERIFICATION.md)为准。
+现有“重排 PDF”模式继续单独提供译文／双语 PDF 导出。**阅读稿本身尚不能导出为译文或双语 PDF，也尚未接入全文搜索和批注**；原 PDF 的阅读、搜索和批注继续可用。Windows 原生 GUI、模型运行和安装升级的实际完成范围以[验证记录](docs/VERIFICATION.md)为准。
 
 ## 数据与更新
 
