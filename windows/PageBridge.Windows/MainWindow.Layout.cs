@@ -202,7 +202,7 @@ public sealed partial class MainWindow
     {
         for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || HasTranslation; }
         if (leftPane is not null) ((FrameworkElement)leftPane.Children[0]).Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-        if (rightPane is not null) ((FrameworkElement)rightPane.Children[0]).Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        if (rightPane is not null) ((FrameworkElement)rightPane.Children[0]).Visibility = mode.SelectedIndex == 1 || (mode.SelectedIndex == 2 && ShowingReading) ? Visibility.Visible : Visibility.Collapsed;
         sync.IsEnabled = mode.SelectedIndex == 1 && !ShowingReading;
     }
     private void UpdateDocumentState()

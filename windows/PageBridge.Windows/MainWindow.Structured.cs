@@ -8,6 +8,10 @@ public sealed partial class MainWindow
 {
     private StructuredReadingPane structuredReading = null!;
     private readonly ComboBox readingOutput = new() { Width = 130, MinHeight = 25, FontSize = 11, Padding = new Thickness(6, 1, 6, 1), HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBlock readingPageNoticeText = new() { FontSize = 10.5, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 };
+    private readonly Button readingPageNotice = new() { MinWidth = 0, MinHeight = 0, Height = 25, Padding = new Thickness(6, 0, 0, 0), BorderThickness = new Thickness(0),
+        Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Right,
+        VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
     private bool changingReadingOutput, showReading, structuredActive;
     private bool HasReading => Text(selected, "reading_path") != "";
     private bool HasTranslation => HasReading || Text(selected, "translated_path") != "";
@@ -25,15 +29,29 @@ public sealed partial class MainWindow
         };
         structuredReading.PositionChanged += () =>
         {
+            UpdatePDFPaneLabels();
             if (bindingPages || selected is null || !ShowingReading || !structuredActive) return;
             if (sync.IsOn && mode.SelectedIndex == 1) originalPages.MoveTo(structuredReading.Position);
             AcceptReadingPosition(structuredReading.CurrentPage);
         };
+        structuredReading.PageMetadataChanged += UpdatePDFPaneLabels;
         structuredReading.PreviewError += message => status.Text = "预览加载失败：" + message;
         if (rightPane.Children[0] is Grid header)
         {
             header.Children[0].Visibility = Visibility.Collapsed;
+            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            var language = header.Children.OfType<TextBlock>().FirstOrDefault(item => item.Tag as string == "paneLanguage");
+            if (language is not null)
+            {
+                Grid.SetColumn(language, 1); language.VerticalAlignment = VerticalAlignment.Center;
+                language.TextTrimming = TextTrimming.CharacterEllipsis;
+            }
             header.Children.Add(readingOutput);
+            readingPageNotice.Content = readingPageNoticeText;
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(readingPageNotice, "StructuredReadingPageNotice");
+            readingPageNotice.Click += (_, _) => structuredReading.CurrentPageDetails()?.ShowAt(readingPageNotice);
+            Grid.SetColumn(readingPageNotice, 1); header.Children.Add(readingPageNotice);
             // The output selector is taller than the original's plain title.
             // Equal header heights keep both PDF viewports on the same baseline.
             if (leftPane.Children[0] is FrameworkElement originalHeader)

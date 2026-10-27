@@ -22,6 +22,7 @@ internal sealed partial class StructuredReadingPane
     internal ContinuousPdfPane.Anchor Position => pages.Position;
     internal int CurrentPage => pages.CurrentPage;
     internal event Action? PositionChanged;
+    internal event Action? PageMetadataChanged;
     internal event Action? Activated;
     internal event Action<string>? PreviewError;
     internal event Action<int, JsonArray?>? LocateRequested;
@@ -45,6 +46,7 @@ internal sealed partial class StructuredReadingPane
     internal void Clear()
     {
         generation++; identity = documentId = ""; metadata.Clear(); pages.Clear();
+        PageMetadataChanged?.Invoke();
     }
     internal void SetZoom(double value) => pages.SetZoom(value);
     internal void SetActive(bool value) => pages.SetActive(value);
@@ -78,6 +80,7 @@ internal sealed partial class StructuredReadingPane
             result = await backend.CallAsync("reading_page", new JsonObject { ["document_id"] = documentId, ["page"] = pageNumber });
             if (current != generation || result is null) return null;
             metadata[pageNumber] = result;
+            PageMetadataChanged?.Invoke();
         }
         var overlay = new Canvas { Width = pageWidth, Height = pageHeight, Clip = new RectangleGeometry { Rect = new Rect(0, 0, pageWidth, pageHeight) } };
         var blocks = result["blocks"]?.AsArray() ?? [];
@@ -102,11 +105,10 @@ internal sealed partial class StructuredReadingPane
             overlay.Children.Add(new Image { Source = new BitmapImage(new Uri(path)), Width = pageWidth, Height = pageHeight, Stretch = Stretch.Fill, IsHitTestVisible = false });
         // Source-region pixels and hit targets remain above text and strokes.
         if (!hasBackground) AddRegions(true);
-        AddPageNotices(overlay, result, pageNumber, pageWidth, current);
         return overlay;
     }
 
-    private void AddPageNotices(Canvas overlay, JsonNode result, int pageNumber, double pageWidth, int current)
+    private static string PageMessage(JsonNode result)
     {
         string message = Text(result, "page_status") switch
         {
@@ -115,20 +117,41 @@ internal sealed partial class StructuredReadingPane
             _ => ""
         };
         if (Text(result, "decorations_error") is { Length: > 0 } decorationError) message += " " + decorationError;
-        var blocks = (result["blocks"]?.AsArray() ?? []).Where(block => block is not null && block["bbox"] is not JsonArray { Count: 4 }).ToArray();
-        if (message.Length == 0 && blocks.Length == 0) return;
-        var panel = new StackPanel { Spacing = 4, MaxWidth = Math.Max(1, pageWidth - 16) };
-        if (message.Length > 0)
-            panel.Children.Add(new Border { Background = new SolidColorBrush(Colors.LightYellow), Padding = new Thickness(5, 3, 5, 3),
-                Child = new TextBlock { Text = message.Trim(), FontSize = 10, Foreground = new SolidColorBrush(Colors.Black), TextWrapping = TextWrapping.Wrap } });
-        if (blocks.Length > 0)
+        return message.Trim();
+    }
+
+    private static JsonNode[] UnlocatedBlocks(JsonNode result) => (result["blocks"]?.AsArray() ?? [])
+        .OfType<JsonNode>().Where(block => block["bbox"] is not JsonArray { Count: 4 }).ToArray();
+
+    internal (string Label, string Message)? CurrentPageNotice
+    {
+        get
         {
-            var unlocated = new Button { Content = "未定位段落（" + blocks.Length + "）", FontSize = 10, Padding = new Thickness(5, 3, 5, 3), HorizontalAlignment = HorizontalAlignment.Left };
-            var details = new StackPanel { Spacing = 20 }; var flyout = DetailsFlyout(details);
-            foreach (var block in blocks) details.Children.Add(BlockDetails(block!, null, current, pageNumber, flyout));
-            unlocated.Flyout = flyout; panel.Children.Add(unlocated);
+            if (!metadata.TryGetValue(CurrentPage - 1, out var result)) return null;
+            string message = PageMessage(result);
+            int count = UnlocatedBlocks(result).Length;
+            if (message.Length == 0 && count == 0) return null;
+            string label = Text(result, "page_status") is "not_selected" or "source_fallback" ? "原文保留" : message.Length > 0 ? "页面提示" : "";
+            if (count > 0)
+            {
+                label += (label.Length > 0 ? " · " : "") + $"未定位 {count} 段";
+                message += (message.Length > 0 ? "\n" : "") + $"有 {count} 个未定位段落，点击查看完整译文与原文。";
+            }
+            return (label, $"第 {CurrentPage} 页：{message}");
         }
-        Canvas.SetLeft(panel, 8); Canvas.SetTop(panel, 8); overlay.Children.Add(panel);
+    }
+
+    // Page notices belong to the existing pane header, never on top of PDF pixels.
+    internal Flyout? CurrentPageDetails()
+    {
+        int pageNumber = CurrentPage - 1, current = generation;
+        if (!metadata.TryGetValue(pageNumber, out var result) || CurrentPageNotice is not { } notice) return null;
+        var details = new StackPanel { Spacing = 20 };
+        var flyout = DetailsFlyout(details);
+        details.Children.Add(Prose(notice.Message, 12));
+        foreach (var block in UnlocatedBlocks(result))
+            details.Children.Add(BlockDetails(block, null, current, pageNumber, flyout));
+        return flyout;
     }
 
     private void AddBlock(Canvas overlay, JsonNode block, JsonArray bbox, int current, int pageNumber, double pageWidth, double pageHeight,
