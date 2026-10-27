@@ -60,6 +60,8 @@ def main():
     parser.add_argument('--input', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--pages')
+    parser.add_argument('--source-language', default='en')
+    parser.add_argument('--target-language', default='zh')
     parser.add_argument('--model', default='qwen3.5:35b-a3b-int4')
     parser.add_argument('--service', choices=['ollama', 'openai'], default='ollama')
     args = parser.parse_args()
@@ -77,7 +79,7 @@ def main():
     attempt = str(uuid.uuid4()).upper()
     request = dict(protocolVersion=1, action='translate', jobId=str(uuid.uuid4()).upper(),
                    attemptId=attempt, inputPath=str(source), outputDirectory=str(output),
-                   sourceLanguage='en', targetLanguage='zh', pages=args.pages,
+                   sourceLanguage=args.source_language, targetLanguage=args.target_language, pages=args.pages,
                    service=dict(kind=args.service, baseURL='http://127.0.0.1:11434/v1',
                                 model=args.model, apiKey='local-validation',
                                 timeoutSeconds=300, concurrency=2))
@@ -127,6 +129,7 @@ def main():
                       source=str(source), sourceSHA256=source_hash, sourceUnchanged=True,
                       **runtime_hashes, runtimeSourcesUnchanged=True,
                       model=args.model, service=args.service, selectedPages=args.pages,
+                      sourceLanguage=args.source_language, targetLanguage=args.target_language,
                       elapsedSeconds=round(time.monotonic() - started, 2),
                       exitCode=code, result=terminal)
         if code == 0 and terminal and terminal.get('type') == 'result':

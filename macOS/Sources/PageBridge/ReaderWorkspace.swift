@@ -100,6 +100,10 @@ final class ReaderWorkspace: ObservableObject {
     func reportPage(_ page: Int, variant: PDFDocumentVariant) {
         if selectedVariant == variant && currentPage != page { currentPage = page }
     }
+    func clearSelection() {
+        selectionText = ""; selectionRegions = []
+        for reader in readers.values { reader.view?.clearSelection() }
+    }
     func highlightSelection() { addMarkup(.highlight) }
     func underlineSelection() { addMarkup(.underline) }
     private func addMarkup(_ kind: ReadingAnnotationKind) {

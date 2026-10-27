@@ -14,7 +14,8 @@ public final class DocumentRepository {
     public let root: URL
     private let fm = FileManager.default
     public init(root: URL? = nil) throws {
-        self.root = try root ?? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("PageBridge", isDirectory: true)
+        let override = ProcessInfo.processInfo.environment["PAGEBRIDGE_DATA_ROOT"].flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil }
+        self.root = try root ?? override ?? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("PageBridge", isDirectory: true)
         try fm.createDirectory(at: self.root, withIntermediateDirectories: true)
     }
     public func loadDocuments() throws -> [DocumentRecord] {
@@ -140,6 +141,7 @@ public final class DocumentRepository {
         updated.bilingualPath = destination.appendingPathComponent("bilingual.pdf").path
         updated.sourceLanguage = sourceLanguage; updated.targetLanguage = targetLanguage
         updated.status = .completed; updated.lastError = nil; updated.attemptID = attempt
+        updated.preferredOutputMode = "pdf"
         return updated
     }
     public static func sha256(_ url: URL) throws -> String {

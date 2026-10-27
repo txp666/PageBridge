@@ -310,7 +310,7 @@ public final class PaperAssistantHistoryStore {
     private struct Archive: Codable { let version: Int; let documentID: UUID; let sourceSHA256: String; let messages: [PaperAssistantMessage] }
     public let directory: URL
     public init(directory: URL? = nil) throws {
-        self.directory = try directory ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("PageBridge/assistant", isDirectory: true)
+        self.directory = try directory ?? DocumentRepository().root.appendingPathComponent("assistant", isDirectory: true)
     }
     public func load(document: DocumentRecord) throws -> [PaperAssistantMessage] {
         let file = url(for: document.id)

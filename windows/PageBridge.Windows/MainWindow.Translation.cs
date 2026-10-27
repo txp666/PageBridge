@@ -6,7 +6,7 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
-    private sealed record TranslationChoice(string Source, string Target, string? Pages);
+    private sealed record TranslationChoice(string Source, string Target, string? Pages, string Mode);
 
     private async Task<TranslationChoice?> TranslationDialogAsync(string name, JsonNode? services)
     {
@@ -22,13 +22,15 @@ public sealed partial class MainWindow
         var range = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
         range.Items.Add("全部页面"); range.Items.Add("指定页面"); range.SelectedIndex = 0;
         var pages = new TextBox { PlaceholderText = "例如 1-5, 8, 12-16", Width = 235 };
+        var output = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
+        output.Items.Add("原文 + 中文阅读稿"); output.Items.Add("重排 PDF 导出"); output.SelectedIndex = 0;
         var panel = new StackPanel { Spacing = 18, Width = 440 };
         panel.Children.Add(new TextBlock { Text = name, FontSize = 13, Opacity = .65, TextTrimming = TextTrimming.CharacterEllipsis });
         Grid Field(string caption, FrameworkElement control)
         {
             var row = new Grid(); row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); row.Children.Add(new TextBlock { Text = caption, FontSize = 13, VerticalAlignment = VerticalAlignment.Center }); Grid.SetColumn(control, 1); row.Children.Add(control); return row;
         }
-        panel.Children.Add(Field("源语言", source)); panel.Children.Add(Field("目标语言", target)); panel.Children.Add(Field("翻译范围", range));
+        panel.Children.Add(Field("阅读方式", output)); panel.Children.Add(Field("源语言", source)); panel.Children.Add(Field("目标语言", target)); panel.Children.Add(Field("翻译范围", range));
         var pageRow = Field("页码", pages); pageRow.Visibility = Visibility.Collapsed; panel.Children.Add(pageRow);
         range.SelectionChanged += (_, _) => pageRow.Visibility = range.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         var profile = services?["profiles"]?.AsArray().FirstOrDefault(p => Text(p, "id") == Text(services, "active_id"));
@@ -39,7 +41,7 @@ public sealed partial class MainWindow
         service.Children.Add(new TextBlock { Text = "PDF 在本机处理。使用在线 API 时，待翻译文本会发送至所选服务；本机服务需在本机运行。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(new Border { Child = service, Padding = new Thickness(14), CornerRadius = new CornerRadius(10), Background = Dark ? Brush(45, 45, 45) : Brush(238, 238, 238) });
         var error = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed) }; panel.Children.Add(error);
-        panel.Children.Add(new TextBlock { Text = Text(selected, "translated_path") == "" ? "输出译文与双语 PDF" : "本次翻译成功后，将更新此文档的译文。原 PDF 会保留。", FontSize = 11, Opacity = .65 });
+        panel.Children.Add(new TextBlock { Text = "阅读稿保留原 PDF，表格和公式可回看原文。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间；未译段落可单独重试。PDF 导出仍可单独选择。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "翻译 PDF", Content = panel, PrimaryButtonText = "开始翻译", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
         dialog.Resources["ContentDialogMaxWidth"] = 520d;
         dialog.PrimaryButtonClick += (_, args) =>
@@ -57,6 +59,6 @@ public sealed partial class MainWindow
             args.Cancel = error.Text != "";
         };
         if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary) return null;
-        return new TranslationChoice((string)((ComboBoxItem)source.SelectedItem).Tag, (string)((ComboBoxItem)target.SelectedItem).Tag, range.SelectedIndex == 1 ? pages.Text.Trim() : null);
+        return new TranslationChoice((string)((ComboBoxItem)source.SelectedItem).Tag, (string)((ComboBoxItem)target.SelectedItem).Tag, range.SelectedIndex == 1 ? pages.Text.Trim() : null, output.SelectedIndex == 0 ? "reading" : "pdf");
     }
 }

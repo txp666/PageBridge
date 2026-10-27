@@ -56,7 +56,8 @@ public sealed partial class MainWindow
         try
         {
             magnification = scale;
-            originalPages.SetZoom(scale); translatedPages.SetZoom(scale);
+            originalPages.SetZoom(scale); translatedPages.SetZoom(scale); structuredReading.SetZoom(scale);
+            SynchronizeReaders();
             if (scale == 1 && zoom.SelectedItem?.ToString() == "适合宽度") return;
             string label = Math.Round(scale * 100).ToString(CultureInfo.InvariantCulture) + "%";
             int index = -1;

@@ -301,11 +301,14 @@ def main():
                 report["layoutGuardSHA256"] = sha256(layout_guard)
                 require(report["layoutGuardSHA256"] == sha256(ROOT / "engine/layout_guard.py"), "Bundled layout guard differs from current source.")
                 report['engineModulesSHA256'] = {}
-                for name in ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py'):
+                for name in ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock'):
                     require((ENGINE / name).is_file(), 'Missing engine module: ' + name)
                     checksum = sha256(ENGINE / name)
                     require(checksum == sha256(ROOT / 'engine' / name), 'Bundled source differs: ' + name)
                     report['engineModulesSHA256'][name] = checksum
+                uv = ENGINE / 'tools/uv'
+                require(uv.is_file(), 'Missing optional reading bootstrap.')
+                require(subprocess.check_output([str(uv), '--version'], text=True).split()[:2] == ['uv', '0.9.17'], 'Unexpected reading bootstrap version.')
                 resources = APP / 'Contents/Resources'
                 info = plistlib.loads((APP / 'Contents/Info.plist').read_bytes())
                 release = json.loads((ROOT / 'VERSION.json').read_text())

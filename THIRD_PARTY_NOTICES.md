@@ -1,10 +1,10 @@
 # 许可证与第三方说明
 
-PageBridge 0.4.0 的原创程序代码以 **GNU Affero General Public License, version 3（AGPL-3.0-only）** 提供，完整条款见 [LICENSE](LICENSE)。可以按该许可证使用、修改和再分发；软件按原样提供，不附带担保。第三方代码、文献和其他资源继续适用各自的许可证，本项目的许可证不改变其权利归属。
+PageBridge 0.5.0 的原创程序代码以 **GNU Affero General Public License, version 3（AGPL-3.0-only）** 提供，完整条款见 [LICENSE](LICENSE)。可以按该许可证使用、修改和再分发；软件按原样提供，不附带担保。第三方代码、文献和其他资源继续适用各自的许可证，本项目的许可证不改变其权利归属。
 
 ## 随应用分发的软件
 
-以下是主要组件；全部 Python 依赖的版本、下载位置及校验值记录在 [engine/uv.lock](engine/uv.lock)。实际保留的组件受 [原生运行时裁剪配置](scripts/bundle-profile.json) 控制，不能把锁文件中所有开发或网页依赖视为已捆绑。
+以下是随主应用分发的主要组件；主引擎 Python 依赖的版本、下载位置及校验值记录在 [engine/uv.lock](engine/uv.lock)。按需安装的 MinerU 环境使用独立的 [依赖版本清单](engine/mineru-requirements.txt) 和 [模型哈希清单](engine/mineru-models.json)，不属于主引擎锁文件。实际保留的组件受 [原生运行时裁剪配置](scripts/bundle-profile.json) 控制，不能把锁文件中所有开发或网页依赖视为已捆绑。
 
 | 组件 | 本版锁定版本 | 许可证与来源 |
 |---|---|---|
@@ -14,6 +14,7 @@ PageBridge 0.4.0 的原创程序代码以 **GNU Affero General Public License, v
 | CPython | 3.12.12 | PSF License Version 2 及所含第三方条款；[对应版本 LICENSE](https://github.com/python/cpython/blob/v3.12.12/LICENSE) · [源码](https://github.com/python/cpython/tree/v3.12.12) |
 | Python standalone 构建 | 由 `uv` 管理的 CPython 3.12.12 运行时 | [python-build-standalone 构建项目](https://github.com/astral-sh/python-build-standalone)；其随附第三方库不因此改用 PageBridge 许可证 |
 | ONNX Runtime | 1.31.0 | MIT；[对应版本源码](https://github.com/microsoft/onnxruntime/tree/v1.31.0) · [许可证](https://github.com/microsoft/onnxruntime/blob/v1.31.0/LICENSE)；另含第三方声明 |
+| uv | 0.9.17 | MIT 或 Apache-2.0；[对应版本源码](https://github.com/astral-sh/uv/tree/0.9.17)；两份完整许可位于 `engine/vendor/uv-LICENSE-*`，引导工具位于 `engine/tools/uv`（Windows 为 `uv.exe`） |
 | Sparkle | 2.10.0 | 主体为 MIT，另含 bsdiff、sais-lite、Ed25519 等独立许可；[对应版本源码](https://github.com/sparkle-project/Sparkle/tree/2.10.0) · [完整许可证](https://github.com/sparkle-project/Sparkle/blob/2.10.0/LICENSE) |
 
 PDFMathTranslate-next、BabelDOC、PyMuPDF/MuPDF 及其他依赖的著作权归各自上游作者与贡献者所有。PyMuPDF/MuPDF 的商业许可代理为 Artifex Software, Inc.；此构建未声称持有商业许可。
@@ -33,13 +34,13 @@ PDFMathTranslate-next、BabelDOC、PyMuPDF/MuPDF 及其他依赖的著作权归�
 
 Windows 前端使用 .NET 10 与 Windows App SDK 的 WinUI／InteractiveExperiences 组件，不包含 Sparkle。直接包版本固定在 `windows/PageBridge.Windows/PageBridge.Windows.csproj`，传递依赖由同目录 `packages.lock.json` 锁定，实际解析的依赖与许可证随 Windows 包保存在 `resources/licenses/nuget/`；Microsoft 组件继续适用各自 NuGet 包中声明的许可，不因 PageBridge 的 AGPL 许可证改变。
 
-Windows 私有 Python 路径为 `resources/engine/runtime/`，其 `Lib/site-packages/` 保留 Python 组件元数据与许可证；PageBridge 后端源码、完整许可证及第三方声明位于 `resources/`。0.4.0 的 Mac 和 Windows 包共享同一版本的项目源码及翻译引擎锁文件。框架来源见 [WinUI 源码](https://github.com/microsoft/microsoft-ui-xaml)、[Windows App SDK 源码](https://github.com/microsoft/WindowsAppSDK)及 [.NET runtime 源码](https://github.com/dotnet/runtime)。
+Windows 私有 Python 路径为 `resources/engine/runtime/`，其 `Lib/site-packages/` 保留 Python 组件元数据与许可证；PageBridge 后端源码、完整许可证及第三方声明位于 `resources/`。0.5.0 的 Mac 和 Windows 包共享同一版本的项目源码及翻译引擎锁文件。框架来源见 [WinUI 源码](https://github.com/microsoft/microsoft-ui-xaml)、[Windows App SDK 源码](https://github.com/microsoft/WindowsAppSDK)及 [.NET runtime 源码](https://github.com/dotnet/runtime)。
 
 ## 对应源码与发行材料
 
-配套 `PageBridge-0.4.0-source.zip` 包含 PageBridge 原创 Swift、C#、XAML 和 Python 源码、测试、构建脚本、资源、文档和两端依赖锁文件。它不包含开发机虚拟环境、用户文档、API Key、对话或验证输出，也不是所有第三方二进制的完整源码镜像。
+配套 `PageBridge-0.5.0-source.zip` 包含 PageBridge 原创 Swift、C#、XAML 和 Python 源码、测试、构建脚本、资源、文档和两端依赖锁文件。它不包含开发机虚拟环境、用户文档、API Key、对话或验证输出，也不是所有第三方二进制的完整源码镜像。
 
-配套 `PageBridge-0.4.0-third-party-sources.zip` 另外提供 PDFMathTranslate-next 2.9.0、BabelDOC 0.6.2、PyMuPDF 1.25.2 的官方源码发行件，以及 MuPDF 1.25.2 官方源码归档。前三项下载文件与锁文件中的大小、SHA-256 一致。MuPDF 归档包含构建文件和第三方源码树；清单记录了获取 URL、版本、许可证、计算所得哈希及检查边界，未执行所下载源码。
+配套 `PageBridge-0.5.0-third-party-sources.zip` 另外提供 PDFMathTranslate-next 2.9.0、BabelDOC 0.6.2、PyMuPDF 1.25.2 的官方源码发行件，以及 MuPDF 1.25.2 官方源码归档。前三项下载文件与锁文件中的大小、SHA-256 一致。MuPDF 归档包含构建文件和第三方源码树；清单记录了获取 URL、版本、许可证、计算所得哈希及检查边界，未执行所下载源码。
 
 PyMuPDF 1.25.2 源码发行件未内嵌 MuPDF；其 [构建脚本](https://raw.githubusercontent.com/pymupdf/PyMuPDF/1.25.2/setup.py) 指定从 [MuPDF 1.25.2 源码归档](https://mupdf.com/downloads/archive/mupdf-1.25.2-source.tar.gz) 获取底层源码，配套第三方源码包已单独包含该归档。其他 Python 源码发行件可按锁文件中的 `sdist` URL 与 SHA-256 取得和核对；这份配套包是上述四项组件的源码集合，并非全部捆绑依赖的穷尽性源码与许可审计。
 
@@ -52,6 +53,12 @@ PyMuPDF 1.25.2 源码发行件未内嵌 MuPDF；其 [构建脚本](https://raw.g
 PageBridge 图标由本项目使用图像生成工具制作，原始 PNG、生成提示与 ICNS 转换方法见 [assets/README.md](assets/README.md)。它未使用外部产品标志。第三方名称与标志不表示这些作者或服务方为 PageBridge 背书。
 
 首次翻译可能由上游下载字体、版面分析模型等资源；这些下载资源依各自随附许可使用，不因本项目开源而统一改用 AGPL。语言模型与 Ollama 不包含在本安装包内。
+
+## 按需下载的对照阅读组件
+
+对照阅读使用独立安装的 **MinerU 4.0.12 Basic / ONNX**。主应用仅携带接入源码、固定依赖清单、模型清单和 uv 安装工具；首次使用将解析运行环境与官方模型下载到用户目录下 `PageBridge/mineru/4.0.12/`，不写入签名应用包。该模式不使用 MinerU 云服务或远程 VLM；页面文字由用户配置的翻译服务处理。
+
+MinerU 的[对应版本源码与许可](https://github.com/opendatalab/MinerU/tree/mineru-4.0.12-released)保留上游条款，其 LICENSE 含附加条件，不能简写为纯 Apache-2.0。所下载的依赖与模型仍分别适用各自许可证；固定安装版本见 `engine/mineru-requirements.txt`，Basic 模型文件及哈希见 `engine/mineru-models.json`。安装环境保留发行元数据和随附许可；MinerU 的完整附加条款位于该环境的 `mineru-4.0.12.dist-info/licenses/LICENSE.md`，可从对应版本源码查看同一许可。正式再分发模型或该运行环境前应单独核对其条款，PageBridge 不把这些资源重新授权为 AGPL。
 
 ## 在线服务
 

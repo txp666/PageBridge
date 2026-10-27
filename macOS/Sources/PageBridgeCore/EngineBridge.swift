@@ -28,11 +28,15 @@ public struct WorkerRequest: Codable, Sendable {
     public var targetLanguage: String?
     public var pages: String?
     public var service: EngineService?
-    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil) {
+    public var outputMode: String?
+    public var readingPath: String?
+    public var retryBlockIds: [String]?
+    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, outputMode: String? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil) {
         self.jobId = jobID.uuidString; self.attemptId = attemptID.uuidString; self.action = action
         self.inputPath = inputPath; self.outputDirectory = outputDirectory
         self.sourceLanguage = sourceLanguage; self.targetLanguage = targetLanguage
         self.pages = pages; self.service = service
+        self.outputMode = outputMode; self.readingPath = readingPath; self.retryBlockIds = retryBlockIds
     }
 }
 
@@ -48,6 +52,13 @@ public struct WorkerEvent: Codable, Sendable {
     public var translatedPath: String?
     public var bilingualPath: String?
     public var engineVersion: String?
+    public var artifactType: String?
+    public var readingPath: String?
+    public var readingSHA256: String?
+    public var status: String?
+    public var translatedBlocks: Int?
+    public var failedBlocks: Int?
+    public var preservedBlocks: Int?
 }
 
 public struct EngineLocation: Sendable {

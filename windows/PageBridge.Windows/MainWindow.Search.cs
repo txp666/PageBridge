@@ -48,7 +48,7 @@ public sealed partial class MainWindow
     {
         if (selected is null) return;
         documentSearchBar.Visibility = Visibility.Visible;
-        documentQuery.PlaceholderText = mode.SelectedIndex == 2 ? "搜索译文中的文字" : "搜索原文中的文字";
+        documentQuery.PlaceholderText = mode.SelectedIndex == 2 && !ShowingReading ? "搜索译文中的文字" : "搜索原文中的文字";
         documentQuery.Focus(FocusState.Programmatic); documentQuery.SelectAll();
     }
 
@@ -57,13 +57,13 @@ public sealed partial class MainWindow
         documentSearchGeneration++; documentSearchCancellation?.Cancel(); documentSearchCancellation = null;
         searchResultsFlyout.Hide(); searchResultItems.Children.Clear(); searchResultsButton.Content = "结果 0"; searchResultsButton.IsEnabled = false; searchProgress.Text = "";
         originalPages?.SetSearchHits([]); translatedPages?.SetSearchHits([]);
-        documentQuery.PlaceholderText = mode.SelectedIndex == 2 ? "搜索译文中的文字" : "搜索原文中的文字";
+        documentQuery.PlaceholderText = mode.SelectedIndex == 2 && !ShowingReading ? "搜索译文中的文字" : "搜索原文中的文字";
     }
 
     private async Task SearchDocumentAsync()
     {
         ResetDocumentSearch();
-        string query = documentQuery.Text.Trim(), id = Text(selected, "id"), variant = mode.SelectedIndex == 2 ? "translated" : "original";
+        string query = documentQuery.Text.Trim(), id = Text(selected, "id"), variant = mode.SelectedIndex == 2 && !ShowingReading ? "translated" : "original";
         if (id == "" || query == "") return;
         int generation = documentSearchGeneration, scanned = 0;
         using var cancellation = new CancellationTokenSource(); documentSearchCancellation = cancellation;

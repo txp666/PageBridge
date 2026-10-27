@@ -121,8 +121,23 @@ profile_report = prune_runtime(runtime, profile, info["versions"])
 (engine / "bundle-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
 (ROOT / "validation").mkdir(parents=True, exist_ok=True)
 (ROOT / "validation" / (app.stem + "-bundle-profile.json")).write_text(json.dumps(profile_report, indent=2) + "\n")
-for relative in ["worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py", "pyproject.toml", "uv.lock"]:
+for relative in ['worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock']:
+    (engine / relative).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "engine" / relative, engine / relative)
+# The optional parser uses an independent, writable environment. Ship only its
+# fixed bootstrap tool, not the parser models or another Python dependency tree.
+uv_source = Path(os.environ.get("PAGEBRIDGE_UV", ROOT / "engine/.tools/bin/uv"))
+if not uv_source.is_file():
+    resolved_uv = shutil.which("uv")
+    if not resolved_uv:
+        raise RuntimeError("uv 0.9.17 is required to build the optional reading runtime bootstrap.")
+    uv_source = Path(resolved_uv)
+uv_version = subprocess.run([str(uv_source), "--version"], check=True, capture_output=True, text=True).stdout.split()
+if uv_version[:2] != ["uv", "0.9.17"]:
+    raise RuntimeError("Expected uv 0.9.17 for the reading runtime bootstrap.")
+(engine / "tools").mkdir()
+shutil.copy2(uv_source, engine / "tools/uv")
+subprocess.run(["codesign", "--force", "--sign", "-", str(engine / "tools/uv")], check=True, capture_output=True)
 (engine / "runtime-info.json").write_text(json.dumps({"pythonVersion": info["pythonVersion"], "architecture": info["architecture"], "versions": info["versions"]}, indent=2))
 shutil.copy2(ROOT / "LICENSE", resources / "LICENSE")
 shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", resources / "Third-Party-Notices.txt")
