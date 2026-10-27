@@ -52,7 +52,8 @@ internal sealed partial class ContinuousPdfPane
     {
         get
         {
-            var position = PageScrollGeometry.Locate(Scroll.VerticalOffset, offsets, pageHeights);
+            double pixel = 1 / (Scroll.XamlRoot?.RasterizationScale ?? 1);
+            var position = PageScrollGeometry.Locate(Scroll.VerticalOffset, offsets, pageHeights, pixel);
             return new Anchor(position.Page, position.Fraction);
         }
     }
@@ -122,9 +123,13 @@ internal sealed partial class ContinuousPdfPane
         try
         {
             paperWidth = Math.Max(120, Scroll.ActualWidth - 36) * zoom;
+            double scale = Scroll.XamlRoot?.RasterizationScale ?? 1;
             for (int i = 0; i < views.Count; i++)
             {
-                views[i].Paper.Width = paperWidth; views[i].Paper.Height = paperWidth * sizes[i].Height / sizes[i].Width;
+                views[i].Paper.Width = paperWidth;
+                // Give WinUI and our page anchors the same device-pixel height,
+                // without querying an in-progress layout from SizeChanged.
+                views[i].Paper.Height = PageScrollGeometry.PixelAlignedHeight(paperWidth * sizes[i].Height / sizes[i].Width, scale);
                 DrawSearch(i); DrawMarkup(i); DrawSelection(i);
             }
             pageHeights = views.Select(view => view.Paper.Height).ToArray();

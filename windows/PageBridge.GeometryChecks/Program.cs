@@ -31,7 +31,7 @@ foreach (double zoom in new[] { .5, 1, 1.5, 3 })
     for (int page = 1; page < pdfSizes.Length; page++)
     {
         Equal(PageScrollGeometry.Locate(left[page], left, leftHeights).Page, page, "exact cross-page boundary");
-        Equal(PageScrollGeometry.Locate(left[page] - 1, left, leftHeights).Page, page - 1, "page gap stays with preceding page");
+        Equal(PageScrollGeometry.Locate(left[page] - 2, left, leftHeights).Page, page - 1, "page gap outside pixel tolerance stays with preceding page");
         checks++;
     }
 }
@@ -40,6 +40,60 @@ var offsets = PageScrollGeometry.Offsets(exampleHeights, 16, 16);
 Equal(PageScrollGeometry.Locate(-10, offsets, exampleHeights).Fraction, 0, "negative viewport offset clamps");
 Equal(PageScrollGeometry.Offset(99, 99, offsets, exampleHeights), 1332, "out-of-range jump clamps");
 Equal(PageScrollGeometry.Offset(0, 0, [], []), 0, "empty document"); checks += 3;
+
+// Quantize the requested Paper.Height before both WinUI layout and anchor sums.
+// Cover long documents and both sync directions without depending on layout timing.
+foreach (double scale in new[] { 1d, 1.25, 1.5, 2 })
+{
+    var requested = Enumerable.Repeat(569d * 792 / 612, 150).ToArray();
+    var arranged = requested.Select(height => PageScrollGeometry.PixelAlignedHeight(height, scale)).ToArray();
+    foreach (double height in arranged)
+        Equal(height * scale, Math.Round(height * scale), "paper height is an exact device-pixel count");
+    var measured = PageScrollGeometry.Offsets(arranged, 16, 16);
+    var theoretical = PageScrollGeometry.Offsets(requested, 16, 16);
+    if (Math.Abs(theoretical[112] - measured[112]) < 1)
+        throw new Exception("Fixture must exercise accumulated layout rounding at page 113.");
+    double pixel = 1 / scale;
+    foreach (int page in new[] { 1, 112, 149 })
+    foreach (double rounding in new[] { -1d, -.5, 0, .5 })
+    {
+        double actual = measured[page] + rounding * pixel;
+        var anchor = PageScrollGeometry.Locate(actual, measured, arranged, pixel);
+        Equal(anchor.Page, page, "pixel-rounded page top retains requested page");
+        Equal(anchor.Fraction, Math.Max(0, rounding * pixel) / arranged[page], "page-top fraction clamps rounding before paper");
+        double restored = PageScrollGeometry.Offset(anchor.Page, anchor.Fraction, measured, arranged);
+        var returned = PageScrollGeometry.Locate(restored, measured, arranged, pixel);
+        Equal(returned.Page, page, "page-top sync does not fall back through preceding gap");
+        Equal(returned.Fraction, anchor.Fraction, "reverse page-top sync anchor is stable");
+        checks++;
+    }
+    var otherHeights = Enumerable.Repeat(PageScrollGeometry.PixelAlignedHeight(650d * 792 / 612, scale), 150).ToArray();
+    var otherOffsets = PageScrollGeometry.Offsets(otherHeights, 16, 16);
+    foreach (int page in new[] { 1, 112, 149 })
+    {
+        double synced = measured[page] - pixel;
+        for (int repeat = 0; repeat < 20; repeat++)
+        {
+            var left = PageScrollGeometry.Locate(synced, measured, arranged, pixel);
+            double rightOffset = PageScrollGeometry.Offset(left.Page, left.Fraction, otherOffsets, otherHeights);
+            var right = PageScrollGeometry.Locate(Math.Round(rightOffset * scale) / scale, otherOffsets, otherHeights, pixel);
+            synced = PageScrollGeometry.Offset(right.Page, right.Fraction, measured, arranged);
+            Equal(right.Page, page, "unequal-width repeated sync retains page after pixel rounding");
+            Equal(synced, measured[page], "repeated sync does not accumulate page-gap drift");
+            checks++;
+        }
+        Equal(PageScrollGeometry.Locate(measured[page] - 2 * pixel, measured, arranged, pixel).Page, page - 1,
+            "gap outside one device pixel stays with preceding page");
+        var end = PageScrollGeometry.Locate(measured[page - 1] + arranged[page - 1], measured, arranged, pixel);
+        Equal(end.Page, page - 1, "previous page bottom is not promoted across gap");
+        Equal(end.Fraction, 1, "previous page bottom retains end anchor");
+        checks++;
+    }
+}
+
+Equal(PageScrollGeometry.PixelAlignedHeight(10.25, 2), 10.5, "half-device-pixel height is assigned consistently");
+Equal(PageScrollGeometry.PixelAlignedHeight(.1, 2), .5, "very short page retains one visible device pixel");
+checks += 2;
 
 var spans = JsonNode.Parse("""[{"token":"[[M1]]","latex":"x^2","bbox":[10,20,30,40]},{"token":"[[M2]]","latex":"\\alpha","bbox":[40,20,50,40]}]""")!.AsArray();
 var fragments = ReadingInlineMath.Fragments("前文 [[M2]] 与 [[M1]]，尾文 $z$", spans).ToArray();
