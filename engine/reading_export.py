@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import html
 import io
+import math
 import os
 from pathlib import Path
 import re
@@ -97,13 +98,26 @@ def _css(block, size, background):
             f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}")
 
 
+def estimated_font_size(block):
+    """Font size from the region's area and character count, for text without a text layer
+    (scans); within ±25% of the real size on the demo pages."""
+    text = (block.get("sourceText") or "").strip()
+    bbox = block.get("bbox")
+    if block.get("kind") not in {"text", "heading", "list"} or len(text) < 3 or not bbox or len(bbox) != 4:
+        return None
+    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if width <= 0 or height <= 0:
+        return None
+    return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
+
+
 def _start_size(block, glyphs):
-    """Character-weighted median native font size in the region, as both readers use,
-    with the readers' minimum; fitting may still shrink it so nothing is cut."""
+    """Character-weighted median native font size in the region, as both readers use;
+    small print keeps its own size (5 pt floor) and fitting may still shrink it so nothing is cut."""
     rect = pymupdf.Rect(block["bbox"])
     sizes = sorted(size for _, local, _, size in glyphs if rect.contains(_center(local)) and size > 0)
-    size = sizes[len(sizes) // 2] if sizes else 18 if block.get("kind") == "heading" else 12
-    return max(6.5 if block.get("sourceType") == "table_cell" else 8, size)
+    size = sizes[len(sizes) // 2] if sizes else estimated_font_size(block) or (18 if block.get("kind") == "heading" else 12)
+    return max(5, size)
 
 
 def _subtract(rect, holes):

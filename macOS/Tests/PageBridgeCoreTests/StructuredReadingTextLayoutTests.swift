@@ -12,9 +12,18 @@ final class StructuredReadingTextLayoutTests: XCTestCase {
         XCTAssertLessThan(table.fontSize, 8)
         XCTAssertLessThanOrEqual(table.measuredSize.height, bounds.height)
         let body = StructuredReadingTextLayout.fit(text: "现金及现金等价物", in: bounds,
-            preferredFontSize: 8, heading: false)
+            preferredFontSize: 10, heading: false)
         XCTAssertTrue(body.overflows)
         XCTAssertEqual(body.fontSize, 8)
+    }
+
+    func testSmallPrintFitsAtItsOwnSizeBelowTheReaderMinimum() {
+        // PLOS references are set at 6.97 pt; an 8 pt floor overflowed every one of them.
+        let layout = StructuredReadingTextLayout.fit(text: "现金及现金等价物", in: CGSize(width: 120, height: 8.86),
+            preferredFontSize: 7, heading: false)
+        XCTAssertFalse(layout.overflows)
+        XCTAssertLessThanOrEqual(layout.fontSize, 7)
+        XCTAssertGreaterThanOrEqual(layout.fontSize, 5)
     }
 
     func testChineseTextFitsWithoutExceedingOriginalRectangle() {

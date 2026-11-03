@@ -137,6 +137,15 @@ public struct StructuredReadingBlock: Codable, Sendable, Equatable, Identifiable
     public var inlineMath: [StructuredReadingInlineMath]?
     public var isSourceRegion: Bool { ["table", "formula", "figure", "code"].contains(kind) }
     public var displayText: String { status == "translated" ? (translatedText ?? sourceText) : sourceText }
+    /// Font size from the region's area and character count, for text without a text layer
+    /// (scans); within ±25% of the real size on the demo pages.
+    public var estimatedFontSize: CGFloat? {
+        let count = sourceText.trimmingCharacters(in: .whitespacesAndNewlines).count
+        guard ["text", "heading", "list"].contains(kind), count >= 3, let bbox, bbox.count == 4 else { return nil }
+        let width = bbox[2] - bbox[0], height = bbox[3] - bbox[1]
+        guard width > 0, height > 0 else { return nil }
+        return CGFloat(min(height / 1.2, (width * height / (Double(count) * 0.6)).squareRoot()))
+    }
 }
 
 public struct StructuredReadingInlineMath: Codable, Sendable, Equatable {
