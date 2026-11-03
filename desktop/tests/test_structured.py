@@ -34,7 +34,6 @@ class StructuredReadingTests(unittest.TestCase):
 
     def prepare(self, partial=False):
         attempt, directory = self.store.new_attempt(self.doc["id"])
-        self.store.mark_running(self.doc["id"], attempt)
         output = directory / "result"; output.mkdir()
         artifact = dict(schemaVersion=1, artifactType=structured.ARTIFACT_TYPE, sourceSHA256=self.doc["input_sha256"], pageCount=3,
                         sourceLanguage="en", targetLanguage="zh", selectedPages=[2], status="partial" if partial else "completed",
@@ -78,8 +77,7 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(result["translated_path"], self.doc["input_path"])
         self.assertEqual(result["preferred_artifact"], "reading")
         old_path = result["reading_path"]
-        next_attempt, _ = self.store.new_attempt(self.doc["id"])
-        self.store.mark_running(self.doc["id"], next_attempt)
+        self.store.new_attempt(self.doc["id"])
         self.store.finish_failure(self.doc["id"], "Cancelled", cancelled=True)
         self.assertEqual(self.store.get(self.doc["id"])["reading_path"], old_path)
         self.assertTrue(Path(old_path).exists())
@@ -135,16 +133,6 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(first["page_status"], "source_fallback")
         self.assertEqual(len(structured.page_result(self.store, dict(document_id=self.doc["id"], page=1))["blocks"]), 2)
 
-    def test_original_region_render_uses_owned_pdf_not_model_paths(self):
-        attempt, event, artifact = self.prepare()
-        artifact["pages"][0]["blocks"][1]["imagePath"] = "/arbitrary/untrusted/image.png"
-        self.save_modified(event, artifact)
-        self.store.commit_result(self.doc["id"], attempt, event)
-        result = structured.block_image(self.store, dict(document_id=self.doc["id"], block_id="p2-b2"))
-        self.assertTrue(Path(result["path"]).is_relative_to(self.store.root / "preview-cache"))
-        self.assertTrue(Path(result["path"]).read_bytes().startswith(b"\x89PNG"))
-        self.assertEqual(result["page"], 1)
-
     def test_native_background_survives_commit_restart_without_restoring_old_paths(self):
         attempt, event, artifact = self.prepare()
         with pymupdf.open(self.doc["input_path"]) as pdf:
@@ -176,7 +164,7 @@ class StructuredReadingTests(unittest.TestCase):
                 with self.assertRaises(AppError):
                     self.store.commit_result(self.doc["id"], attempt, event)
 
-    def test_parser_code_kind_preserved_and_original_region_available(self):
+    def test_parser_code_kind_preserved(self):
         attempt, event, artifact = self.prepare()
         code = '{"greeting": "hello", "items": [1, 2]}\n'
         artifact["pages"][0]["blocks"] = [dict(id="p2-code", kind="code", sourceText=code,
@@ -188,8 +176,6 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(page["blocks"][0]["status"], "preserved")
         self.assertEqual(page["blocks"][0]["sourceText"], code)
         self.assertNotIn("translatedText", page["blocks"][0])
-        image = structured.block_image(self.store, dict(document_id=self.doc["id"], block_id="p2-code"))
-        self.assertTrue(Path(image["path"]).read_bytes().startswith(b"\x89PNG"))
 
     def test_page_response_keeps_background_color_and_unpositioned_text(self):
         attempt, event, artifact = self.prepare()
@@ -323,15 +309,12 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertGreater(len(commits), 0)
         self.assertLessEqual(len(commits), 3)
 
-    def test_decoration_and_block_pixels_align_with_nonzero_origin_and_rotation(self):
-        # The first box pair reproduces a published report whose displayed page
+    def test_decoration_pixels_align_with_nonzero_origin_and_rotation(self):
+        # The first geometry reproduces a published report whose displayed page
         # starts at (18, 18). At the preview scale it produces a one-pixel width
         # difference if the original and mask are rounded in different frames.
-        geometries = [("offset", 0, None), ("offset-rotated", 90, None),
-                      ("cropped-rotated", 270, pymupdf.Rect(30, 40, 580, 730))]
-        for name, rotation, crop, coordinate_space in [
-                (name + "-" + space, rotation, crop, space)
-                for name, rotation, crop in geometries for space in ("legacy", "page")]:
+        for name, rotation, crop in [("offset", 0, None), ("offset-rotated", 90, None),
+                                     ("cropped-rotated", 270, pymupdf.Rect(30, 40, 580, 730))]:
             with self.subTest(name=name):
                 source = self.root / (name + ".pdf")
                 with pymupdf.open() as pdf:
@@ -340,7 +323,6 @@ class StructuredReadingTests(unittest.TestCase):
                     original = pdf[1]
                     original.draw_line((80, 120), (260, 120), color=(1, 0, 0), width=2)
                     original.draw_line((120, 170), (170, 170), color=(0, 0, 0), width=2)
-                    original.draw_rect(pymupdf.Rect(310, 300, 370, 360), color=None, fill=(0, 0, 1))
                     if crop is None:
                         pdf.xref_set_key(original.xref, "MediaBox", "[18 18 612 792]")
                         pdf.xref_set_key(original.xref, "CropBox", "[0 0 630 810]")
@@ -362,17 +344,11 @@ class StructuredReadingTests(unittest.TestCase):
                                     for drawing in drawings[:2] for item in drawing["items"] if item[0] == "l"]
                     formula_box = (drawings[1]["rect"] * rotation_matrix) + (-4, -4, 4, 4)
                     formula_box += (-origin.x, -origin.y, -origin.x, -origin.y)
-                    blue_box = drawings[2]["rect"] * rotation_matrix
-                    blue_box += (-origin.x, -origin.y, -origin.x, -origin.y)
-                    path_origin = origin if coordinate_space == "page" else pymupdf.Point(0, 0)
-                    page.update(width=rect.width, height=rect.height,
-                                decorations=[dict(commands=[dict(op="M", points=list(start - path_origin)), dict(op="L", points=list(end - path_origin))],
+                    page.update(width=rect.width, height=rect.height, decorationsCoordinateSpace="page",
+                                decorations=[dict(commands=[dict(op="M", points=list(start - origin)), dict(op="L", points=list(end - origin))],
                                                   width=2, dash=[], dashPhase=0, lineCap=0, lineJoin=0, color=[0, 0, 0], opacity=1)
                                              for start, end in native_lines])
-                    if coordinate_space == "page":
-                        page["decorationsCoordinateSpace"] = "page"
                     page["blocks"][0].update(bbox=list(formula_box), inlineMath=[dict(token="[[M1]]", latex="a/b", bbox=list(formula_box))])
-                    page["blocks"][1].update(bbox=list(blue_box))
                     scale = min(1800 / rect.width, 2400 / rect.height)
                     matrix = pymupdf.Matrix(scale, scale)
                     raster = original.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
@@ -392,11 +368,6 @@ class StructuredReadingTests(unittest.TestCase):
                         self.assertGreater(pixel[3], 240)
                     else:
                         self.assertEqual(pixel[3], 0, "Moved inline formula must not leave its native fraction bar")
-                block = structured.block_image(restored, dict(document_id=self.doc["id"], block_id="p2-b2"))
-                blue = pymupdf.Pixmap(block["path"])
-                self.assertEqual((round(block["width"]), round(block["height"])), (60, 60))
-                self.assertEqual(blue.pixel(4, 4), (0, 0, 255))
-                self.assertEqual(blue.pixel(blue.width // 2, blue.height // 2), (0, 0, 255))
                 self.assertEqual(sha256(self.doc["input_path"]), original_hash)
 
     def test_page_geometry_matches_original_raster_for_rotated_crop(self):
@@ -446,37 +417,6 @@ class StructuredReadingTests(unittest.TestCase):
             Path(event["readingPath"]).write_text(json.dumps(candidate))
             with self.assertRaises(AppError):
                 structured.read_artifact(event["readingPath"], self.doc)
-
-    def test_real_bridge_reads_page_and_crop_after_restart(self):
-        attempt, event, _ = self.prepare(partial=True)
-        self.store.commit_result(self.doc["id"], attempt, event)
-        bridge = Path(__file__).resolve().parents[1] / "bridge.py"
-        for action, extra in [("reading_page", {"page": 1}), ("reading_block_image", {"block_id": "p2-b2"})]:
-            request = dict(action=action, dataRoot=str(self.store.root), document_id=self.doc["id"], **extra)
-            result = subprocess.run([sys.executable, "-B", str(bridge)], input=(json.dumps(request) + "\n").encode(), capture_output=True, timeout=15)
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stderr, b"")
-            response = json.loads(result.stdout)
-            self.assertTrue(response["ok"], response)
-            if action == "reading_page":
-                self.assertEqual(response["result"]["blocks"][1]["status"], "source_fallback")
-                self.assertEqual((response["result"]["width"], response["result"]["height"]), (595, 842))
-            else:
-                self.assertTrue(Path(response["result"]["path"]).exists())
-
-    def test_new_attempt_rpc_does_not_load_or_mutate_reading_retry_state(self):
-        attempt, event, _ = self.prepare(partial=True)
-        committed = self.store.commit_result(self.doc["id"], attempt, event)
-        bridge = Path(__file__).resolve().parents[1] / "bridge.py"
-        request = dict(action="new_attempt", dataRoot=str(self.store.root), document_id=self.doc["id"],
-                       outputMode="reading", retryBlockIds=["p2-b2"])
-        result = subprocess.run([sys.executable, "-B", str(bridge)], input=(json.dumps(request) + "\n").encode(), capture_output=True, timeout=15)
-        response = json.loads(result.stdout)
-        self.assertTrue(response["ok"], response)
-        self.assertTrue(Path(response["result"]["directory"]).is_dir())
-        restored = DocumentStore(self.store.root).get(self.doc["id"])
-        self.assertEqual(restored["reading_path"], committed["reading_path"])
-        self.assertEqual(restored["status"], "partial")
 
     def test_post_commit_tampering_is_not_silently_read(self):
         attempt, event, _ = self.prepare()

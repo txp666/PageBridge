@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-import threading
 import time
 import uuid
 
@@ -36,6 +35,17 @@ def atomic_json(path, value):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def atomic_file(target, write):
+    """Replace target with a sibling file that write(path) has completed."""
+    fd, temporary = tempfile.mkstemp(prefix=".pagebridge-", suffix=Path(target).suffix, dir=Path(target).parent)
+    os.close(fd)
+    try:
+        write(temporary)
+        os.replace(temporary, target)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -78,14 +88,29 @@ def _result_staging_directory(parent):
     raise AppError("无法创建独立的翻译提交目录。")
 
 
+def variant_path(document, variant):
+    if not isinstance(variant, str) or variant not in {"original", "translated"}:
+        raise AppError("不支持的 PDF 变体。")
+    path = document["input_path" if variant == "original" else "translated_path"]
+    if not path:
+        raise AppError("尚未生成译文。")
+    return path
+
+
+def _name(value, limit, message):
+    name = value.strip() if isinstance(value, str) else ""
+    if not name or len(name) > limit or any(ord(c) < 32 for c in name):
+        raise AppError(message)
+    return name
+
+
 class DocumentStore:
     """Atomic, independently versioned Windows library; callers receive copies."""
 
-    def __init__(self, data_root, recover_interrupted=True):
+    def __init__(self, data_root, recover_interrupted=False):
         self.root = Path(data_root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "desktop-library.json"
-        self._lock = threading.RLock()
         self._state = self._load()
         # A killed worker cannot remain a live job after application restart.
         changed = False
@@ -135,16 +160,13 @@ class DocumentStore:
         self._state = state
 
     def documents(self):
-        with self._lock:
-            return copy.deepcopy(self._state["documents"])
+        return copy.deepcopy(self._state["documents"])
 
     def folders(self):
-        with self._lock:
-            return copy.deepcopy(self._state["folders"])
+        return copy.deepcopy(self._state["folders"])
 
     def get(self, document_id):
-        with self._lock:
-            return copy.deepcopy(self._find(self._state, document_id))
+        return copy.deepcopy(self._find(self._state, document_id))
 
     def page_info(self, document_id, variant="original"):
         """Return displayed page geometry without text extraction or rasterizing.
@@ -152,12 +174,7 @@ class DocumentStore:
         Page.rect includes crop and rotation, matching the raster preview. The
         reader can allocate every page's space before rendering visible pages.
         """
-        if variant not in {"original", "translated"}:
-            raise AppError("不支持的 PDF 变体。")
-        doc = self.get(document_id)
-        source = doc["input_path" if variant == "original" else "translated_path"]
-        if not source:
-            raise AppError("尚未生成译文。")
+        source = variant_path(self.get(document_id), variant)
         try:
             with pymupdf.open(source) as pdf:
                 if not pdf.is_pdf or pdf.needs_pass or pdf.is_encrypted or pdf.page_count < 1:
@@ -182,106 +199,91 @@ class DocumentStore:
         raise AppError("文档已不存在。")
 
     def _change(self, document_id, operation, allow_busy=False):
-        with self._lock:
-            state = copy.deepcopy(self._state)
-            document = self._find(state, document_id)
-            if not allow_busy and document["status"] in ("running", "cancelling"):
-                raise AppError("请等待翻译完成或先取消翻译。")
-            operation(document)
-            self._write(state)
-            return copy.deepcopy(document)
+        state = copy.deepcopy(self._state)
+        document = self._find(state, document_id)
+        if not allow_busy and document["status"] in ("running", "cancelling"):
+            raise AppError("请等待翻译完成或先取消翻译。")
+        operation(document)
+        self._write(state)
+        return copy.deepcopy(document)
 
     def import_pdf(self, path):
         source = Path(path).expanduser().resolve()
         if not source.is_file() or not 0 < source.stat().st_size <= 500 * 1024 * 1024:
             raise AppError("请选择不超过 500 MB 的本地 PDF 文件。")
-        with self._lock:
-            if not _unredirected(self.root / "documents"):
-                raise AppError("文档存储目录被重定向，已停止导入。")
-            digest = sha256(source)
-            for doc in self._state["documents"]:
-                if not doc.get("trashed") and doc["input_sha256"] == digest and Path(doc["input_path"]).is_file() and sha256(doc["input_path"]) == digest:
-                    return copy.deepcopy(doc)
-            identifier = str(uuid.uuid4())
-            folder = self.root / "documents" / identifier
-            folder.mkdir(parents=True, exist_ok=False)
-            target = folder / "input.pdf"
-            try:
-                shutil.copyfile(source, target)
-                pages = checked_pdf(target)
-                copied_digest = sha256(target)
-                if copied_digest != digest:
-                    raise AppError("导入期间原文件发生变化，请重试。")
-                document = dict(id=identifier, name=source.name, page_count=pages, input_path=str(target), input_sha256=digest,
-                                status="ready", translated_path=None, bilingual_path=None, folder_id=None, favorite=False,
-                                trashed=False, current_page=1, imported_at=time.time(), last_opened=time.time(), last_error=None,
-                                source_language="en", target_language="zh", attempt_id=None)
-                state = copy.deepcopy(self._state)
-                state["documents"].append(document)
-                self._write(state)
-                return copy.deepcopy(document)
-            except BaseException:
-                shutil.rmtree(folder, ignore_errors=True)
-                raise
+        if not _unredirected(self.root / "documents"):
+            raise AppError("文档存储目录被重定向，已停止导入。")
+        digest = sha256(source)
+        for doc in self._state["documents"]:
+            if not doc.get("trashed") and doc["input_sha256"] == digest and Path(doc["input_path"]).is_file() and sha256(doc["input_path"]) == digest:
+                return copy.deepcopy(doc)
+        identifier = str(uuid.uuid4())
+        folder = self.root / "documents" / identifier
+        folder.mkdir(parents=True, exist_ok=False)
+        target = folder / "input.pdf"
+        try:
+            shutil.copyfile(source, target)
+            pages = checked_pdf(target)
+            if sha256(target) != digest:
+                raise AppError("导入期间原文件发生变化，请重试。")
+            document = dict(id=identifier, name=source.name, page_count=pages, input_path=str(target), input_sha256=digest,
+                            status="ready", translated_path=None, bilingual_path=None, folder_id=None, favorite=False,
+                            trashed=False, current_page=1, imported_at=time.time(), last_opened=time.time(), last_error=None,
+                            source_language="en", target_language="zh", attempt_id=None)
+            state = copy.deepcopy(self._state)
+            state["documents"].append(document)
+            self._write(state)
+            return copy.deepcopy(document)
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
 
     def rename(self, document_id, name):
-        name = str(name).strip()
-        if not name or len(name) > 240 or any(ord(c) < 32 for c in name):
-            raise AppError("请输入有效文档名称（1–240 字）。")
+        name = _name(name, 240, "请输入有效文档名称（1–240 字）。")
         return self._change(document_id, lambda d: d.update(name=name))
 
     def set_favorite(self, document_id, value):
         return self._change(document_id, lambda d: d.update(favorite=bool(value)))
 
     def create_folder(self, name):
-        name = str(name).strip()
-        if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
-            raise AppError("请输入有效文件夹名称（1–100 字）。")
-        with self._lock:
-            if any(f["name"].casefold() == name.casefold() for f in self._state["folders"]):
-                raise AppError("已有同名文件夹。")
-            state = copy.deepcopy(self._state)
-            folder = {"id": str(uuid.uuid4()), "name": name}
-            state["folders"].append(folder)
-            self._write(state)
-            return copy.deepcopy(folder)
+        name = _name(name, 100, "请输入有效文件夹名称（1–100 字）。")
+        if any(f["name"].casefold() == name.casefold() for f in self._state["folders"]):
+            raise AppError("已有同名文件夹。")
+        state = copy.deepcopy(self._state)
+        folder = {"id": str(uuid.uuid4()), "name": name}
+        state["folders"].append(folder)
+        self._write(state)
+        return copy.deepcopy(folder)
 
     def rename_folder(self, folder_id, name):
-        if not isinstance(name, str):
-            raise AppError("请输入有效文件夹名称（1–100 字）。")
-        name = name.strip()
-        if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
-            raise AppError("请输入有效文件夹名称（1–100 字）。")
-        with self._lock:
-            state = copy.deepcopy(self._state)
-            folder = next((f for f in state["folders"] if f["id"] == folder_id), None)
-            if folder is None:
-                raise AppError("文件夹已不存在。")
-            if any(f["id"] != folder_id and f["name"].casefold() == name.casefold() for f in state["folders"]):
-                raise AppError("已有同名文件夹。")
-            folder["name"] = name
-            self._write(state)
-            return copy.deepcopy(folder)
+        name = _name(name, 100, "请输入有效文件夹名称（1–100 字）。")
+        state = copy.deepcopy(self._state)
+        folder = next((f for f in state["folders"] if f["id"] == folder_id), None)
+        if folder is None:
+            raise AppError("文件夹已不存在。")
+        if any(f["id"] != folder_id and f["name"].casefold() == name.casefold() for f in state["folders"]):
+            raise AppError("已有同名文件夹。")
+        folder["name"] = name
+        self._write(state)
+        return copy.deepcopy(folder)
 
     def delete_folder(self, folder_id):
-        with self._lock:
-            state = copy.deepcopy(self._state)
-            if not any(f["id"] == folder_id for f in state["folders"]):
-                raise AppError("文件夹已不存在。")
-            state["folders"] = [f for f in state["folders"] if f["id"] != folder_id]
-            for document in state["documents"]:
-                if document.get("folder_id") == folder_id:
-                    document["folder_id"] = None
-            # Folders are metadata only; originals, outputs and annotations stay
-            # in their document directories, including trashed or running items.
-            self._write(state)
-            return {"deleted_id": folder_id}
+        state = copy.deepcopy(self._state)
+        if not any(f["id"] == folder_id for f in state["folders"]):
+            raise AppError("文件夹已不存在。")
+        state["folders"] = [f for f in state["folders"] if f["id"] != folder_id]
+        for document in state["documents"]:
+            if document.get("folder_id") == folder_id:
+                document["folder_id"] = None
+        # Folders are metadata only; originals, outputs and annotations stay
+        # in their document directories, including trashed or running items.
+        self._write(state)
+        return {"deleted_id": folder_id}
 
     def move_to_folder(self, document_id, folder_id):
-        with self._lock:
-            if folder_id is not None and folder_id not in {f["id"] for f in self._state["folders"]}:
-                raise AppError("文件夹已不存在。")
-            return self._change(document_id, lambda d: d.update(folder_id=folder_id))
+        if folder_id is not None and folder_id not in {f["id"] for f in self._state["folders"]}:
+            raise AppError("文件夹已不存在。")
+        return self._change(document_id, lambda d: d.update(folder_id=folder_id))
 
     def trash(self, document_id, value=True):
         return self._change(document_id, lambda d: d.update(trashed=bool(value)))
@@ -290,23 +292,17 @@ class DocumentStore:
         return self._change(document_id, lambda d: d.update(current_page=max(1, min(int(page), d["page_count"])), last_opened=time.time()), allow_busy=True)
 
     def new_attempt(self, document_id):
-        with self._lock:
-            doc = self.get(document_id)
-            if doc["status"] in ("running", "cancelling") or doc.get("trashed"):
-                raise AppError("当前文档无法开始新翻译。")
-            attempt = str(uuid.uuid4())
-            directory = self.root / "documents" / document_id / "attempts" / attempt
-            if not _unredirected(directory):
-                raise AppError("翻译任务目录被重定向。")
-            directory.mkdir(parents=True, exist_ok=False)
-            return attempt, directory
-
-    def mark_running(self, document_id, attempt_id):
-        uuid.UUID(attempt_id)
-        expected = self.root / "documents" / document_id / "attempts" / attempt_id
-        if not expected.is_dir() or not _unredirected(expected):
-            raise AppError("翻译任务目录不存在。")
-        return self._change(document_id, lambda d: d.update(status="running", attempt_id=attempt_id, last_error=None))
+        """Create a private attempt directory and mark the document running."""
+        doc = self.get(document_id)
+        if doc["status"] in ("running", "cancelling") or doc.get("trashed"):
+            raise AppError("当前文档无法开始新翻译。")
+        attempt = str(uuid.uuid4())
+        directory = self.root / "documents" / document_id / "attempts" / attempt
+        if not _unredirected(directory):
+            raise AppError("翻译任务目录被重定向。")
+        directory.mkdir(parents=True, exist_ok=False)
+        self._change(document_id, lambda d: d.update(status="running", attempt_id=attempt, last_error=None))
+        return attempt, directory
 
     def finish_failure(self, document_id, message, cancelled=False):
         doc = self.get(document_id)
@@ -320,71 +316,81 @@ class DocumentStore:
         if event.get("artifactType") == "structured-reading":
             from .structured import commit_reading
             return commit_reading(self, document_id, attempt_id, event)
-        with self._lock:
-            doc = self.get(document_id)
-            if (doc.get("attempt_id") != attempt_id or doc["status"] != "running" or event.get("attemptId") != attempt_id
-                    or event.get("type") != "result" or not isinstance(event.get("jobId"), str) or not event["jobId"]):
-                raise AppError("翻译结果与当前任务不匹配，未提交。")
-            uuid.UUID(attempt_id)
-            staging = self.root / "documents" / document_id / "attempts" / attempt_id
-            if not _unredirected(staging):
-                raise AppError("翻译任务目录被重定向。")
-            mono = Path(event.get("translatedPath", "")).resolve()
-            dual = Path(event.get("bilingualPath", "")).resolve()
-            if mono == dual or not all(_inside(p, staging) and p.is_file() for p in (mono, dual)):
-                raise AppError("翻译输出路径超出任务目录。")
-            if sha256(doc["input_path"]) != doc["input_sha256"]:
-                raise AppError("原文副本发生变化，未提交译文。")
-            if checked_pdf(mono) != doc["page_count"] or checked_pdf(dual) != doc["page_count"] * 2:
-                raise AppError("输出页数与原文不一致，未提交译文。")
-            manifest_path = mono.parent / "manifest.json"
-            try:
-                if not _unredirected(manifest_path) or manifest_path.stat().st_size > 8 * 1024 * 1024:
-                    raise ValueError()
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                quality = manifest["qualityGuard"]
-                if (manifest.get("protocolVersion") != 1 or manifest.get("attemptId") != attempt_id or manifest.get("jobId") != event["jobId"]
-                        or manifest.get("sourceSHA256") != doc["input_sha256"] or manifest.get("sourcePages") != doc["page_count"]
-                        or manifest.get("translatedSHA256") != sha256(mono) or manifest.get("bilingualSHA256") != sha256(dual)
-                        or quality.get("guardInstalled") is not True or quality.get("layoutGuard", {}).get("guardInstalled") is not True
-                        or type(quality.get("unresolvedCount")) is not int or quality["unresolvedCount"] != 0
-                        or type(quality.get("validatedParagraphs")) is not int or type(quality.get("preparedParagraphs")) is not int
-                        or quality["preparedParagraphs"] < 0 or quality["preparedParagraphs"] != quality.get("validatedParagraphs")):
-                    raise ValueError()
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                raise AppError("翻译校验清单无效，未提交译文。") from None
-            results = self.root / "documents" / document_id / "results"
-            if not _unredirected(results):
-                raise AppError("译文结果目录被重定向。")
-            results.mkdir(exist_ok=True)
-            destination = results / attempt_id
-            if destination.exists():
-                raise AppError("当前翻译结果已存在。")
-            temporary = _result_staging_directory(results)
-            moved = False
-            try:
-                shutil.copyfile(mono, temporary / "translated.pdf")
-                shutil.copyfile(dual, temporary / "bilingual.pdf")
-                if (sha256(temporary / "translated.pdf") != manifest["translatedSHA256"]
-                        or sha256(temporary / "bilingual.pdf") != manifest["bilingualSHA256"]
-                        or sha256(doc["input_path"]) != doc["input_sha256"]):
-                    raise AppError("提交期间文件发生变化，旧译文未被覆盖。")
-                atomic_json(temporary / "manifest.json", manifest)
-                os.replace(temporary, destination)
-                moved = True
-                state = copy.deepcopy(self._state)
-                updated = self._find(state, document_id)
-                updated.update(status="completed", last_error=None, preferred_artifact="pdf", translated_path=str(destination / "translated.pdf"),
-                               bilingual_path=str(destination / "bilingual.pdf"), source_language=manifest.get("sourceLanguage", "en"),
-                               target_language=manifest.get("targetLanguage", "zh"))
-                self._write(state)
-                return copy.deepcopy(updated)
-            except BaseException:
-                if moved:
-                    shutil.rmtree(destination, ignore_errors=True)
-                raise
-            finally:
-                shutil.rmtree(temporary, ignore_errors=True)
+        doc = self.get(document_id)
+        if (doc.get("attempt_id") != attempt_id or doc["status"] != "running" or event.get("attemptId") != attempt_id
+                or event.get("type") != "result" or not isinstance(event.get("jobId"), str) or not event["jobId"]):
+            raise AppError("翻译结果与当前任务不匹配，未提交。")
+        staging = self.root / "documents" / document_id / "attempts" / attempt_id
+        if not _unredirected(staging):
+            raise AppError("翻译任务目录被重定向。")
+        mono = Path(event.get("translatedPath", "")).resolve()
+        dual = Path(event.get("bilingualPath", "")).resolve()
+        if mono == dual or not all(_inside(p, staging) and p.is_file() for p in (mono, dual)):
+            raise AppError("翻译输出路径超出任务目录。")
+        if sha256(doc["input_path"]) != doc["input_sha256"]:
+            raise AppError("原文副本发生变化，未提交译文。")
+        if checked_pdf(mono) != doc["page_count"] or checked_pdf(dual) != doc["page_count"] * 2:
+            raise AppError("输出页数与原文不一致，未提交译文。")
+        manifest_path = mono.parent / "manifest.json"
+        try:
+            if not _unredirected(manifest_path) or manifest_path.stat().st_size > 8 * 1024 * 1024:
+                raise ValueError()
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            quality = manifest["qualityGuard"]
+            if (manifest.get("protocolVersion") != 1 or manifest.get("attemptId") != attempt_id or manifest.get("jobId") != event["jobId"]
+                    or manifest.get("sourceSHA256") != doc["input_sha256"] or manifest.get("sourcePages") != doc["page_count"]
+                    or manifest.get("translatedSHA256") != sha256(mono) or manifest.get("bilingualSHA256") != sha256(dual)
+                    or quality.get("guardInstalled") is not True or quality.get("layoutGuard", {}).get("guardInstalled") is not True
+                    or type(quality.get("unresolvedCount")) is not int or quality["unresolvedCount"] != 0
+                    or type(quality.get("validatedParagraphs")) is not int or type(quality.get("preparedParagraphs")) is not int
+                    or quality["preparedParagraphs"] < 0 or quality["preparedParagraphs"] != quality.get("validatedParagraphs")):
+                raise ValueError()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise AppError("翻译校验清单无效，未提交译文。") from None
+        return self.publish_result(document_id, attempt_id, manifest,
+                                   {"translated.pdf": (mono, manifest["translatedSHA256"]), "bilingual.pdf": (dual, manifest["bilingualSHA256"])},
+                                   lambda destination: dict(status="completed", last_error=None, preferred_artifact="pdf",
+                                                            translated_path=str(destination / "translated.pdf"),
+                                                            bilingual_path=str(destination / "bilingual.pdf"),
+                                                            source_language=manifest.get("sourceLanguage", "en"),
+                                                            target_language=manifest.get("targetLanguage", "zh")))
+
+    def publish_result(self, document_id, attempt_id, manifest, files, fields):
+        """Copy verified outputs into results/<attempt>, then record fields(destination).
+
+        files maps each result name to its staged source and expected SHA-256.
+        A failed library write removes the published directory again.
+        """
+        doc = self.get(document_id)
+        results = self.root / "documents" / document_id / "results"
+        if not _unredirected(results):
+            raise AppError("译文结果目录被重定向。")
+        results.mkdir(exist_ok=True)
+        destination = results / attempt_id
+        if destination.exists():
+            raise AppError("当前翻译结果已存在。")
+        temporary = _result_staging_directory(results)
+        moved = False
+        try:
+            for name, (source, _) in files.items():
+                shutil.copyfile(source, temporary / name)
+            if (any(sha256(temporary / name) != digest for name, (_, digest) in files.items())
+                    or sha256(doc["input_path"]) != doc["input_sha256"]):
+                raise AppError("提交期间文件发生变化，旧译文未被覆盖。")
+            atomic_json(temporary / "manifest.json", manifest)
+            os.replace(temporary, destination)
+            moved = True
+            state = copy.deepcopy(self._state)
+            updated = self._find(state, document_id)
+            updated.update(fields(destination))
+            self._write(state)
+            return copy.deepcopy(updated)
+        except BaseException:
+            if moved:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
 
     def export_pdf(self, document_id, kind, destination):
         fields = {"original": "input_path", "translated": "translated_path", "bilingual": "bilingual_path"}
@@ -400,11 +406,5 @@ class DocumentStore:
         checked_pdf(source)
         if not target.parent.is_dir():
             raise AppError("导出目录不存在。")
-        fd, temporary = tempfile.mkstemp(prefix=".pagebridge-export-", suffix=".pdf", dir=target.parent)
-        os.close(fd)
-        try:
-            shutil.copyfile(source, temporary)
-            os.replace(temporary, target)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        atomic_file(target, lambda temporary: shutil.copyfile(source, temporary))
         return target

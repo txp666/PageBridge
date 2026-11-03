@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 import sys
@@ -9,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pagebridge.core import AppError
-from pagebridge.services import CredentialVault, ServiceStore, chat_completion, list_models, new_profile, validate_profile, worker_service
+from pagebridge.services import CredentialVault, ServiceStore, list_models, new_profile, probe_service, validate_profile, worker_service
 
 
 class MemoryVault:
@@ -102,7 +101,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(list_models(profile), ["a", "b"])
         with patch("pagebridge.services._request", return_value={"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}):
             with self.assertRaises(AppError):
-                chat_completion(profile, "", [])
+                probe_service(profile)
 
     def test_delete_clears_credential_and_active_selection(self):
         first, second = self.profile(), self.profile()
@@ -117,13 +116,6 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(AppError):
             ServiceStore(self.store.root)
         self.assertEqual(self.store.path.read_text(), '{"version":3}')
-
-    def test_nonwindows_explicitly_session_only(self):
-        if os.name == "nt":
-            self.assertTrue(CredentialVault.persistent)
-        else:
-            self.assertFalse(CredentialVault.persistent)
-            self.assertIn("内存", CredentialVault.storage_description)
 
 
 @unittest.skipUnless(os.name == "nt" and os.environ.get("PAGEBRIDGE_TEST_WINDOWS_CREDENTIALS") == "1",

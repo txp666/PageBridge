@@ -99,7 +99,6 @@ class ReadingTests(unittest.TestCase):
 
     def translated(self):
         attempt, work = self.store.new_attempt(self.doc["id"])
-        self.store.mark_running(self.doc["id"], attempt)
         folder = work / "output"
         folder.mkdir()
         mono = make_pdf(folder / "translated.pdf", rotation=90)
@@ -122,15 +121,6 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(navigation["page_count"], 2)
         self.assertFalse(navigation["truncated"])
         self.assertEqual(navigation["source_sha256"], self.bind())
-
-    def test_plain_pdf_has_explicit_empty_outline(self):
-        with pymupdf.open() as pdf:
-            pdf.new_page()
-            path = self.root / "no-outline.pdf"
-            pdf.save(path)
-        self.doc = self.store.import_pdf(path)
-        self.assertEqual(self.call("document_navigation")["entries"], [])
-        self.assertEqual(self.call("page_text")["tokens"], [])
 
     def test_large_outline_remains_within_bridge_response_limit(self):
         path = self.root / "large-outline.pdf"
@@ -239,7 +229,6 @@ class ReadingTests(unittest.TestCase):
             with self.assertRaises(AppError): self.call("page_text", page=number)
         with self.assertRaises(AppError): self.call("annotations", variant="../original")
         with self.assertRaises(AppError): self.call("annotations", variant=[])
-        with self.assertRaises(AppError): self.call([])
 
     def test_full_snapshot_size_guard_is_atomic(self):
         self.add(note="Keep")

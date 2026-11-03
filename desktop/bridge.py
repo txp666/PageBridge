@@ -14,7 +14,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -30,7 +29,7 @@ if __name__ == "__main__":
 
 import pymupdf
 
-from pagebridge.core import AppError, DocumentStore, sha256
+from pagebridge.core import AppError, DocumentStore, atomic_file, sha256, variant_path
 from pagebridge.reading import READING_ACTIONS, dispatch_reading
 from pagebridge import assistant
 from pagebridge import literature
@@ -42,10 +41,9 @@ from pagebridge.worker import WorkerTask
 
 WRITE_LOCK = threading.Lock()
 MAX_RESPONSE_BYTES = 1048576
-LOCAL_ACTIONS = frozenset({"list", "recover", "import", "get", "rename", "folders",
-                           "create_folder", "move", "trash", "favorite", "reading",
-                           "export", "render", "page_info", "assistant_history",
-                           "assistant_clear", "assistant_preview", "rename_folder", "delete_folder"}) | READING_ACTIONS | structured.ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
+LOCAL_ACTIONS = frozenset({"list", "recover", "import", "rename", "folders", "create_folder", "rename_folder",
+                           "delete_folder", "move", "trash", "favorite", "reading", "export", "render", "page_info",
+                           "reading_page", "assistant_history", "assistant_clear"}) | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
 
 
 def make_protocol_reader(descriptor):
@@ -113,7 +111,7 @@ def read_line(limit=65536, require_newline=False):
     # Do not prefetch: the translation cancellation reader owns later lines.
     data = bytearray()
     while len(data) <= limit:
-        char = (READ_PROTOCOL or make_protocol_reader(sys.stdin.fileno()))(1)
+        char = READ_PROTOCOL(1)
         if not char and data and require_newline:
             raise AppError("请求消息未完整结束。")
         if not char or char == b"\n":
@@ -161,13 +159,7 @@ def data_root(request):
 
 
 def render(store, request):
-    doc = store.get(request["document_id"])
-    variant = request.get("variant", "original")
-    if variant not in {"original", "translated"}:
-        raise AppError("不支持的 PDF 变体。")
-    source = doc["input_path" if variant == "original" else "translated_path"]
-    if not source:
-        raise AppError("尚未生成译文。")
+    source = variant_path(store.get(request["document_id"]), request.get("variant", "original"))
     page_number = request.get("page", 0)
     width = request.get("width", 1100)
     if type(page_number) is not int or type(width) is not int or not 140 <= width <= 1800:
@@ -184,14 +176,7 @@ def render(store, request):
             raise AppError("PDF 页面尺寸无效。")
         scale = min(width / page.rect.width, 2400 / page.rect.height)
         if not target.exists():
-            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-            fd, name = tempfile.mkstemp(prefix=".preview-", suffix=".png", dir=cache)
-            os.close(fd)
-            try:
-                pixmap.save(name)
-                os.replace(name, target)
-            finally:
-                Path(name).unlink(missing_ok=True)
+            atomic_file(target, page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save)
         result = {"path": str(target), "page_count": pdf.page_count, "page": page_number,
                   "width": round(page.rect.width * scale), "height": round(page.rect.height * scale)}
     # Keep a bounded cache; files in use by a Windows ImageSource may be locked.
@@ -233,10 +218,10 @@ def assistant_request(request, root):
     # Reopen storage after the network call so a clear or another question can
     # invalidate this answer without blocking PDF reading or annotation edits.
     with library_lock(root):
-        prepared = assistant.prepare(DocumentStore(root, recover_interrupted=False), ServiceStore(root), request)
+        prepared = assistant.prepare(DocumentStore(root), ServiceStore(root), request)
     answer = assistant.request_answer(prepared)
     with library_lock(root):
-        return assistant.finish(DocumentStore(root, recover_interrupted=False), prepared, answer)
+        return assistant.finish(DocumentStore(root), prepared, answer)
 
 
 def literature_request(request, root):
@@ -254,7 +239,7 @@ def literature_request(request, root):
         if isinstance(opened, dict):
             return opened
         with library_lock(root):
-            document = DocumentStore(root, recover_interrupted=False).import_pdf(opened.path)
+            document = DocumentStore(root).import_pdf(opened.path)
         return {'document': document, 'source': opened.source}
 
 
@@ -264,7 +249,7 @@ def dispatch(request, root):
         try:
             if action == "update_prepare_install":
                 with library_lock(root):
-                    if any(doc["status"] in {"running", "cancelling"} for doc in DocumentStore(root, recover_interrupted=False).documents()):
+                    if any(doc["status"] in {"running", "cancelling"} for doc in DocumentStore(root).documents()):
                         raise AppError("请先完成或取消翻译，再安装更新。")
             return updates.dispatch(root, action)
         except updates.UpdateError as error:
@@ -281,14 +266,13 @@ def dispatch(request, root):
     # Per-RPC locking protects independent WinUI child processes from clobbering
     # each other's atomic snapshots. Long translation holds no storage lock.
     with library_lock(root):
-        store = DocumentStore(root, recover_interrupted=False)
+        store = DocumentStore(root)
         identifier = request.get("document_id")
         if action == "list": result = store.documents()
         elif action == "recover":
             updates.recover(root)
             result = DocumentStore(root, recover_interrupted=True).documents()
         elif action == "import": result = store.import_pdf(request["path"])
-        elif action == "get": result = store.get(identifier)
         elif action == "rename": result = store.rename(identifier, request["name"])
         elif action == "folders": result = store.folders()
         elif action == "create_folder": result = store.create_folder(request["name"])
@@ -299,19 +283,12 @@ def dispatch(request, root):
         elif action == "favorite": result = store.set_favorite(identifier, request.get("value", True))
         elif action == "reading": result = store.update_reading(identifier, request["page"])
         elif action == "export": result = str(store.export_pdf(identifier, request["kind"], request["destination"]))
-        elif action == "new_attempt":
-            attempt, directory = store.new_attempt(identifier)
-            result = {"attempt_id": attempt, "directory": str(directory)}
-        elif action == "mark_running": result = store.mark_running(identifier, request["attempt_id"])
-        elif action == "finish_failure": result = store.finish_failure(identifier, request.get("message"), request.get("cancelled", False))
-        elif action == "commit_result": result = store.commit_result(identifier, request["attempt_id"], request["event"])
-        elif action in structured.ACTIONS: result = structured.dispatch(store, request)
+        elif action == "reading_page": result = structured.page_result(store, request)
         elif action == "render": result = render(store, request)
         elif action == "page_info": result = store.page_info(identifier, request.get("variant", "original"))
         elif action in READING_ACTIONS: result = dispatch_reading(store, request)
         elif action == "assistant_history": result = assistant.AssistantStore(store).history(identifier)
         elif action == "assistant_clear": result = assistant.AssistantStore(store).clear(identifier)
-        elif action == "assistant_preview": result = assistant.build_context(store, request)
         elif action == "literature_settings": result = literature.LiteratureSettings(root).snapshot()
         elif action == "literature_save_settings": result = literature.LiteratureSettings(root).save(request)
         elif action == "literature_cleanup": result = literature.cleanup(root, request.get("operation_id"))
@@ -352,7 +329,7 @@ def translate(request, root):
 
     try:
         with library_lock(root):
-            store = DocumentStore(root, recover_interrupted=False)
+            store = DocumentStore(root)
             doc = store.get(identifier)
             services = ServiceStore(root)
             service_id = request.get("service_id") or services.active_id
@@ -372,7 +349,6 @@ def translate(request, root):
                     raise AppError("需要重试的阅读块已变化，请刷新后重试。")
                 previous_reading = doc["reading_path"]
             attempt, directory = store.new_attempt(identifier)
-            store.mark_running(identifier, attempt)
         envelope = dict(protocolVersion=1, jobId=job_id, attemptId=attempt, action="translate", inputPath=doc["input_path"],
                         outputDirectory=str(directory), sourceLanguage=request.get("sourceLanguage", "en"),
                         targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service, outputMode=output_mode)
@@ -397,7 +373,7 @@ def translate(request, root):
         threading.Thread(target=controls, name="PageBridge-bridge-control", daemon=True).start()
         task.join()
         with library_lock(root):
-            store = DocumentStore(root, recover_interrupted=False)
+            store = DocumentStore(root)
             if task.error or task.cancelled or not task.result:
                 document = store.finish_failure(identifier, task.error, task.cancelled)
                 terminal("error", stage="cancelled" if task.cancelled else "failed", message=document["last_error"], document=document)
@@ -413,7 +389,7 @@ def translate(request, root):
         message = str(error) if isinstance(error, AppError) else "无法完成翻译，旧译文未被覆盖。"
         try:
             with library_lock(root):
-                store = DocumentStore(root, recover_interrupted=False)
+                store = DocumentStore(root)
                 doc = store.get(identifier)
                 # A preflight failure must not overwrite a separate live task.
                 if doc.get("attempt_id") == attempt:
@@ -428,9 +404,6 @@ def checked_request(raw):
     request = json.loads(raw.decode("utf-8"))
     if not isinstance(request, dict) or not isinstance(request.get("action"), str):
         raise AppError("请求格式无效。")
-    for old, current in (("documentId", "document_id"), ("serviceId", "service_id")):
-        if old in request and current not in request:
-            request[current] = request[old]
     return request
 
 

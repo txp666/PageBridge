@@ -10,18 +10,14 @@ import base64
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
-import shutil
-import tempfile
 
 import pymupdf
 
-from .core import AppError, _inside, _result_staging_directory, _unredirected, atomic_json, sha256
+from .core import AppError, _inside, _unredirected, atomic_file, sha256
 
 ARTIFACT_TYPE = "structured-reading"
 MAX_READING_BYTES = 64 * 1024 * 1024
-ACTIONS = frozenset({"reading_page", "reading_block_image"})
 
 
 def read_artifact(path, document):
@@ -103,65 +99,41 @@ def committed_artifact(store, document_id):
 
 
 def commit_reading(store, document_id, attempt_id, event):
-    with store._lock:
-        doc = store.get(document_id)
-        if (doc.get("attempt_id") != attempt_id or doc["status"] != "running"
-                or event.get("attemptId") != attempt_id or event.get("type") != "result"
-                or event.get("artifactType") != ARTIFACT_TYPE or not isinstance(event.get("jobId"), str) or not event["jobId"]):
-            raise AppError("对照阅读结果与当前任务不匹配。")
-        staging = store.root / "documents" / document_id / "attempts" / attempt_id
-        reading = Path(event.get("readingPath", "")).absolute()
-        manifest_path = Path(event.get("manifestPath", "")).absolute()
-        if (not _unredirected(staging) or not all(_inside(p, staging) and _unredirected(p) and p.is_file() for p in (reading, manifest_path))
-                or reading.parent != manifest_path.parent):
-            raise AppError("对照阅读输出路径超出任务目录。")
-        if sha256(doc["input_path"]) != doc["input_sha256"]:
-            raise AppError("原文发生变化，未提交阅读稿。")
-        artifact = read_artifact(reading, doc)
-        digest = sha256(reading)
-        try:
-            if manifest_path.stat().st_size > 1024 * 1024:
-                raise ValueError()
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if (manifest.get("protocolVersion") != 1 or manifest.get("artifactType") != ARTIFACT_TYPE
-                    or manifest.get("attemptId") != attempt_id or manifest.get("jobId") != event["jobId"]
-                    or manifest.get("sourceSHA256") != doc["input_sha256"] or manifest.get("sourcePages") != doc["page_count"]
-                    or manifest.get("readingSHA256") != digest or event.get("readingSHA256") != digest):
-                raise ValueError()
-        except (OSError, ValueError, TypeError, AttributeError):
-            raise AppError("对照阅读清单与当前任务不匹配。") from None
-        results = store.root / "documents" / document_id / "results"
-        if not _unredirected(results):
-            raise AppError("阅读稿目录被重定向。")
-        results.mkdir(exist_ok=True)
-        destination = results / attempt_id
-        if destination.exists():
-            raise AppError("当前阅读稿结果已存在。")
-        temporary = _result_staging_directory(results)
-        moved = False
-        try:
-            shutil.copyfile(reading, temporary / "reading.json")
-            if sha256(temporary / "reading.json") != digest or sha256(doc["input_path"]) != doc["input_sha256"]:
-                raise AppError("提交期间文件发生变化，旧结果未被覆盖。")
-            atomic_json(temporary / "manifest.json", manifest)
-            os.replace(temporary, destination)
-            moved = True
-            blocks = [block for page in artifact["pages"] for block in page["blocks"]]
-            state = copy.deepcopy(store._state)
-            updated = store._find(state, document_id)
-            updated.update(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
-                           reading_sha256=digest, reading_source_language=artifact.get("sourceLanguage", "en"),
-                           reading_target_language=artifact.get("targetLanguage", "zh"), preferred_artifact="reading", reading_pages=artifact["selectedPages"],
-                           reading_failed_blocks=sum(b["status"] == "source_fallback" for b in blocks),
-                           source_language=artifact.get("sourceLanguage", "en"), target_language=artifact.get("targetLanguage", "zh"))
-            store._write(state)
-            return copy.deepcopy(updated)
-        except BaseException:
-            if moved:
-                shutil.rmtree(destination, ignore_errors=True)
-            raise
-        finally:
-            shutil.rmtree(temporary, ignore_errors=True)
+    doc = store.get(document_id)
+    if (doc.get("attempt_id") != attempt_id or doc["status"] != "running"
+            or event.get("attemptId") != attempt_id or event.get("type") != "result"
+            or event.get("artifactType") != ARTIFACT_TYPE or not isinstance(event.get("jobId"), str) or not event["jobId"]):
+        raise AppError("对照阅读结果与当前任务不匹配。")
+    staging = store.root / "documents" / document_id / "attempts" / attempt_id
+    reading = Path(event.get("readingPath", "")).absolute()
+    manifest_path = Path(event.get("manifestPath", "")).absolute()
+    if (not _unredirected(staging) or not all(_inside(p, staging) and _unredirected(p) and p.is_file() for p in (reading, manifest_path))
+            or reading.parent != manifest_path.parent):
+        raise AppError("对照阅读输出路径超出任务目录。")
+    if sha256(doc["input_path"]) != doc["input_sha256"]:
+        raise AppError("原文发生变化，未提交阅读稿。")
+    artifact = read_artifact(reading, doc)
+    digest = sha256(reading)
+    try:
+        if manifest_path.stat().st_size > 1024 * 1024:
+            raise ValueError()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (manifest.get("protocolVersion") != 1 or manifest.get("artifactType") != ARTIFACT_TYPE
+                or manifest.get("attemptId") != attempt_id or manifest.get("jobId") != event["jobId"]
+                or manifest.get("sourceSHA256") != doc["input_sha256"] or manifest.get("sourcePages") != doc["page_count"]
+                or manifest.get("readingSHA256") != digest or event.get("readingSHA256") != digest):
+            raise ValueError()
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise AppError("对照阅读清单与当前任务不匹配。") from None
+    blocks = [block for page in artifact["pages"] for block in page["blocks"]]
+    source_language, target_language = artifact.get("sourceLanguage", "en"), artifact.get("targetLanguage", "zh")
+    return store.publish_result(document_id, attempt_id, manifest, {"reading.json": (reading, digest)},
+                                lambda destination: dict(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
+                                                         reading_sha256=digest, reading_source_language=source_language,
+                                                         reading_target_language=target_language, preferred_artifact="reading",
+                                                         reading_pages=artifact["selectedPages"],
+                                                         reading_failed_blocks=sum(b["status"] == "source_fallback" for b in blocks),
+                                                         source_language=source_language, target_language=target_language))
 
 
 def page_result(store, request):
@@ -226,49 +198,39 @@ def _add_source_font_sizes(page, blocks):
             block["sourceFontSize"] = sizes[len(sizes) // 2]
 
 
-def _background_image(store, document, page):
+def _cached_preview(store, name):
     cache = store.root / "preview-cache"
     if not _unredirected(cache):
         raise AppError("预览缓存目录被重定向。")
     cache.mkdir(exist_ok=True)
+    target = cache / name
+    if target.exists() and not _unredirected(target):
+        raise AppError("预览缓存文件被重定向。")
+    return target
+
+
+def _background_image(store, document, page):
     key = hashlib.sha256((document["reading_sha256"] + str(page["pageNumber"])).encode()).hexdigest()
-    target = cache / ("reading-background-" + key + ".png")
-    if target.exists():
-        if not _unredirected(target):
-            raise AppError("预览缓存文件被重定向。")
-        return str(target)
-    data = base64.b64decode(page["backgroundImage"], validate=True)
-    fd, name = tempfile.mkstemp(prefix=".reading-background-", suffix=".png", dir=cache)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-        os.replace(name, target)
-    finally:
-        Path(name).unlink(missing_ok=True)
+    target = _cached_preview(store, "reading-background-" + key + ".png")
+    if not target.exists():
+        data = base64.b64decode(page["backgroundImage"], validate=True)
+        atomic_file(target, lambda name: Path(name).write_bytes(data))
     return str(target)
 
 
 def _decoration_image(store, document, page):
     """Restore source pixels along paths, never repaint alpha or fill regions.
 
-    New paths use displayed page-local points. Legacy paths retain the native
-    PDF page origin, which is removed before drawing the same local mask.
-    Strokes expand by half a point; fill boundaries use a one-point band.
+    Paths use displayed page-local points. Strokes expand by half a point;
+    fill boundaries use a one-point band.
     """
-    cache = store.root / "preview-cache"
-    if not _unredirected(cache):
-        raise AppError("预览缓存目录被重定向。")
-    cache.mkdir(exist_ok=True)
     key = hashlib.sha256(json.dumps([document["input_sha256"], document["reading_sha256"], page["pageNumber"], "decoration-mask-v4-local-paths"]).encode()).hexdigest()
-    target = cache / ("reading-decorations-" + key + ".png")
+    target = _cached_preview(store, "reading-decorations-" + key + ".png")
     if target.exists():
-        if not _unredirected(target):
-            raise AppError("预览缓存文件被重定向。")
         return str(target)
     with pymupdf.open(document["input_path"]) as pdf, pymupdf.open() as mask_pdf:
         source = pdf[page["pageNumber"] - 1]
         origin = source.rect.tl
-        path_origin = pymupdf.Point(0, 0) if page.get("decorationsCoordinateSpace") == "page" else origin
         mask = mask_pdf.new_page(width=source.rect.width, height=source.rect.height)
         mask.draw_rect(mask.rect, color=None, fill=(0, 0, 0))
         # finish() isolates each path's drawing state and accumulates commands.
@@ -282,12 +244,12 @@ def _decoration_image(store, document, page):
                 if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in points):
                     raise ValueError("Invalid decoration coordinate")
                 if operation == "M" and len(points) == 2:
-                    current = start = pymupdf.Point(points) - path_origin
+                    current = start = pymupdf.Point(points)
                 elif operation == "L" and len(points) == 2 and current is not None:
-                    end = pymupdf.Point(points) - path_origin; shape.draw_line(current, end); current = end
+                    end = pymupdf.Point(points); shape.draw_line(current, end); current = end
                 elif operation == "C" and len(points) == 6 and current is not None:
-                    end = pymupdf.Point(points[4:6]) - path_origin
-                    shape.draw_bezier(current, pymupdf.Point(points[:2]) - path_origin, pymupdf.Point(points[2:4]) - path_origin, end); current = end
+                    end = pymupdf.Point(points[4:6])
+                    shape.draw_bezier(current, pymupdf.Point(points[:2]), pymupdf.Point(points[2:4]), end); current = end
                 elif operation == "Z" and not points and current is not None and start is not None:
                     shape.draw_line(current, start); current = start
                 else:
@@ -324,46 +286,5 @@ def _decoration_image(store, document, page):
         mask_matrix = pymupdf.Matrix(scale, scale).pretranslate(origin.x, origin.y)
         stencil = mask.get_pixmap(matrix=mask_matrix, colorspace=pymupdf.csGRAY, alpha=False)
         restored = pymupdf.Pixmap(original, stencil)
-        fd, name = tempfile.mkstemp(prefix=".reading-decorations-", suffix=".png", dir=cache)
-        os.close(fd)
-        try:
-            restored.save(name); os.replace(name, target)
-        finally:
-            Path(name).unlink(missing_ok=True)
+        atomic_file(target, restored.save)
     return str(target)
-
-
-def block_image(store, request):
-    doc, artifact = committed_artifact(store, request["document_id"])
-    identifier = request.get("block_id")
-    match = next(((p, b) for p in artifact["pages"] for b in p["blocks"] if b["id"] == identifier), None)
-    if not match or match[1].get("bbox") is None:
-        raise AppError("此块没有可定位的原文区域。")
-    page, block = match
-    # Engine boxes start at the displayed page's upper-left corner; PyMuPDF
-    # clipping uses the displayed page coordinates, including a nonzero origin.
-    with pymupdf.open(doc["input_path"]) as pdf:
-        source = pdf[page["pageNumber"] - 1]
-        origin = source.rect.tl
-        rect = (pymupdf.Rect(block["bbox"]) + (origin.x, origin.y, origin.x, origin.y)) & source.rect
-        if rect.is_empty:
-            raise AppError("原文区域超出页面范围。")
-        cache = store.root / "preview-cache"
-        cache.mkdir(exist_ok=True)
-        key = hashlib.sha256((doc["input_sha256"] + json.dumps([page["pageNumber"], list(rect)])).encode()).hexdigest()
-        target = cache / ("reading-" + key + ".png")
-        if not target.exists():
-            scale = min(2, 1800 / max(rect.width, rect.height))
-            pixmap = source.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=rect, alpha=False)
-            fd, name = tempfile.mkstemp(prefix=".reading-", suffix=".png", dir=cache)
-            os.close(fd)
-            try:
-                pixmap.save(name)
-                os.replace(name, target)
-            finally:
-                Path(name).unlink(missing_ok=True)
-        return dict(path=str(target), page=page["pageNumber"] - 1, bbox=block["bbox"], width=rect.width, height=rect.height)
-
-
-def dispatch(store, request):
-    return page_result(store, request) if request["action"] == "reading_page" else block_image(store, request)

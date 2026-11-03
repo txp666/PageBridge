@@ -1,86 +1,178 @@
+"""Cross-request identity, freshness, framing and locking of the bridge protocol."""
+from contextlib import contextmanager
+import io
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import bridge
 import pymupdf
+from pagebridge.core import DocumentStore
 
 
 class BridgeTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        self.data = self.root / "数据 library"
-        self.bridge = Path(__file__).resolve().parents[1] / "bridge.py"
-        self.source = self.root / "原文 demo.pdf"
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.data = self.root / "文档库"
+        self.source = self.root / "公开测试.pdf"
         with pymupdf.open() as pdf:
-            for i in range(2):
-                pdf.new_page().insert_text((30, 60), f"PageBridge demo page {i + 1}")
+            for index in range(2):
+                pdf.new_page().insert_text((50, 50), f"Public synthetic page {index + 1}")
             pdf.save(self.source)
+        self.process = None
 
     def tearDown(self):
-        self.temp.cleanup()
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.kill()
+            self.process.wait(timeout=10)
+            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                stream.close()
+        self.temporary.cleanup()
 
-    def call(self, action, **params):
-        request = dict(action=action, dataRoot=str(self.data), **params)
-        result = subprocess.run([sys.executable, "-B", "-u", str(self.bridge)],
-                                input=(json.dumps(request, ensure_ascii=False) + "\n").encode(), capture_output=True, timeout=15)
-        response = json.loads(result.stdout)
+    def envelope(self, action, **values):
+        return dict(action=action, protocolVersion=1, requestId=str(uuid.uuid4()),
+                    dataRoot=str(self.data), **values)
+
+    def start(self):
+        self.process = subprocess.Popen([sys.executable, "-B", "-u", bridge.__file__],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.responses = queue.Queue()
+
+        def collect():
+            while line := self.process.stdout.readline(1_048_577):
+                self.responses.put(line)
+
+        self.reader = threading.Thread(target=collect, daemon=True)
+        self.reader.start()
+        self.assertEqual(self.send(self.envelope("serve"))["result"], {"mode": "serve"})
+        return self.process.pid
+
+    def once(self, action, **values):
+        request = dict(action=action, dataRoot=str(self.data), **values)
+        result = subprocess.run([sys.executable, "-B", "-u", bridge.__file__], capture_output=True, timeout=20,
+                                input=(json.dumps(request, ensure_ascii=False) + "\n").encode())
         self.assertEqual(result.stderr, b"")
+        return json.loads(result.stdout)
+
+    def send(self, request):
+        self.process.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+        self.process.stdin.flush()
+        raw = self.responses.get(timeout=20)
+        response = json.loads(raw)
+        self.assertEqual(response["requestId"], request["requestId"])
+        self.assertEqual(response["protocolVersion"], 1)
+        self.assertNotIn(b"fixture-private-key", raw)
         return response
 
-    def test_import_render_export_restart_protocol(self):
-        imported = self.call("import", path=str(self.source))["result"]
-        self.assertEqual(imported["page_count"], 2)
-        listed = self.call("list")["result"]
-        self.assertEqual([d["id"] for d in listed], [imported["id"]])
-        image = self.call("render", document_id=imported["id"], variant="original", page=1, width=800)["result"]
-        self.assertEqual(image["page_count"], 2)
-        self.assertTrue(Path(image["path"]).read_bytes().startswith(b"\x89PNG"))
-        thumbnail = self.call("render", document_id=imported["id"], page=0, width=140)["result"]
-        self.assertEqual(thumbnail["width"], 140)
-        self.assertEqual(pymupdf.Pixmap(thumbnail["path"]).width, 140)
-        exported = self.root / "导出.pdf"
-        self.assertTrue(self.call("export", document_id=imported["id"], kind="original", destination=str(exported))["ok"])
-        self.assertEqual(exported.read_bytes(), self.source.read_bytes())
+    def test_reuses_process_and_observes_external_library_changes(self):
+        pid = self.start()
+        doc = self.send(self.envelope("import", path=str(self.source)))["result"]
+        self.send(self.envelope("reading", document_id=doc["id"], page=2))
+        self.assertTrue(self.once("rename", document_id=doc["id"], name="外部更新.pdf")["ok"])
+        [latest] = self.send(self.envelope("list"))["result"]
+        self.assertEqual(latest["current_page"], 2)
+        self.assertEqual(latest["name"], "外部更新.pdf")
+        self.assertEqual(self.process.pid, pid)
+        self.assertIsNone(self.process.poll())
+        self.process.stdin.close()
+        self.assertEqual(self.process.wait(timeout=10), 0)
+        self.assertEqual(self.process.stderr.read(), b"")
 
-    def test_folder_persistence_across_processes(self):
-        doc = self.call("import", path=str(self.source))["result"]
-        folder = self.call("create_folder", name="手册")["result"]
-        self.call("move", document_id=doc["id"], folder_id=folder["id"])
-        self.call("favorite", document_id=doc["id"], value=True)
-        fetched = self.call("get", documentId=doc["id"])["result"]
-        self.assertEqual(fetched["folder_id"], folder["id"])
-        self.assertTrue(fetched["favorite"])
+    def test_application_errors_do_not_poison_next_request(self):
+        self.start()
+        doc = self.send(self.envelope("import", path=str(self.source)))["result"]
+        self.assertFalse(self.send(self.envelope("render", document_id=doc["id"], page=99))["ok"])
+        listed = self.send(self.envelope("list"))["result"]
+        self.assertEqual([item["id"] for item in listed], [doc["id"]])
 
-    @unittest.skipUnless(os.name != "nt" or os.environ.get("PAGEBRIDGE_TEST_WINDOWS_CREDENTIALS") == "1",
-                         "Bridge profile writes use real Windows credentials; explicit interactive integration only")
-    def test_profile_persistence_across_processes(self):
-        profile = self.call("new_profile", provider="ollama")["result"]
-        self.call("save_profile", profile=profile)
-        profiles = self.call("profiles")["result"]
-        self.assertEqual(profiles["active_id"], profile["id"])
+    def test_session_rejects_other_roots_and_nonlocal_actions_without_secret_echo(self):
+        self.start()
+        foreign = self.envelope("create_folder", name="should not exist")
+        foreign["dataRoot"] = str(self.root / "other")
+        self.assertFalse(self.send(foreign)["ok"])
+        self.assertFalse((self.root / "other").exists())
+        for action in ("probe", "save_profile", "profiles", "translate", "serve"):
+            self.assertFalse(self.send(self.envelope(action, apiKey="fixture-private-key"))["ok"])
+        self.assertEqual(self.send(self.envelope("list"))["result"], [])
+
+    def test_invalid_or_overlong_frame_ends_session_before_following_write(self):
+        for invalid in (b'{"bad":"\xff"}\n', b"x" * 65537 + b"\n", b'[]\n'):
+            with self.subTest(frame=invalid[:12]):
+                handshake = self.envelope("serve")
+                after = self.envelope("create_folder", name="must not run")
+                payload = json.dumps(handshake).encode() + b"\n" + invalid + json.dumps(after).encode() + b"\n"
+                result = subprocess.run([sys.executable, "-B", "-u", bridge.__file__], input=payload,
+                                        capture_output=True, timeout=20)
+                replies = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(len(replies), 2)
+                self.assertIsNone(replies[-1]["requestId"])
+                self.assertFalse(replies[-1]["ok"])
+                self.assertEqual(result.stderr, b"")
+        state = self.data / "desktop-library.json"
+        self.assertFalse(state.exists())
+
+    def test_truncated_frame_does_not_execute_a_complete_json_without_newline(self):
+        payload = (json.dumps(self.envelope("serve")) + "\n" +
+                   json.dumps(self.envelope("create_folder", name="must not run"))).encode()
+        result = subprocess.run([sys.executable, "-B", "-u", bridge.__file__], input=payload,
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.data / "desktop-library.json").exists())
+
+    def test_response_bound_is_checked_before_any_bytes_are_written(self):
+        output = io.BytesIO()
+        with patch.object(bridge, "PROTOCOL_FD", None), patch.object(sys, "stdout", type("Out", (), {"buffer": output})()):
+            with self.assertRaises(bridge.AppError):
+                bridge.emit({"ok": True, "result": "x" * bridge.MAX_RESPONSE_BYTES})
+        self.assertEqual(output.getvalue(), b"")
+
+    def test_provider_network_request_holds_no_library_lock(self):
+        locked = []
+
+        @contextmanager
+        def lock(_):
+            locked.append(True)
+            try:
+                yield
+            finally:
+                locked.pop()
+
+        class Services:
+            def __init__(self, _):
+                self.unused = None
+
+        def probe(profile, key):
+            self.assertEqual(locked, [])
+            self.assertEqual(key, "fixture-private-key")
+            return {"connected": True}
+
+        with patch.object(bridge, "library_lock", lock), patch.object(bridge, "ServiceStore", Services), patch.object(bridge, "probe_service", probe):
+            self.assertEqual(bridge.dispatch(dict(action="probe", profile={"id": "fixture"},
+                                                  apiKey="fixture-private-key"), self.data), {"connected": True})
 
     def test_short_lived_list_keeps_active_attempt(self):
-        doc = self.call("import", path=str(self.source))["result"]
-        attempt = self.call("new_attempt", document_id=doc["id"])["result"]
-        self.call("mark_running", document_id=doc["id"], attempt_id=attempt["attempt_id"])
-        self.assertEqual(self.call("list")["result"][0]["status"], "running")
-        self.assertEqual(self.call("recover")["result"][0]["status"], "interrupted")
-
-    def test_invalid_render_and_export_return_json_error(self):
-        doc = self.call("import", path=str(self.source))["result"]
-        self.assertFalse(self.call("render", document_id=doc["id"], page=99, width=800)["ok"])
-        self.assertFalse(self.call("export", document_id=doc["id"], kind="original", destination=doc["input_path"])["ok"])
+        store = DocumentStore(self.data)
+        doc = store.import_pdf(self.source)
+        store.new_attempt(doc["id"])
+        self.assertEqual(self.once("list")["result"][0]["status"], "running")
+        self.assertEqual(self.once("recover")["result"][0]["status"], "interrupted")
 
     @unittest.skipIf(os.name == "nt", "Mac-specific protection")
     def test_existing_mac_library_is_rejected_without_reading(self):
         self.data = Path.home() / "Library/Application Support/PageBridge"
-        response = self.call("list")
+        response = self.once("list")
         self.assertFalse(response["ok"])
         self.assertIn("Mac", response["error"])
 

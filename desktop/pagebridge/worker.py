@@ -33,10 +33,6 @@ class WindowsJob:
                         ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
                         ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
-        class ACCOUNTING(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_longlong) for name in ("TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime", "ThisPeriodTotalKernelTime")] + [(name, wintypes.DWORD) for name in ("TotalPageFaultCount", "TotalProcesses", "ActiveProcesses", "TotalTerminatedProcesses")]
-
-        self.accounting_type = ACCOUNTING
         self.limits_type = EXTENDED_LIMITS
         self._member_handles = []
         self._termination_started = False
@@ -173,12 +169,11 @@ def python_launch_executable(executable, env):
 
 
 class WorkerTask:
-    """Callbacks run on the background thread, never a GUI dispatcher thread."""
-    def __init__(self, engine_root, request, on_event=None, on_done=None, python_executable=None):
+    """on_event runs on the background thread, never a GUI dispatcher thread."""
+    def __init__(self, engine_root, request, on_event=None, python_executable=None):
         self.engine_root = Path(engine_root).resolve()
         self._request = copy.deepcopy(request)
         self.on_event = on_event
-        self.on_done = on_done
         self.python = Path(python_executable).resolve() if python_executable else find_python(self.engine_root)
         self.result = None
         self.error = None
@@ -250,8 +245,6 @@ class WorkerTask:
             payload = json.dumps(self._request, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
             if len(payload) > 65536:
                 raise AppError("翻译请求过大。")
-            if self._request.get("protocolVersion") != 1 or not all(isinstance(self._request.get(k), str) and self._request[k] for k in ("jobId", "attemptId")):
-                raise AppError("翻译任务身份无效。")
             with self._lock:
                 if self.cancelled:
                     raise AppError("翻译已取消。")
@@ -357,7 +350,5 @@ class WorkerTask:
                             pipe.close()
                         except (OSError, ValueError):
                             # A failed cancel write can leave buffered stdin
-                            # data; closing must not suppress the done callback.
+                            # data; closing must not end the task thread early.
                             pass
-            if self.on_done:
-                self.on_done(self.result, self.error, self.cancelled)

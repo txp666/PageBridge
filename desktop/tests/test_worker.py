@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 import sys
@@ -62,21 +61,15 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(python_launch_executable(sys.executable, env), sys.executable)
         self.assertNotIn("__PYVENV_LAUNCHER__", env)
 
-    def test_result_without_handshake_rejected(self):
-        task = self.task("emit('result')\n")
-        task.join(8)
-        self.assertIsNone(task.result)
-        self.assertIn("消息", task.error)
-
-    def test_identity_sequence_progress_and_duplicate_terminal(self):
-        cases = ["emit('ready',jobId='other')", "emit('ready');emit('progress',sequence=1)",
+    def test_handshake_identity_sequence_progress_and_duplicate_terminal(self):
+        cases = ["emit('result')", "emit('ready',jobId='other')", "emit('ready');emit('progress',sequence=1)",
                  "emit('ready');emit('progress',progress=float('nan'))", "emit('ready');emit('result');emit('result')"]
         for code in cases:
             with self.subTest(code=code):
                 task = self.task(code + "\n")
                 self.assertTrue(task.join(8))
                 self.assertIsNone(task.result)
-                self.assertIsNotNone(task.error)
+                self.assertIn("消息", task.error)
 
     def test_partial_message_and_nonzero_after_result(self):
         for code in ["emit('ready');sys.stdout.write('{');sys.stdout.flush()", "emit('ready');emit('result');sys.exit(3)"]:
@@ -85,29 +78,25 @@ class WorkerTests(unittest.TestCase):
             self.assertIsNone(task.result)
             self.assertIsNotNone(task.error)
 
-    def test_cancel_protocol_and_callback(self):
+    def test_cancel_protocol(self):
         ready = threading.Event()
-        done = []
         task = self.task("emit('ready')\nc=json.loads(sys.stdin.buffer.readline())\nassert c['action']=='cancel' and c['attemptId']==r['attemptId']\nemit('error',stage='cancelled',message='翻译已取消。')\nsys.exit(130)\n",
-                         on_event=lambda e: ready.set(), on_done=lambda *args: done.append(args))
+                         on_event=lambda e: ready.set())
         self.assertTrue(ready.wait(5))
         task.cancel()
         self.assertTrue(task.join(8))
         self.assertTrue(task.cancelled)
         self.assertIsNone(task.result)
-        self.assertTrue(done[0][2])
 
     def test_closed_worker_stdin_does_not_suppress_cancel_completion(self):
         ready = threading.Event()
-        done = []
         task = self.task("os.close(0)\nemit('ready')\ntime.sleep(0.3)\nsys.exit(130)\n",
-                         on_event=lambda event: ready.set(), on_done=lambda *args: done.append(args))
+                         on_event=lambda event: ready.set())
         self.assertTrue(ready.wait(5))
         task.cancel()
         self.assertTrue(task.join(8))
-        self.assertEqual(len(done), 1)
-        self.assertTrue(done[0][2])
-        self.assertIsNone(done[0][0])
+        self.assertTrue(task.cancelled)
+        self.assertIsNone(task.result)
 
     def test_late_cancel_cannot_mutate_successful_terminal_result(self):
         task = self.task("emit('ready');emit('result')\n")
@@ -122,7 +111,6 @@ class WorkerTests(unittest.TestCase):
         class Job:
             def terminate(self): pass
             def close(self): raise AppError('未确认子进程退出')
-        done = []
         (self.root / 'worker.py').write_text(PREAMBLE + "emit('ready');emit('result')\n", encoding='utf-8')
         task = WorkerTask(self.root, self.request, python_executable=sys.executable)
         def event(value):
@@ -131,12 +119,9 @@ class WorkerTests(unittest.TestCase):
             if value['type'] == 'result':
                 if task._job: task._job.close()
                 task._job = Job()
-        def completed(*outcome):
-            task.cancel()  # Models a late control line at the completion edge.
-            done.append(outcome)
-        task.on_event = event; task.on_done = completed
+        task.on_event = event
         task.start(); self.assertTrue(task.join(8))
-        self.assertEqual(len(done), 1)
+        task.cancel()  # Models a late control line after the terminal outcome.
         self.assertIsNone(task.result)
         self.assertIn('未确认', task.error)
         self.assertFalse(task.cancelled)

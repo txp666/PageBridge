@@ -329,7 +329,6 @@ class UpdateManager:
                     break
                 digest.update(block)
         if size != payload["bytes"] or digest.hexdigest() != payload["sha256"]:
-            self._set(state="error", error="安装包已发生变化，请重新下载。")
             raise UpdateError("安装包已发生变化，请重新下载。")
         return dict(path=str(target.resolve()), sha256=payload["sha256"], bytes=size,
                     version=payload["version"], build=payload["build"])

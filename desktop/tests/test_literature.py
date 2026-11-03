@@ -7,7 +7,6 @@ from pathlib import Path
 import socket
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -32,16 +31,12 @@ class Vault:
 
 class Response(io.BytesIO):
     status = 200
-    def __init__(self, data, url='https://example.org/article.pdf', mime='application/pdf', declared=None, encoding=None, on_read=None):
+    def __init__(self, data, url='https://example.org/article.pdf', mime='application/pdf', declared=None, encoding=None):
         super().__init__(data)
-        self.url, self.on_read = url, on_read
+        self.url = url
         self.headers = {'Content-Type': mime, 'Content-Length': str(len(data) if declared is None else declared)}
         if encoding: self.headers['Content-Encoding'] = encoding
     def geturl(self): return self.url
-    def read1(self, count):
-        value = super().read(count)
-        if self.on_read: self.on_read()
-        return value
 
 
 class LiteratureTests(unittest.TestCase):
@@ -165,13 +160,13 @@ class LiteratureTests(unittest.TestCase):
 
     def test_redirects_validate_each_hop_and_never_forward_pdf_credentials(self):
         old=urllib.request.Request('https://example.org/a',headers={'Authorization':'private','Cookie':'session=private','Accept':'application/pdf'})
-        redirect=lit._Redirects(None,time.monotonic()+10,None)
+        redirect=lit._Redirects(time.monotonic()+10,None)
         with patch.object(lit,'validate_addresses') as validate:
             target=redirect.redirect_request(old,None,302,'',{},'https://example.org/b')
             self.assertIsNone(target.get_header('Authorization')); self.assertIsNone(target.get_header('Cookie'))
             validate.assert_called_once()
             with self.assertRaises(AppError): redirect.redirect_request(old,None,302,'',{},'https://127.0.0.1/b')
-        api=lit._Redirects(None,time.monotonic()+10,'key')
+        api=lit._Redirects(time.monotonic()+10,'key')
         with patch.object(lit,'validate_addresses'):
             with self.assertRaises(AppError): api.redirect_request(old,None,302,'',{},'https://example.org/b')
             same=api.redirect_request(old,None,302,'',{},'https://api.openalex.org/works?page=2')
@@ -235,14 +230,6 @@ class LiteratureTests(unittest.TestCase):
         with self.network(Response(encrypted)):
             with lit.open_document(self.root,self.request(),self.settings) as result:
                 self.assertIn('加密',result['message'])
-        self.assertEqual(self.store.documents(),[])
-
-    def test_cancelled_download_cleans_job_without_import(self):
-        cancelled=threading.Event(); request=self.request()
-        with self.network(Response(self.pdf_bytes,on_read=cancelled.set)):
-            with self.assertRaises(lit.Cancelled):
-                with lit.open_document(self.root,request,self.settings,cancelled): self.fail('Cancelled import reached caller')
-        self.assertFalse((self.root/'literature-downloads'/request['operation_id']).exists())
         self.assertEqual(self.store.documents(),[])
 
     def test_timeout_returns_safe_fallback_without_provider_message(self):
