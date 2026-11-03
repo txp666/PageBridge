@@ -12,6 +12,66 @@ from collections import Counter
 import pymupdf
 
 
+def _visible_mask_box(mask):
+    """Ignore transparent asset padding when comparing a shadow to its text."""
+    if mask.n != 1 or mask.is_unicolor:
+        return None
+    samples = mask.samples
+    left, top, right, bottom = mask.width, mask.height, 0, 0
+    for y in range(mask.height):
+        row = samples[y * mask.stride:y * mask.stride + mask.width]
+        if not row.strip(b"\0"):
+            continue
+        top = min(top, y)
+        bottom = y + 1
+        left = min(left, len(row) - len(row.lstrip(b"\0")))
+        right = max(right, len(row.rstrip(b"\0")))
+    if right <= left or bottom <= top:
+        return None
+    return pymupdf.Rect(left / mask.width, top / mask.height,
+                        right / mask.width, bottom / mask.height)
+
+
+def _paired_with_line(shadow, line):
+    # Glyph ascenders/descenders and a small blur pad differ from line metrics.
+    # The observed 44pt NASA title needs 12.1pt; do not use whole asset padding
+    # (its transparent margins would otherwise need more than 30pt).
+    margin = max(2.0, min(16.0, line.height / 3))
+    return ((line + (-margin, -margin, margin, margin)).contains(shadow)
+            and (shadow + (-margin, -margin, margin, margin)).contains(line))
+
+
+def remove_text_shadows(page, selected_native_boxes):
+    """Delete uniform-color soft-mask images paired with selected native lines.
+
+    Boxes are line/span rectangles in unrotated native PDF points, not whole
+    paragraph or MinerU boxes. Photos, vector decorations and logo shadows
+    without a selected line stay. Each occurrence of a reused image must match
+    a selected line before its resource is removed. Returns the removed xrefs.
+    """
+    lines = [rect for rect in map(pymupdf.Rect, selected_native_boxes) if not rect.is_empty and not rect.is_infinite]
+    if not lines:
+        return []
+    images = {xref: smask for xref, smask, *_ in page.get_images(full=True) if xref > 0 and smask > 0}
+    removed = []
+    for xref, smask in images.items():
+        placements = page.get_image_rects(xref, transform=True)
+        if not placements:
+            continue
+        try:
+            if not pymupdf.Pixmap(page.parent, xref).is_unicolor:
+                continue
+            mask_box = _visible_mask_box(pymupdf.Pixmap(page.parent, smask))
+        except (RuntimeError, ValueError):
+            continue
+        if mask_box is None:
+            continue
+        if all(any(_paired_with_line(mask_box * transform, line) for line in lines) for _, transform in placements):
+            page.delete_image(xref)
+            removed.append(xref)
+    return removed
+
+
 def coalesce_text_redactions(source, rectangles):
     """Merge touching glyph boxes without adding any redacted area."""
     numbers = {tuple(bounds) for span in source.get_texttrace() for value, _, _, bounds in span["chars"]
@@ -109,7 +169,6 @@ def add_page_background(input_path, page_result):
         selected_native = [box for box in native_spans if any(
             boxes[block["id"]].contains(((box * rotation).tl + (box * rotation).br) / 2 - origin)
             for block in translated if block["id"] in background_ids)]
-        from reading_text_effects import remove_text_shadows
         remove_text_shadows(source, selected_native)
         # Formula attachments move with the translated sentence. Remove the
         # original fraction bars as well, but only paths fully inside their

@@ -21,17 +21,23 @@ import shutil
 import statistics
 import sys
 import tempfile
+import time
 import unicodedata
 
 VERSION = "4.0.12"
 ARTIFACT_TYPE = "structured-reading"
 ENGINE = Path(__file__).resolve().parent
 PARSE_TIMEOUT = 300
+MODEL_STALL_SECONDS = 120
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 class ReadingError(Exception):
     """Only fixed, non-secret UI messages belong in this exception."""
+
+
+class DownloadStalled(Exception):
+    """No model bytes arrived within MODEL_STALL_SECONDS."""
 
 
 def sha256(path):
@@ -75,7 +81,7 @@ def runtime_environment(root, *, offline=True):
         env.update(MINERU_MODEL_SOURCE="local", HF_HUB_OFFLINE="1")
     else:
         env.pop("HF_HUB_OFFLINE", None)
-        env["MINERU_MODEL_SOURCE"] = "huggingface"
+        env["MINERU_MODEL_SOURCE"] = "auto"
     return env
 
 
@@ -90,13 +96,23 @@ def uv_executable():
     raise ReadingError("缺少 MinerU 安装工具，请重新安装 PageBridge。")
 
 
-async def run_process(command, *, env, timeout):
-    """Keep parser/install output off the protocol and reap on cancellation."""
+async def run_process(command, *, env, timeout, monitor=None, log=None):
+    """Keep parser/install output off the protocol and reap on cancellation.
+
+    monitor, when given, runs every few seconds; an exception it raises stops the process.
+    log, an open binary file, receives setup output; parser output is never logged.
+    """
     process = await asyncio.create_subprocess_exec(
         *map(str, command), env=env, stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        stdout=log or asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.STDOUT if log else asyncio.subprocess.DEVNULL)
     try:
-        return await asyncio.wait_for(process.wait(), timeout)
+        async with asyncio.timeout(timeout):
+            while True:
+                try:
+                    return await asyncio.wait_for(process.wait(), 3)
+                except TimeoutError:
+                    if monitor:
+                        monitor()
     finally:
         if process.returncode is None:
             # A timed-out page must not leave OCR/formula subprocesses running
@@ -118,7 +134,7 @@ async def run_process(command, *, env, timeout):
                 pass
             try:
                 await asyncio.wait_for(process.wait(), 3)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     process.kill()
                 except ProcessLookupError:
@@ -188,6 +204,53 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
 
 
+def folder_bytes(*folders):
+    total = 0
+    for folder in folders:
+        for parent, _, names in os.walk(folder):
+            for name in names:
+                try:
+                    total += os.stat(os.path.join(parent, name)).st_size
+                except OSError:
+                    pass
+    return total
+
+
+async def download_models(root, env, events, log=None):
+    """ModelScope first (fast from mainland China), then Hugging Face; both serve the manifest's files.
+
+    Hugging Face requests carry no timeout and hang where it is blocked, so a
+    download that writes nothing for MODEL_STALL_SECONDS moves on to the next source.
+    """
+    executable = runtime_python(root).parent / ("mineru-kit.exe" if sys.platform == "win32" else "mineru-kit")
+    folders = (root / "home" / "models", root / "hf-cache", root / "ms-cache")
+    total = sum(item["bytes"] for item in model_files())
+    shown = 0
+    for source in ("modelscope", "huggingface"):
+        seen, changed = folder_bytes(*folders), time.monotonic()
+
+        def monitor():
+            nonlocal seen, changed, shown
+            size = folder_bytes(*folders)
+            if size != seen:
+                seen, changed = size, time.monotonic()
+                # Merging ModelScope parts briefly counts a file twice.
+                shown = max(shown, min(size, total))
+                events.emit("stage", stage="prepare",
+                            message=f"正在下载 MinerU 模型：{shown / 2**20:.0f} / {total / 2**20:.0f} MB")
+            elif time.monotonic() - changed > MODEL_STALL_SECONDS:
+                raise DownloadStalled
+
+        try:
+            code = await run_process([executable, "models", "download", "--tier", "basic", "--small-backend", "onnx",
+                                      "--source", source], env=env, timeout=3 * 3600, monitor=monitor, log=log)
+        except DownloadStalled:
+            continue
+        if code == 0 and await asyncio.to_thread(models_available, root, verify=True):
+            return
+    raise ReadingError("MinerU 模型未能从 Hugging Face 或 ModelScope 完整下载，请检查网络或代理后重试。")
+
+
 async def ensure_runtime(events):
     root = runtime_directory()
     if runtime_ready(root):
@@ -199,37 +262,38 @@ async def ensure_runtime(events):
                 return root
             env = runtime_environment(root, offline=False)
             python = runtime_python(root)
-            valid = python.is_file() and await run_process(
-                [python, ENGINE / "mineru_bridge.py", "--check"], env=env, timeout=90) == 0
-            if not valid:
-                uv = uv_executable()
-                events.emit("stage", stage="prepare", message="正在安装独立的 MinerU 运行环境。")
-                if not python.exists():
-                    python_target = "cpython-3.12.12-windows-x86_64-none" if sys.platform == "win32" else (
-                        "cpython-3.12.12-macos-" + ("aarch64" if platform.machine() == "arm64" else "x86_64") + "-none"
-                        if sys.platform == "darwin" else "3.12.12")
-                    code = await run_process([uv, "venv", "--managed-python", "--python", python_target, root / ".venv"], env=env, timeout=600)
+            # The latest attempt's installer output, for diagnosing failed setups.
+            with (root / "setup.log").open("wb") as log:
+                valid = python.is_file() and await run_process(
+                    [python, ENGINE / "mineru_bridge.py", "--check"], env=env, timeout=90, log=log) == 0
+                if not valid:
+                    uv = uv_executable()
+                    events.emit("stage", stage="prepare", message="正在安装独立的 MinerU 运行环境。")
+                    if not python.exists():
+                        python_target = "cpython-3.12.12-windows-x86_64-none" if sys.platform == "win32" else (
+                            "cpython-3.12.12-macos-" + ("aarch64" if platform.machine() == "arm64" else "x86_64") + "-none"
+                            if sys.platform == "darwin" else "3.12.12")
+                        code = await run_process([uv, "venv", "--managed-python", "--python", python_target, root / ".venv"],
+                                                 env=env, timeout=600, log=log)
+                        if code:
+                            raise ReadingError("无法创建 MinerU 运行环境，请检查磁盘空间后重试。")
+                    code = await run_process([uv, "pip", "install", "--python", python, "-r", ENGINE / "mineru-requirements.txt"],
+                                             env=env, timeout=1800, log=log)
                     if code:
-                        raise ReadingError("无法创建 MinerU 运行环境，请检查磁盘空间后重试。")
-                code = await run_process([uv, "pip", "install", "--python", python, "-r", ENGINE / "mineru-requirements.txt"], env=env, timeout=1800)
+                        raise ReadingError("MinerU 依赖下载或安装失败，请检查网络与磁盘空间后重试。")
+                if not await asyncio.to_thread(models_available, root, verify=True):
+                    events.emit("stage", stage="prepare", message="正在下载官方 MinerU Basic 模型。")
+                    await download_models(root, env, events, log)
+                code = await run_process([python, ENGINE / "mineru_bridge.py", "--check"], env=env, timeout=90, log=log)
                 if code:
-                    raise ReadingError("MinerU 依赖下载或安装失败，请检查网络与磁盘空间后重试。")
-            if not await asyncio.to_thread(models_available, root, verify=True):
-                events.emit("stage", stage="prepare", message="正在下载官方 MinerU Basic 模型。")
-                executable = python.parent / ("mineru-kit.exe" if sys.platform == "win32" else "mineru-kit")
-                code = await run_process([executable, "models", "download", "--tier", "basic", "--small-backend", "onnx", "--source", "huggingface"], env=env, timeout=1800)
-                if code or not await asyncio.to_thread(models_available, root, verify=True):
-                    raise ReadingError("MinerU 模型下载未完成或版本不匹配，请重试准备解析器。")
-            code = await run_process([python, ENGINE / "mineru_bridge.py", "--check"], env=env, timeout=90)
-            if code:
-                raise ReadingError("MinerU 运行环境不可用，请重试准备解析器。")
+                    raise ReadingError("MinerU 运行环境不可用，请重试准备解析器。")
             ready = root / "ready.json"
             temp = ready.with_suffix(".tmp")
             write_json(temp, {"mineruVersion": VERSION, "requirementsSHA256": sha256(ENGINE / "mineru-requirements.txt"),
                               "modelsManifestSHA256": sha256(ENGINE / "mineru-models.json"),
                               "preparedAt": datetime.now(timezone.utc).isoformat()})
             temp.replace(ready)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise ReadingError("MinerU 准备超时，已保留下载进度，请重试。") from None
     except OSError:
         raise ReadingError("无法准备 MinerU，请检查网络、运行环境权限与磁盘空间。") from None
@@ -599,12 +663,6 @@ def unsupported_arabic_ocr_pages(input_path, selected, source_language):
                            for char in pdf[number - 1].get_text())}
 
 
-def arabic_ocr_fallback(number, width, height):
-    return {"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
-            "error": f"当前 MinerU {VERSION} Basic/ONNX 组件不支持阿拉伯语扫描页的 OCR，已保留原页；"
-                     "请使用含可提取阿语文本层的 PDF。", "blocks": []}
-
-
 async def parse_pages(input_path, dimensions, selected, temporary, events, source_language=None):
     unsupported = unsupported_arabic_ocr_pages(input_path, selected, source_language)
     root = await ensure_runtime(events) if len(unsupported) < len(selected) else None
@@ -614,7 +672,9 @@ async def parse_pages(input_path, dimensions, selected, temporary, events, sourc
                     message=f"正在解析原文第 {number} 页（{index + 1}/{len(selected)}）。")
         width, height = dimensions[number - 1]
         if number in unsupported:
-            pages.append(arabic_ocr_fallback(number, width, height))
+            pages.append({"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
+                          "error": f"当前 MinerU {VERSION} Basic/ONNX 组件不支持阿拉伯语扫描页的 OCR，已保留原页；"
+                                   "请使用含可提取阿语文本层的 PDF。", "blocks": []})
             continue
         raw = temporary / f"page-{number}"
         try:
@@ -637,7 +697,7 @@ async def parse_pages(input_path, dimensions, selected, temporary, events, sourc
     return pages
 
 
-def load_retry(path, input_hash, page_count, selected, source_language, target_language):
+def load_retry(path, input_hash, page_count, source_language, target_language):
     try:
         path = Path(path)
         if not path.is_absolute() or path.stat().st_size > MAX_ARTIFACT_BYTES:
@@ -669,7 +729,7 @@ def translation_error(error):
     if isinstance(error, httpx.HTTPStatusError):
         return {401: "服务拒绝了 API Key，请检查服务设置后重试本段。", 403: "服务拒绝访问，请检查服务设置后重试本段。",
                 429: "服务请求过于频繁，请稍后重试本段。"}.get(error.response.status_code, "翻译服务返回错误，请重试本段。")
-    if isinstance(error, (httpx.TimeoutException, asyncio.TimeoutError)):
+    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return "本段翻译超时，可单独重试。"
     if isinstance(error, httpx.RequestError):
         return "无法连接翻译服务，可单独重试本段。"
@@ -695,7 +755,7 @@ def table_cell_messages(source, source_language, target_language):
 
 
 async def translate_block(client, block, service, source_language, target_language):
-    from worker import provider_request_options
+    from worker import provider_request_options, token_limit_key
     formulas = block.get("inlineMath", [])
     passage = block.get("sourceTemplate", block["sourceText"]) if formulas else block["sourceText"]
     system = (f"Translate the following document passage from {source_language} to {target_language}. "
@@ -713,10 +773,9 @@ async def translate_block(client, block, service, source_language, target_langua
         # A short cell is translated in isolation: neighboring table rows led
         # the model to copy their numbers and complete unrelated fragments.
         messages = table_cell_messages(passage, source_language, target_language)
-    payload = {"model": service["model"], "stream": False,
-               "messages": messages}
+    payload = {"model": service["model"], "stream": False, "messages": messages}
     payload.update(provider_request_options(service))
-    payload.setdefault("max_completion_tokens" if service.get("provider") == "openAI" and service["model"].startswith(("gpt-6", "gpt-5", "o")) else "max_tokens", 8192)
+    payload.setdefault(token_limit_key(service), 8192)
     try:
         response = await client.post(service["baseURL"] + "/chat/completions", json=payload,
                                      headers={"Authorization": "Bearer " + service["apiKey"]})
@@ -730,11 +789,10 @@ async def translate_block(client, block, service, source_language, target_langua
         if choice.get("finish_reason") != "stop" or not isinstance(content, str) or not content.strip():
             raise ValueError("incomplete_response")
         translated = content.strip()
+        # Template tokens are unique, so equal markers mean each one exactly once.
         if formula_markers(translated) != formula_markers(passage):
             raise ValueError("invalid_formula_tokens")
         if formulas:
-            if any(passage.count(formula["token"]) != 1 or translated.count(formula["token"]) != 1 for formula in formulas):
-                raise ValueError("incomplete_formula_tokens")
             block["translatedTemplate"] = translated
             for formula in formulas:
                 translated = translated.replace(formula["token"], "$" + formula["latex"] + "$")
@@ -770,7 +828,7 @@ async def translate(request, events):
         raise ReadingError("无法读取原 PDF，请检查文件是否损坏或需要密码。") from None
     count = len(dimensions)
     selected = selected_pages(request.get("pages"), count)
-    source_language, target_language = request.get("sourceLanguage", "en"), request.get("targetLanguage", "zh")
+    source_language, target_language = request["sourceLanguage"], request["targetLanguage"]
     output = Path(request["outputDirectory"])
     output.mkdir(parents=True, exist_ok=True)
     destination = output / ("result-" + request["attemptId"])
@@ -780,13 +838,10 @@ async def translate(request, events):
     with tempfile.TemporaryDirectory(prefix=".pagebridge-reading-", dir=output) as folder:
         temporary = Path(folder)
         if retry_ids:
-            document = load_retry(request.get("readingPath", ""), input_hash, count, selected, source_language, target_language)
+            document = load_retry(request["readingPath"], input_hash, count, source_language, target_language)
             found = {b["id"] for p in document["pages"] for b in p["blocks"]}
             if any(identifier not in found for identifier in retry_ids):
                 raise ReadingError("未找到待重试的译文块，请重新打开阅读稿。")
-            unsupported = unsupported_arabic_ocr_pages(source, document["selectedPages"], source_language)
-            document["pages"] = [arabic_ocr_fallback(page["pageNumber"], *dimensions[page["pageNumber"] - 1])
-                                 if page["pageNumber"] in unsupported else page for page in document["pages"]]
         else:
             pages = await parse_pages(source, dimensions, selected, temporary, events, source_language=source_language)
             document = {"schemaVersion": 1, "artifactType": ARTIFACT_TYPE, "sourceSHA256": input_hash,

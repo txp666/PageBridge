@@ -527,6 +527,247 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.call_args_list[0].kwargs["env"]["UV_PYTHON_INSTALL_DIR"], str(root / "python"))
         self.assertTrue((root / "ready.json").is_file())
 
+    async def test_stalled_model_download_moves_to_next_source(self):
+        # A blocked source can hang forever without writing a byte (Hugging Face in mainland China).
+        root = self.root / "runtime"
+        weights = root / "home/models/weights.bin"
+        manifest = [{"path": "home/models/weights.bin", "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}]
+        real = reading.run_process
+        sources = []
+        async def kit(command, **kwargs):
+            sources.append(command[-1])
+            script = ("import time; time.sleep(60)" if command[-1] == "modelscope" else
+                      f"import pathlib; p = pathlib.Path({str(weights)!r}); p.parent.mkdir(parents=True); p.write_bytes(b'weights')")
+            return await real([sys.executable, "-c", script], **kwargs)
+        with patch.object(reading, "MODEL_STALL_SECONDS", 1), patch.object(reading, "model_files", return_value=manifest), \
+             patch.object(reading, "run_process", kit):
+            await asyncio.wait_for(reading.download_models(root, reading.runtime_environment(root, offline=False), Events()), 20)
+            self.assertTrue(reading.models_available(root, verify=True))
+        self.assertEqual(sources, ["modelscope", "huggingface"])
+
+
+# Known Basic/ONNX OCR capability, without content-scoring heuristics.
+class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "source.pdf"
+        self.request = {"jobId": "arabic-capability", "attemptId": "new", "inputPath": str(self.source),
+                        "outputDirectory": str(self.root / "output"), "sourceLanguage": "ar", "targetLanguage": "zh",
+                        "service": {"kind": "openai", "provider": "custom", "baseURL": "https://example.test/v1",
+                                    "apiKey": "fixture-secret", "model": "fixture", "timeoutSeconds": 10, "concurrency": 2}}
+        self.original_client = httpx.AsyncClient
+
+    def make_pdf(self, kinds):
+        with pymupdf.open() as pdf:
+            for kind in kinds:
+                page = pdf.new_page(width=300, height=200)
+                if kind == "native":
+                    # The bundled shaping font extracts Arabic presentation forms.
+                    page.insert_htmlbox(pymupdf.Rect(20, 20, 280, 100), '<p dir="rtl">مرحبا</p>')
+                    page.insert_text((20, 150), "English text around the Arabic letter is allowed.")
+                elif kind == "scan":
+                    with pymupdf.open() as image_pdf:
+                        image_page = image_pdf.new_page(width=300, height=200)
+                        image_page.insert_htmlbox(pymupdf.Rect(20, 20, 280, 100), '<p dir="rtl">مرحبا</p>')
+                        png = image_page.get_pixmap().tobytes("png")
+                    page.insert_image(page.rect, stream=png)
+                elif kind == "digits":
+                    page.insert_htmlbox(pymupdf.Rect(20, 20, 280, 100), '<p dir="rtl">١٢٣،</p>')
+                else:
+                    page.insert_text((20, 50), "Latin-only text layer.")
+            pdf.save(self.source)
+
+    def mock_client(self, calls):
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, request=request, json={"choices": [
+                {"finish_reason": "stop", "message": {"content": "测试译文"}}]})
+        return patch.object(httpx, "AsyncClient", side_effect=lambda **kwargs:
+                            self.original_client(transport=httpx.MockTransport(handler), **kwargs))
+
+    async def fake_parser(self, command, **kwargs):
+        number = int(command[command.index("--page") + 1])
+        folder = Path(command[command.index("--output") + 1]); folder.mkdir()
+        raw = {"pages": [{"page_idx": number - 1, "blocks": [
+            {"type": "text", "bbox": [0.1, 0.1, 0.8, 0.4], "content": "One parsed paragraph."}]}]}
+        (folder / "middle_json.json").write_text(json.dumps(raw))
+        return 0
+
+    async def run_translation(self, request=None, parser=None):
+        calls, events = [], Events()
+        with (patch.object(reading, "ensure_runtime", new=AsyncMock(return_value=self.root)) as setup,
+              patch.object(reading, "run_process", new=AsyncMock(side_effect=parser or self.fake_parser)) as parse,
+              self.mock_client(calls)):
+            await reading.translate(request or self.request, events)
+        document = json.loads(Path(events.items[-1]["readingPath"]).read_text())
+        return document, setup, parse, calls
+
+    async def test_arabic_scan_skips_runtime_parser_and_model_and_keeps_empty_fallback(self):
+        self.make_pdf(["scan", "latin"])
+        original = reading.sha256(self.source)
+        document, setup, parse, calls = await self.run_translation()
+        setup.assert_not_awaited(); parse.assert_not_awaited(); self.assertEqual(calls, [])
+        self.assertEqual((document["status"], document["failedPages"], document["translatedBlocks"]), ("partial", 2, 0))
+        for page in document["pages"]:
+            self.assertEqual(page["status"], "source_fallback")
+            self.assertEqual(page["blocks"], [])
+            self.assertIn("Basic/ONNX", page["error"])
+            self.assertIn("不支持阿拉伯语扫描页", page["error"])
+            self.assertNotIn("backgroundImage", page)
+        self.assertEqual(reading.sha256(self.source), original)
+
+    async def test_native_arabic_presentation_forms_keep_existing_parser_and_model_path(self):
+        self.make_pdf(["native"])
+        with pymupdf.open(self.source) as pdf:
+            self.assertTrue(any("\ufb50" <= c <= "\ufeff" for c in pdf[0].get_text()))
+        document, setup, parse, calls = await self.run_translation()
+        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 1)
+        self.assertEqual(document["pages"][0]["blocks"][0]["status"], "translated")
+
+    async def test_english_scan_keeps_existing_parser_and_model_path(self):
+        self.make_pdf(["scan"])
+        document, setup, parse, calls = await self.run_translation(dict(self.request, sourceLanguage="en"))
+        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 1)
+        self.assertEqual(document["status"], "completed")
+
+    async def test_mixed_arabic_document_only_parses_page_with_native_letters(self):
+        self.make_pdf(["scan", "native", "digits"])
+        document, setup, parse, calls = await self.run_translation()
+        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 1)
+        command = parse.await_args.args[0]
+        self.assertEqual(command[command.index("--page") + 1], 2)
+        self.assertEqual([page["status"] for page in document["pages"]], ["source_fallback", "completed", "source_fallback"])
+
+    async def test_real_unicef_selected_pages_have_no_supported_native_arabic_layer(self):
+        source = Path(__file__).resolve().parents[2] / "validation/representative20-20261027/corpus/20-unicef-child-rights-ar.pdf"
+        if not source.exists():
+            self.skipTest("Public validation PDF is not included in source checkout")
+        selected = [7, 9, 12, 38, 46]
+        self.assertEqual(reading.unsupported_arabic_ocr_pages(source, selected, "ar"), set(selected))
+
+
+# Regression cases for opaque formula markers, not translation quality scoring.
+class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
+    async def translate(self, source, reply, **metadata):
+        block = dict(id="p00001-b00001", kind="text", sourceText=source, status="preserved", **metadata)
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, request=request, json={
+                "choices": [{"finish_reason": "stop", "message": {"content": reply}}]})
+        service = dict(provider="custom", kind="openai", model="test", baseURL="https://example.test/v1",
+                       apiKey="test-only", concurrency=1)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await reading.translate_block(client, block, service, "fr", "zh")
+        self.assertEqual(len(calls), 1)
+        return block, calls[0]
+
+    async def test_observed_plain_text_leaks_keep_source_without_priming_markers(self):
+        # Exact source/reply pairs from INRS physical p19 and NASA physical p8.
+        for source, reply in (("- masse des colis ;", "- [[PBM_1]]"),
+                              ("FY24 Flight Manifest", "[[PBM_...]]")):
+            with self.subTest(source=source):
+                block, payload = await self.translate(source, reply, translatedText="stale",
+                                                     translatedTemplate="stale [[PBM_1]]")
+                self.assertEqual(payload["messages"][1]["content"], source)
+                self.assertNotIn("PBM", payload["messages"][0]["content"])
+                self.assertEqual(block["status"], "source_fallback")
+                self.assertEqual(block["sourceText"], source)
+                self.assertNotIn("translatedText", block)
+                self.assertNotIn("translatedTemplate", block)
+
+    async def test_plain_text_translation_does_not_use_stale_template(self):
+        block, payload = await self.translate("- masse des colis ;", "- 包裹重量；",
+                                             sourceTemplate="stale [[PBM_1]]")
+        self.assertEqual(payload["messages"][1]["content"], "- masse des colis ;")
+        self.assertNotIn("PBM", payload["messages"][0]["content"])
+        self.assertEqual(block["status"], "translated")
+        self.assertEqual(block["translatedText"], "- 包裹重量；")
+        self.assertNotIn("translatedTemplate", block)
+
+    async def test_actual_math_uses_only_its_exact_markers_and_restores_readable_text(self):
+        token = "[[PBM_abc123_0001]]"
+        formulas = [dict(token=token, latex="x^2", bbox=[10, 20, 30, 40])]
+        block, payload = await self.translate("Mean $x^2$ remains.", f"均值{token}保留。",
+                                             inlineMath=copy.deepcopy(formulas), sourceTemplate=f"Mean {token} remains.")
+        self.assertIn(token, payload["messages"][0]["content"])
+        self.assertNotIn("[[PBM_...]]", payload["messages"][0]["content"])
+        self.assertEqual(block["translatedTemplate"], f"均值{token}保留。")
+        self.assertEqual(block["translatedText"], "均值$x^2$保留。")
+        self.assertEqual(block["inlineMath"], formulas)
+
+    async def test_unknown_marker_cannot_hide_beside_a_complete_real_formula(self):
+        token = "[[PBM_abc123_0001]]"
+        block, _ = await self.translate("Mean $x$.", f"均值{token}，以及[[PBM_2]]。",
+                                       inlineMath=[dict(token=token, latex="x", bbox=[10, 20, 30, 40])],
+                                       sourceTemplate=f"Mean {token}.")
+        self.assertEqual(block["status"], "source_fallback")
+        self.assertNotIn("translatedText", block)
+        self.assertNotIn("translatedTemplate", block)
+
+    async def test_unfinished_marker_is_not_displayed(self):
+        for reply in ("未知[[PBM_2", "未知[[PBM_2]\n另一行"):
+            with self.subTest(reply=reply):
+                block, _ = await self.translate("Plain text.", reply)
+                self.assertEqual(block["status"], "source_fallback")
+                self.assertNotIn("translatedText", block)
+
+    async def test_literal_marker_in_source_is_data_not_an_invented_attachment(self):
+        block, _ = await self.translate("The literal string [[PBM_example]] appears twice: [[PBM_example]].",
+                                       "字面字符串[[PBM_example]]出现两次：[[PBM_example]]。")
+        self.assertEqual(block["status"], "translated")
+        self.assertNotIn("translatedTemplate", block)
+        self.assertNotIn("inlineMath", block)
+
+    async def test_table_context_is_not_sent_with_the_target_fragment(self):
+        context = "Previous row contains 3091 and a different description."
+        block, payload = await self.translate("de lithium)", "锂的)", sourceType="table_cell", translationContext=context)
+        self.assertEqual(block["status"], "translated")
+        self.assertEqual(payload["messages"][-1]["content"], "<SOURCE>\nde lithium)\n</SOURCE>")
+        self.assertEqual(len(payload["messages"]), 2)
+        self.assertNotIn(context, json.dumps(payload))
+        self.assertNotIn("3091", json.dumps(payload))
+        self.assertIn("do not expand abbreviations", payload["messages"][0]["content"])
+        self.assertIn("Month names", payload["messages"][0]["content"])
+        self.assertNotIn("PBM", payload["messages"][0]["content"])
+
+
+# Native paths and parser boxes must share the displayed page's local origin.
+class DecorationCoordinatesTests(unittest.TestCase):
+    def test_native_paths_remove_visible_origin_after_rotation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for rotation in (0, 90, 180, 270):
+                for cropped in (False, True):
+                    with self.subTest(rotation=rotation, cropped=cropped):
+                        path = Path(folder) / f"source-{rotation}-{cropped}.pdf"
+                        with pymupdf.open() as pdf:
+                            page = pdf.new_page(width=630, height=810)
+                            page.draw_line((80, 120), (260, 120), color=(1, 0, 0), width=2)
+                            page.draw_rect((310, 300, 370, 360), color=None, fill=(0, 0, 1))
+                            if cropped:
+                                page.set_cropbox(pymupdf.Rect(30, 40, 580, 730))
+                            else:
+                                pdf.xref_set_key(page.xref, "MediaBox", "[18 18 612 792]")
+                                pdf.xref_set_key(page.xref, "CropBox", "[0 0 630 810]")
+                            page = pdf.reload_page(page)
+                            page.set_rotation(rotation)
+                            pdf.save(path)
+                        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                        result = {}
+                        reading.add_decorations(path, 1, result)
+                        self.assertEqual(result["decorationsCoordinateSpace"], "page")
+                        with pymupdf.open(path) as pdf:
+                            page = pdf[0]
+                            origin = page.rect.tl
+                            line = page.get_drawings()[0]["items"][0]
+                            expected = [point * page.rotation_matrix - origin for point in line[1:3]]
+                        commands = result["decorations"][0]["commands"]
+                        self.assertEqual(commands, [dict(op="M", points=list(expected[0])),
+                                                    dict(op="L", points=list(expected[1]))])
+                        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
 
 if __name__ == "__main__":
     unittest.main()

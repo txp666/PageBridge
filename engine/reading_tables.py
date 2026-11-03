@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import unicodedata
 
+import pymupdf
 
-def _bounds(items, pymupdf):
+
+def _bounds(items):
     result = pymupdf.Rect(items[0]["bbox"])
     for item in items[1:]:
         result |= pymupdf.Rect(item["bbox"])
     return result
 
 
-def _native_words(page, pymupdf):
+def _native_words(page):
     rotation, origin = page.rotation_matrix, page.rect.tl
     zero = pymupdf.Point(0, 0) * rotation
     # Scanned PDFs often carry invisible OCR text. Its words cannot be removed
@@ -35,7 +37,7 @@ def _native_words(page, pymupdf):
 
             def finish():
                 if current:
-                    rect = _bounds(current, pymupdf)
+                    rect = _bounds(current)
                     words.append(dict(text="".join(c["text"] for c in current), bbox=list(rect),
                                       line=(block_index, line_index), horizontal=horizontal))
                     current.clear()
@@ -53,7 +55,7 @@ def _native_words(page, pymupdf):
     return words
 
 
-def _native_rows(words, pymupdf):
+def _native_rows(words):
     """Group the existing native words by baseline without inferring a grid."""
     rows = []
     for word in sorted(words, key=lambda w: (w["bbox"][1], w["bbox"][0])):
@@ -68,11 +70,6 @@ def _native_rows(words, pymupdf):
     return rows
 
 
-def _row_text(words, pymupdf):
-    """Plain native rows for details, not a reconstructed cell/column matrix."""
-    return "\n".join(row["text"] for row in _native_rows(words, pymupdf))
-
-
 def _translation_context(label, rows):
     """Give short labels their real row and column headings as source context."""
     middle = (label["bbox"][1] + label["bbox"][3]) / 2
@@ -83,12 +80,12 @@ def _translation_context(label, rows):
             + "\nNative table first rows and column headings:\n" + headings[:500])[:1200]
 
 
-def _label_runs(words, pymupdf):
+def _label_runs(words):
     current, runs, previous = [], [], None
 
     def finish():
         if current and any(unicodedata.category(c).startswith("L") for w in current for c in w["text"]):
-            runs.append(dict(sourceText=" ".join(w["text"] for w in current), bbox=list(_bounds(current, pymupdf))))
+            runs.append(dict(sourceText=" ".join(w["text"] for w in current), bbox=list(_bounds(current))))
         current.clear()
 
     for word in words:
@@ -114,9 +111,8 @@ def refine_native_tables(input_path, page_number, page_result):
     if not tables:
         return
     try:
-        import pymupdf
         with pymupdf.open(input_path) as pdf:
-            words = _native_words(pdf[page_number - 1], pymupdf)
+            words = _native_words(pdf[page_number - 1])
     except (OSError, ValueError, RuntimeError):
         return
     if not words:
@@ -141,11 +137,9 @@ def refine_native_tables(input_path, page_number, page_result):
                 assigned.add(index)
         if not table_words:
             continue
-        rows = _native_rows(table_words, pymupdf)
+        rows = _native_rows(table_words)
         table.update(sourceText="\n".join(row["text"] for row in rows), sourceType="native_table", status="preserved")
-        table.pop("translatedText", None)
-        table.pop("translatedTemplate", None)
-        for label in _label_runs(label_words, pymupdf):
+        for label in _label_runs(label_words):
             label.update(id=f"p{page_number:05d}-b{len(page_result['blocks']) + len(labels) + 1:05d}",
                          kind="text", sourceType="table_cell", status="preserved",
                          translationContext=_translation_context(label, rows))

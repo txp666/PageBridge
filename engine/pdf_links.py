@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 import json
-import math
 from pathlib import Path
 import re
 from statistics import median
@@ -253,6 +252,19 @@ def configure(source):
         Typesetting.render_page = _render_page
 
 
+def _action_key(link):
+    return link['kind'], link.get('uri'), link.get('page'), link.get('nameddest')
+
+
+def _linked(char, rect, matrix):
+    """A visible glyph whose center column and a fifth of its area lie in the link."""
+    if char.box is None or not _normal(char.char_unicode or ''):
+        return False
+    box = _rect(char, matrix)
+    return (box.width > 0 and box.height > 0 and rect.x0 - .1 <= (box.x0 + box.x1) / 2 <= rect.x1 + .1
+            and (box & rect).get_area() >= box.get_area() * .2)
+
+
 def capture_source(page):
     info = _pages.get(page.page_number)
     if info is None:
@@ -262,50 +274,31 @@ def capture_source(page):
         chars = _chars(paragraph)
         if not chars:
             continue
+        visible = sum(1 for char in chars if _normal(char.char_unicode or ''))
         associations = []
         for index, link in enumerate(info['links']):
-            rect = link['from']
-            selected = set()
-            for i, char in enumerate(chars):
-                if char.box is None or not _normal(char.char_unicode or ''):
-                    continue
-                box = _rect(char, info['matrix'])
-                if (box.width > 0 and box.height > 0 and rect.x0 - .1 <= (box.x0 + box.x1) / 2 <= rect.x1 + .1
-                        and (box & rect).get_area() >= box.get_area() * .2):
-                    selected.add(i)
+            selected = {i for i, char in enumerate(chars) if _linked(char, link['from'], info['matrix'])}
             if selected:
-                visible = {i for i, char in enumerate(chars) if _normal(char.char_unicode or '')}
-                associations.append((index, selected, len(selected) >= 4 and len(selected) >= len(visible) * .92))
+                associations.append((index, selected))
         if associations:
             # PDF producers often make one annotation per physical line of a
             # linked reference. Together those lines cover one whole entry;
             # after reflow the entire same entry is still the correct target.
             groups = {}
-            for index, selected, whole in associations:
-                link = info['links'][index]
-                key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
-                groups.setdefault(key, set()).update(selected)
-            associations = [(index, selected, whole or (len(groups[(info['links'][index]['kind'],
-                                info['links'][index].get('uri'), info['links'][index].get('page'),
-                                info['links'][index].get('nameddest'))]) >= max(4, len(visible) * .92)))
-                            for index, selected, whole in associations]
-            records[id(paragraph)] = (chars, associations)
+            for index, selected in associations:
+                groups.setdefault(_action_key(info['links'][index]), set()).update(selected)
+            records[id(paragraph)] = (chars, [
+                (index, selected, len(selected) >= 4 and len(selected) >= visible * .92
+                 or len(groups[_action_key(info['links'][index])]) >= max(4, visible * .92))
+                for index, selected in associations])
     info['source'] = records
     # Copyright/index preservation moves original glyphs out of paragraphs.
     # Keep their identity and complete state instead of relying on byte-exact
     # raster equality (PDF serialization can round a coordinate by 0.0003 pt).
     standalone = []
     for index, link in enumerate(info['links']):
-        rect = link['from']
-        selected = []
-        for char in getattr(page, 'pdf_character', []):
-            if char.box is None or not _normal(char.char_unicode or ''):
-                continue
-            box = _rect(char, info['matrix'])
-            if (box.width > 0 and box.height > 0
-                    and rect.x0 - .1 <= (box.x0 + box.x1) / 2 <= rect.x1 + .1
-                    and (box & rect).get_area() >= box.get_area() * .2):
-                selected.append((char, deepcopy(char)))
+        selected = [(char, deepcopy(char)) for char in getattr(page, 'pdf_character', [])
+                    if _linked(char, link['from'], info['matrix'])]
         if selected:
             standalone.append((index, selected))
     info['standalone'] = standalone
@@ -358,25 +351,19 @@ def capture_target(page):
         source_chars, associations = record
         target_chars = _chars(paragraph)
         action_selections = {}
+        for index, selected, _ in associations:
+            action_selections.setdefault(_action_key(info['links'][index]), set()).update(selected)
         for index, selected, whole in associations:
             link = info['links'][index]
-            key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
-            action_selections.setdefault(key, set()).update(selected)
-        for index, selected, whole in associations:
+            action_selected = action_selections[_action_key(link)]
             rects = (_line_rects(target_chars, info['matrix']) if whole else
                      match_literal(source_chars, target_chars, selected, info['matrix']))
             if not rects:
-                link = info['links'][index]
-                key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
-                rects = match_localized_callout(source_chars, target_chars, action_selections[key], info['matrix'])
+                rects = match_localized_callout(source_chars, target_chars, action_selected, info['matrix'])
             if not rects:
                 rects = match_linked_native_script(source_chars, target_chars, selected, info['matrix'])
-            if not rects:
-                link = info['links'][index]
-                key = (link['kind'], link.get('uri'), link.get('page'), link.get('nameddest'))
-                if link['kind'] in (1, 4):  # PyMuPDF GoTo / named page destinations.
-                    rects = match_citation_fragment(source_chars, target_chars, selected,
-                                                   action_selections[key], info['matrix'])
+            if not rects and link['kind'] in (1, 4):  # PyMuPDF GoTo / named page destinations.
+                rects = match_citation_fragment(source_chars, target_chars, selected, action_selected, info['matrix'])
             if rects:
                 mapped.setdefault(index, []).extend(rects)
     with _lock:

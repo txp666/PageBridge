@@ -2,12 +2,11 @@
 from pathlib import Path
 import sys
 from copy import deepcopy
-from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import translation_guard as g
-from test_translation_guard import ILTranslator, FormulaPlaceholder, ParagraphTranslateTracker, translator, paragraph
+from test_translation_guard import ILTranslator, FormulaPlaceholder, ParagraphTranslateTracker, translator
 from babeldoc.format.pdf.document_il import PdfStyle,PdfFormula,PdfCharacter,Box,VisualBbox
 
 DAILY='The observations were taken twice daily at 00GMT and at 12GMT.'
@@ -122,7 +121,7 @@ class WindSourceRolesTests(unittest.TestCase):
             with patch.dict(g._originals,batch_prompt_context=lambda self,text:text):
                 self.assertIn(hint,g._guard_batch_prompt_context(il,json.dumps([{'id':'x','input':x.unicode}])))
         finally:g._review_batch.reset(token)
-        g._retry_translation(il,x,ParagraphTranslateTracker(),0)
+        g._retry_translation(il,x,ParagraphTranslateTracker())
         g._whole_paragraph_translation(il,x,ParagraphTranslateTracker())
         self.assertTrue(all(hint in p for p,k in il.calls));self.assertEqual(x.unicode,DAILY)
         # Regression for the untested draft's accidental hint hook in this gate.

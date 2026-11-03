@@ -2,7 +2,6 @@
 from collections import Counter
 from copy import deepcopy
 import pickle
-from types import SimpleNamespace as NS
 import unittest
 from test_page_definition_native import body, chars, engine
 import layout_guard as g

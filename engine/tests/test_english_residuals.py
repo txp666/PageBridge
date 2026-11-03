@@ -1,16 +1,10 @@
 """Source-positive retries for actual Wind v5 prose defects (no model/network)."""
 import unittest
 
-try:
-    from .test_translation_guard import (
-        guard, translator, paragraph, ILTranslator, FormulaPlaceholder,
-        ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter, fixture,
-    )
-except ImportError:
-    from test_translation_guard import (
-        guard, translator, paragraph, ILTranslator, FormulaPlaceholder,
-        ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter, fixture,
-    )
+from test_translation_guard import (
+    guard, translator, paragraph, ILTranslator, FormulaPlaceholder,
+    ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter, fixture,
+)
 
 
 def source(text, formulas=()):

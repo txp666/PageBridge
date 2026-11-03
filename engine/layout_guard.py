@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 import copy
+from functools import partial
 import math
 import re
 import threading
@@ -74,6 +75,20 @@ def _finite_character(character):
                         for v in (box.x, box.y, box.x2, box.y2)))
 
 
+def _font_lookups(page):
+    """Each paragraph's font table: page fonts, overridden inside its XObject."""
+    fonts = {f.font_id: f for f in page.pdf_font}
+    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}} for o in page.pdf_xobject}
+    return lambda paragraph: xfonts.get(paragraph.xobj_id, fonts)
+
+
+def _font_family(lookup, character):
+    """Font name without its subset prefix, or None."""
+    font = lookup.get(character.pdf_style.font_id) if character.pdf_style else None
+    name = getattr(font, 'name', None)
+    return re.sub(r'^[A-Z]{6}\+', '', name) if isinstance(name, str) and name else None
+
+
 def repair_subscript_offsets(page):
     """Keep a source-proven isolated variable's small subscript below its base.
 
@@ -84,18 +99,12 @@ def repair_subscript_offsets(page):
     or use a fixed font descent. Compound/ambiguous formulas and superscripts
     remain under upstream control.
     """
-    fonts = {f.font_id: f for f in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     repaired = 0
     for paragraph in page.pdf_paragraph:
         if paragraph.vertical:
             continue
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
-        def family(character):
-            font = lookup.get(character.pdf_style.font_id) if character.pdf_style else None
-            name = getattr(font, 'name', None)
-            return re.sub(r'^[A-Z]{6}\+', '', name) if isinstance(name, str) and name else None
+        family = partial(_font_family, fonts_for(paragraph))
         entries = [(c, comp.pdf_formula is not None)
                    for comp in paragraph.pdf_paragraph_composition
                    for c in _composition_characters(comp)]
@@ -1865,18 +1874,12 @@ def repair_script_following_formula_offsets(page):
     glyphs and x offsets stay intact, including a separately translated decimal
     tail. This does not adjust compound expressions or genuine superscripts.
     """
-    fonts = {f.font_id: f for f in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     repaired = 0
     for paragraph in page.pdf_paragraph:
         if paragraph.vertical:
             continue
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
-        def family(c):
-            f = lookup.get(c.pdf_style.font_id) if c.pdf_style else None
-            name = getattr(f, 'name', None)
-            return re.sub(r'^[A-Z]{6}\+', '', name) if isinstance(name, str) and name else None
+        family = partial(_font_family, fonts_for(paragraph))
         entries = [(c, comp.pdf_formula is not None)
                    for comp in paragraph.pdf_paragraph_composition
                    for c in _composition_characters(comp)]
@@ -1933,18 +1936,12 @@ def repair_script_following_formula_offsets(page):
 
 def register_script_bindings(page):
     """Record only unique source-proven Latin base / leading subscript pairs."""
-    fonts = {f.font_id: f for f in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     found = 0
     for paragraph in page.pdf_paragraph:
         if paragraph.vertical:
             continue
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
-        def family(c):
-            f = lookup.get(c.pdf_style.font_id) if c.pdf_style else None
-            name = getattr(f, 'name', None)
-            return re.sub(r'^[A-Z]{6}\+', '', name) if isinstance(name, str) and name else None
+        family = partial(_font_family, fonts_for(paragraph))
         entries = [(c, comp.pdf_formula is not None)
                    for comp in paragraph.pdf_paragraph_composition
                    for c in _composition_characters(comp)]
@@ -2151,19 +2148,15 @@ def _guard_is_translatable_formula(self, formula):
 
 def _guard_process_translatable_formulas(self, page):
     bind_source_formula_fragments(self, page)
-    fonts = {f.font_id: f for f in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     protected = set()
     for paragraph in page.pdf_paragraph:
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
+        lookup = fonts_for(paragraph)
         for comp in paragraph.pdf_paragraph_composition:
             formula = comp.pdf_formula
             if formula is None or not _original_is_translatable_formula(self, formula):
                 continue
-            if any(c.pdf_style and c.pdf_style.font_id in lookup and
-                   re.sub(r'^[A-Z]{6}\+', '', lookup[c.pdf_style.font_id].name)
-                   in _LEGACY_SYMBOL_FONTS for c in formula.pdf_character):
+            if any(_font_family(lookup, c) in _LEGACY_SYMBOL_FONTS for c in formula.pdf_character):
                 protected.add(id(formula))
     previous = getattr(_formula_context, 'protected', None)
     _formula_context.protected = protected
@@ -2349,19 +2342,16 @@ def _guard_should_split_formula(self, formula):
 
 
 def _guard_process_comma_formulas(self, page):
-    fonts = {f.font_id: f for f in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     protected = set()
     for paragraph in page.pdf_paragraph:
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
+        lookup = fonts_for(paragraph)
         for comp in paragraph.pdf_paragraph_composition:
             formula = comp.pdf_formula
             if formula is None or not _original_should_split_formula(self, formula):
                 continue
-            if any(c.char_unicode == ',' and c.pdf_style and c.pdf_style.font_id in lookup and
-                   re.sub(r'^[A-Z]{6}\+', '', lookup[c.pdf_style.font_id].name)
-                   in _LEGACY_SYMBOL_FONTS for c in formula.pdf_character):
+            if any(c.char_unicode == ',' and _font_family(lookup, c) in _LEGACY_SYMBOL_FONTS
+                   for c in formula.pdf_character):
                 protected.add(id(formula))
     previous = getattr(_formula_context, 'encoded_commas', None)
     _formula_context.encoded_commas = protected
@@ -2607,9 +2597,7 @@ def _source_legacy_bullet_markers(page):
     same-column repeated markers, a smaller body in a different font, and
     aligned hanging continuation rows; a font/name match alone proves nothing.
     """
-    fonts = {font.font_id: font for font in page.pdf_font}
-    xfonts = {o.xobj_id: {**fonts, **{f.font_id: f for f in o.pdf_font}}
-              for o in page.pdf_xobject}
+    fonts_for = _font_lookups(page)
     candidates = []
     for paragraph in page.pdf_paragraph:
         if (paragraph.vertical or paragraph.layout_label not in {'plain text', 'text', 'reference'}
@@ -2619,11 +2607,10 @@ def _source_legacy_bullet_markers(page):
                  if isinstance(c.char_unicode, str) and c.char_unicode.strip()]
         if any(not _finite_character(c) for c in chars):
             continue
-        lookup = xfonts.get(paragraph.xobj_id, fonts)
+        lookup = fonts_for(paragraph)
         for index, marker in enumerate(chars[:-1]):
-            family = getattr(lookup.get(marker.pdf_style.font_id), 'name', '') or ''
             if (marker.char_unicode != 'N' or marker.pdf_character_id != 78
-                    or re.sub(r'^[A-Z]{6}\+', '', family) != 'AdvP7CA8'):
+                    or _font_family(lookup, marker) != 'AdvP7CA8'):
                 continue
             body = chars[index + 1]
             size = body.pdf_style.font_size
@@ -3470,53 +3457,26 @@ def install():
         _installed = True
 
 
+_REPORTED_COUNTERS = (
+    "repairedSubscriptOffsets", "boundSourceAccentedNames", "repairedSourceOverprintedWords",
+    "restoredSourceReferenceArticles", "repairedScriptFollowingFormulaOffsets", "registeredScriptBindings",
+    "restoredPhysicalLineBreaks", "boundSourceFormulaDescriptors", "boundSourceFormulaDecimals",
+    "boundSourceSubscriptIndices", "rejoinedSourcePageDefinitionHeads", "rejoinedSourceColumnSentenceTails",
+    "rejoinedSourceColumnOrphanHeads", "rejoinedSourceColumnURLPaths", "rejoinedSourceColumnShortHeads",
+    "pairedSourceColumnSentences", "rejoinedSourcePageShortHeads", "mergedSourceNumberedRuleTitles",
+    "rejoinedSourceParentheticalComparisons", "legacyMathFontMatches", "preservedLegacySymbolFormulas",
+    "preservedLegacyCommaFormulas", "preservedCopyrightBlocks", "preservedCopyrightParagraphs",
+    "preservedCopyrightGlyphs", "normalizedWebdingsBullets", "pagesWithNormalizedBullets", "preservedTOCRows",
+    "preservedTOCGlyphs", "pagesWithPreservedTOC", "preservedIndexPages", "preservedIndexGlyphs",
+    "preservedIndexReferenceLines", "mergedCaptionClosers", "mergedCaptionFragments",
+    "mergedSourceTerminalPunctuation", "mergedSourceOpenGrammarBlocks", "mergedSourceYearRanges",
+    "preservedTrailingEquationParagraphs", "preservedTrailingEquationLines", "preservedTrailingEquationGlyphs",
+    "restoredStructuredEntryBoundaries", "rejoinedSourceResearchPhrases", "mergedSourceBulletPrepositions",
+    "restoredDetachedListMarkers", "registeredHangingIndents",
+)
+
+
 def snapshot():
     with _lock:
         return {"guardVersion": GUARD_VERSION, "guardInstalled": _installed,
-                "repairedSubscriptOffsets": _counters['repairedSubscriptOffsets'],
-                "boundSourceAccentedNames": _counters['boundSourceAccentedNames'],
-                "repairedSourceOverprintedWords": _counters['repairedSourceOverprintedWords'],
-                "restoredSourceReferenceArticles": _counters['restoredSourceReferenceArticles'],
-                "repairedScriptFollowingFormulaOffsets": _counters['repairedScriptFollowingFormulaOffsets'],
-                "registeredScriptBindings": _counters['registeredScriptBindings'],
-                "restoredPhysicalLineBreaks": _counters['restoredPhysicalLineBreaks'],
-                "boundSourceFormulaDescriptors": _counters['boundSourceFormulaDescriptors'],
-                "boundSourceFormulaDecimals": _counters['boundSourceFormulaDecimals'],
-                "boundSourceSubscriptIndices": _counters['boundSourceSubscriptIndices'],
-                "rejoinedSourcePageDefinitionHeads": _counters['rejoinedSourcePageDefinitionHeads'],
-                "rejoinedSourceColumnSentenceTails": _counters['rejoinedSourceColumnSentenceTails'],
-                "rejoinedSourceColumnOrphanHeads": _counters['rejoinedSourceColumnOrphanHeads'],
-                "rejoinedSourceColumnURLPaths": _counters["rejoinedSourceColumnURLPaths"],
-                "rejoinedSourceColumnShortHeads": _counters['rejoinedSourceColumnShortHeads'],
-                "pairedSourceColumnSentences": _counters['pairedSourceColumnSentences'],
-                "rejoinedSourcePageShortHeads": _counters['rejoinedSourcePageShortHeads'],
-                "mergedSourceNumberedRuleTitles": _counters['mergedSourceNumberedRuleTitles'],
-                "rejoinedSourceParentheticalComparisons": _counters['rejoinedSourceParentheticalComparisons'],
-                "legacyMathFontMatches": _counters['legacyMathFontMatches'],
-                "preservedLegacySymbolFormulas": _counters['preservedLegacySymbolFormulas'],
-                "preservedLegacyCommaFormulas": _counters['preservedLegacyCommaFormulas'],
-                "preservedCopyrightBlocks": _counters['preservedCopyrightBlocks'],
-                "preservedCopyrightParagraphs": _counters['preservedCopyrightParagraphs'],
-                "preservedCopyrightGlyphs": _counters['preservedCopyrightGlyphs'],
-                "normalizedWebdingsBullets": _counters["normalizedWebdingsBullets"],
-                "pagesWithNormalizedBullets": _counters["pagesWithNormalizedBullets"],
-                "preservedTOCRows": _counters["preservedTOCRows"],
-                "preservedTOCGlyphs": _counters["preservedTOCGlyphs"],
-                "pagesWithPreservedTOC": _counters["pagesWithPreservedTOC"],
-                "preservedIndexPages": _counters["preservedIndexPages"],
-                "preservedIndexGlyphs": _counters["preservedIndexGlyphs"],
-                "preservedIndexReferenceLines": _counters["preservedIndexReferenceLines"],
-                "mergedCaptionClosers": _counters["mergedCaptionClosers"],
-                "mergedCaptionFragments": _counters["mergedCaptionFragments"],
-                "mergedSourceTerminalPunctuation": _counters['mergedSourceTerminalPunctuation'],
-                "mergedSourceOpenGrammarBlocks": _counters['mergedSourceOpenGrammarBlocks'],
-                "mergedSourceYearRanges": _counters["mergedSourceYearRanges"],
-                "preservedTrailingEquationParagraphs": _counters["preservedTrailingEquationParagraphs"],
-                "preservedTrailingEquationLines": _counters["preservedTrailingEquationLines"],
-                "preservedTrailingEquationGlyphs": _counters["preservedTrailingEquationGlyphs"],
-                "restoredStructuredEntryBoundaries": _counters["restoredStructuredEntryBoundaries"],
-                "rejoinedSourceResearchPhrases": _counters["rejoinedSourceResearchPhrases"],
-                "mergedSourceBulletPrepositions": _counters["mergedSourceBulletPrepositions"],
-                "restoredDetachedListMarkers": _counters["restoredDetachedListMarkers"],
-                "registeredHangingIndents": _counters["registeredHangingIndents"],
-                "rawDocumentTextStored": False}
+                **{name: _counters[name] for name in _REPORTED_COUNTERS}, "rawDocumentTextStored": False}

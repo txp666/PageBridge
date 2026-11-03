@@ -6,7 +6,7 @@ import pickle
 import sys
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import translation_guard as guard
 from test_page_definition_native import body
@@ -146,7 +146,7 @@ class RuleTitleContextTests(unittest.TestCase):
         for whole in (False,True):
             il=translator(['规则7：保留每幅图所依据的数据'])
             if whole:out=guard._whole_paragraph_translation(il,ti,ParagraphTranslateTracker())
-            else:out=guard._retry_translation(il,ti,ParagraphTranslateTracker(),0)
+            else:out=guard._retry_translation(il,ti,ParagraphTranslateTracker())
             self.assertIn(hint,il.calls[0][0])
             self.assertEqual(ti.unicode,TITLE)
         il=translator()

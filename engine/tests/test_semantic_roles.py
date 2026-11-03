@@ -1,19 +1,12 @@
 """Source-positive semantic regressions; no model or translation-output edits."""
 import json
 import unittest
-from types import SimpleNamespace as NS
 from unittest.mock import patch
 
-try:
-    from .test_translation_guard import (
-        guard as g, translator, paragraph, ILTranslator, FormulaPlaceholder,
-        ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter,
-    )
-except ImportError:
-    from test_translation_guard import (
-        guard as g, translator, paragraph, ILTranslator, FormulaPlaceholder,
-        ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter,
-    )
+from test_translation_guard import (
+    guard as g, translator, paragraph, ILTranslator, FormulaPlaceholder,
+    ParagraphTranslateTracker, PdfStyle, PdfFormula, PdfCharacter,
+)
 
 
 def formula(number, text):

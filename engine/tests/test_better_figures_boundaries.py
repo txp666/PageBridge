@@ -5,14 +5,9 @@ no model, translation cache or network is involved.
 """
 import unittest
 
-try:
-    from .test_guard_review_boundaries import (
-        g, ti, formula, translator, paragraph, ParagraphTranslateTracker,
-    )
-except ImportError:
-    from test_guard_review_boundaries import (
-        g, ti, formula, translator, paragraph, ParagraphTranslateTracker,
-    )
+from test_guard_review_boundaries import (
+    g, ti, formula, translator, paragraph, ParagraphTranslateTracker,
+)
 
 
 REFERENCE = ('10. SchumannJ, Strothotte T, Raab A, Laser S (1996) Assessing the effect of '

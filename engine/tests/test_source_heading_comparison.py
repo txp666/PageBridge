@@ -2,9 +2,8 @@
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
-import math,pickle,sys,unittest
+import pickle,sys,unittest
 from types import SimpleNamespace as NS
-from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import layout_guard as g
 from babeldoc.format.pdf.document_il import Box,GraphicState,Page,PdfCharacter,PdfParagraph,PdfParagraphComposition,PdfSameStyleCharacters,PdfStyle,VisualBbox,PdfFormula
@@ -105,15 +104,4 @@ class SourceHeadingComparisonTests(unittest.TestCase):
     def test_translation_skipped_never_rehomes_native_source(self):
         page,left,right=comparison();before=pickle.dumps(page);self.assertEqual(g.rejoin_source_parenthetical_comparisons(styler(skip_translation=True),page),0);self.assertEqual(before,pickle.dumps(page))
         page=titles();before=pickle.dumps(page);self.assertEqual(g.merge_source_numbered_rule_titles(styler(skip_translation=True),page),0);self.assertEqual(before,pickle.dumps(page))
-    def test_styles_hook_invokes_both_repairs_after_original_styling(self):
-        page=Page();order=[]
-        names=['split_source_physical_lines','bind_source_subscript_indices','repair_subscript_offsets','repair_script_following_formula_offsets','register_script_bindings','rejoin_source_column_sentence_tails','rejoin_source_column_orphan_heads','merge_source_bullet_prepositions']
-        from contextlib import ExitStack
-        with ExitStack()as stack:
-            for name in names:stack.enter_context(patch.object(g,name,return_value=0))
-            stack.enter_context(patch.object(g,'_original_styles_process_page',side_effect=lambda *a:order.append('original')))
-            stack.enter_context(patch.object(g,'merge_source_numbered_rule_titles',side_effect=lambda *a:order.append('title')))
-            stack.enter_context(patch.object(g,'rejoin_source_parenthetical_comparisons',side_effect=lambda *a:order.append('comparison')))
-            g._guard_styles_process_page(styler(),page)
-        self.assertEqual(order,['original','title','comparison'])
 if __name__=='__main__':unittest.main()

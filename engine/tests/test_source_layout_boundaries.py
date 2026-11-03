@@ -8,7 +8,7 @@ from types import SimpleNamespace as NS
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import layout_guard as guard
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_layout_guard import character, line_paragraph, page, ParagraphFinder, Box, PdfStyle, GraphicState, PdfParagraph, PdfParagraphComposition, PdfSameStyleCharacters
+from test_layout_guard import character, line_paragraph, page, ParagraphFinder, Box, GraphicState, PdfParagraph, PdfParagraphComposition, PdfSameStyleCharacters
 from babeldoc.format.pdf.document_il import PdfFormula
 from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
 

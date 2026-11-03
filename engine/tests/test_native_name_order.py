@@ -1,9 +1,7 @@
 import copy
-import re
 import unittest
-from types import SimpleNamespace as NS
 from test_translation_guard import guard, ILTranslator, FormulaPlaceholder, PdfFormula, PdfCharacter, ParagraphTranslateTracker, translator
-from test_native_word_groups import fixture, styler, run, text
+from test_native_word_groups import fixture, styler
 import layout_guard as layout
 from babeldoc.format.pdf.document_il import Document, PdfParagraphComposition
 
