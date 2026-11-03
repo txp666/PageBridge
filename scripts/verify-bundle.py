@@ -284,24 +284,13 @@ def main():
                 bundled_info = json.loads((ENGINE / "runtime-info.json").read_text(encoding="utf-8"))
                 for key in ("pythonVersion", "architecture", "versions"):
                     require(bundled_info.get(key) == source_info.get(key), "Bundled runtime metadata differs from source: " + key)
+                worker_versions = worker_expected_versions()
                 expected = dict(source_info["versions"])
-                expected.update(worker_expected_versions())
+                expected.update(worker_versions)
                 report["expectedVersions"] = expected
-                report["workerSHA256"] = sha256(WORKER)
-                report["sourceWorkerSHA256"] = sha256(SOURCE_WORKER)
-                report["sourceWorkerMatches"] = report["workerSHA256"] == report["sourceWorkerSHA256"]
-                require(report["sourceWorkerMatches"], "Bundled worker differs from current worker source.")
-                guard = ENGINE / "translation_guard.py"
-                require(guard.is_file(), "Bundled translation guard is missing.")
-                report["guardSHA256"] = sha256(guard)
-                report["sourceGuardMatches"] = sha256(ROOT / "engine/translation_guard.py") == report["guardSHA256"]
-                require(report["sourceGuardMatches"], "Bundled translation guard differs from current source.")
-                layout_guard = ENGINE / "layout_guard.py"
-                require(layout_guard.is_file(), "Bundled layout guard is missing.")
-                report["layoutGuardSHA256"] = sha256(layout_guard)
-                require(report["layoutGuardSHA256"] == sha256(ROOT / "engine/layout_guard.py"), "Bundled layout guard differs from current source.")
+                source_profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text(encoding="utf-8"))
                 report['engineModulesSHA256'] = {}
-                for name in ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock'):
+                for name in source_profile["engineFiles"]:
                     require((ENGINE / name).is_file(), 'Missing engine module: ' + name)
                     checksum = sha256(ENGINE / name)
                     require(checksum == sha256(ROOT / 'engine' / name), 'Bundled source differs: ' + name)
@@ -336,7 +325,7 @@ def main():
                 health, events = verify_health(environment)
                 report["health"] = health
                 report["healthEvents"] = events
-                expected_health = "; ".join(name + " " + version for name, version in worker_expected_versions().items())
+                expected_health = "; ".join(name + " " + version for name, version in worker_versions.items())
                 require(health.get("engineVersion") == expected_health, "Worker health returned unexpected dependency versions.")
                 require(events[0].get("engineVersion") == expected_health, "Worker ready version does not match its result.")
                 probe = verify_imports(environment, expected)
@@ -347,7 +336,6 @@ def main():
                 profile_path = ENGINE / "bundle-profile.json"
                 require(profile_path.is_file(), "Native runtime profile is missing from the application.")
                 profile = json.loads(profile_path.read_text(encoding="utf-8"))
-                source_profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text(encoding="utf-8"))
                 require(profile == source_profile, "Bundled runtime profile differs from current source.")
                 canonical = lambda value: re.sub(r"[-_.]+", "-", value).lower()
                 installed = {canonical(name) for name in probe["installedDistributions"]}

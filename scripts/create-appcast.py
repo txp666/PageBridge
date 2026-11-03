@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Create and verify a Sparkle-signed appcast for the current app archive.
 
-Local releases may use --account for Keychain. CI reads SPARKLE_PRIVATE_KEY
-only into a mode-0600 temporary file and removes it even if signing fails.
+Local releases use --account for Keychain. Otherwise SPARKLE_PRIVATE_KEY is
+written only to a mode-0600 temporary file, removed even if signing fails.
 The generated XML must never be edited after signing.
 """
 import argparse
@@ -29,8 +29,8 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def release_notes(version):
-    text = (ROOT / "CHANGELOG.md").read_text()
+def release_notes(version, root):
+    text = (root / "CHANGELOG.md").read_text()
     match = re.search(r"^## " + re.escape(version) + r"(?: /[^\n]*)?[^\n]*\n(.*?)(?=^## |\Z)",
                       text, re.M | re.S)
     require(match is not None, "No release notes for current version")
@@ -39,16 +39,12 @@ def release_notes(version):
 
 def validate_signing_key(secret, public_key):
     try:
-        decoded = base64.b64decode(secret, validate=True)
+        seed = base64.b64decode(secret, validate=True)
     except ValueError:
         raise ValueError("Invalid Sparkle private-key encoding") from None
-    # Sparkle 2.10 generate_keys emits a 32-byte seed. Legacy exports contain
-    # the expanded private key followed by a public key (96 bytes total).
-    require(len(decoded) in (32, 96), "Missing or invalid Sparkle signing key")
-    if len(decoded) == 32:
-        actual = Ed25519PrivateKey.from_private_bytes(decoded).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    else:
-        actual = decoded[-32:]
+    # Sparkle 2.10 generate_keys emits a 32-byte seed; windows-update.py signs with the same one.
+    require(len(seed) == 32, "Missing or invalid Sparkle signing key")
+    actual = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     require(base64.b64encode(actual).decode() == public_key,
             "Signing key does not match the configured public key")
 
@@ -56,9 +52,7 @@ def validate_signing_key(secret, public_key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
-    keys = parser.add_mutually_exclusive_group()
-    keys.add_argument("--account", help="Sparkle signing Keychain account")
-    keys.add_argument("--key-file", type=Path, help="Existing protected Sparkle private-key file")
+    parser.add_argument("--account", help="Sparkle signing Keychain account")
     parser.add_argument("--tools", type=Path, help="Official Sparkle bin directory (defaults to SwiftPM artifact)")
     args = parser.parse_args()
     release = json.loads((ROOT / "VERSION.json").read_text())
@@ -91,16 +85,10 @@ def main():
     secret = ""
     with tempfile.TemporaryDirectory(prefix="pagebridge-appcast-", dir=args.dist.resolve()) as name:
         temporary = Path(name)
-        signing = []
         if args.account:
             signing = ["--account", args.account]
         else:
-            if args.key_file:
-                require(not args.key_file.is_symlink() and args.key_file.stat().st_mode & 0o077 == 0,
-                        "Private key file must have mode 0600 or stricter")
-                secret = args.key_file.read_text().strip()
-            else:
-                secret = os.environ.get("SPARKLE_PRIVATE_KEY", "").strip()
+            secret = os.environ.get("SPARKLE_PRIVATE_KEY", "").strip()
             # Sparkle's malformed-key diagnostic can include its input. Validate
             # here first; never print or pass the private key as an argument.
             validate_signing_key(secret, config["publicEDKey"])
@@ -113,7 +101,7 @@ def main():
         feeds = temporary / "feed"
         feeds.mkdir()
         os.link(archive, feeds / archive.name)
-        notes = release_notes(version)
+        notes = release_notes(version, ROOT)
         (feeds / (archive.stem + ".html")).write_text("<h2>PageBridge " + html.escape(version)
             + "</h2><pre>" + html.escape(notes) + "</pre>\n")
         commands = [[str(tools / "generate_appcast"), *signing,

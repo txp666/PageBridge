@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Check a relocated Windows worker without calling a model or reading user data."""
-from __future__ import annotations
-
 import argparse
 import hashlib
 import json
@@ -13,7 +11,6 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 
 
 def pe_machine(path):
@@ -37,7 +34,7 @@ def verify(engine):
     if pe_machine(python) != 0x8664:
         raise ValueError("The private interpreter must be Windows x64.")
     for path in runtime.rglob("*"):
-        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        if path.is_symlink() or path.is_junction():
             raise ValueError("The runtime contains a link or junction.")
     for path in (runtime / "Lib/site-packages").glob("*.pth"):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -50,7 +47,7 @@ def verify(engine):
     if subprocess.check_output([str(engine / "tools/uv.exe"), "--version"], text=True).split()[:2] != ["uv", "0.9.17"]:
         raise ValueError("Missing or mismatched optional reading bootstrap.")
     source = {}
-    for name in ENGINE_FILES:
+    for name in json.loads((ROOT / "scripts/bundle-profile.json").read_text())["engineFiles"]:
         actual = hashlib.sha256((engine / name).read_bytes()).hexdigest()
         expected = hashlib.sha256((ROOT / "engine" / name).read_bytes()).hexdigest()
         if actual != expected:
@@ -120,8 +117,7 @@ print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable, 'userSiteE
 def main():
     # GitHub's English Windows runner otherwise uses cp1252 for redirected
     # stdout, while the worker health message intentionally contains Chinese.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--output", type=Path)

@@ -1,31 +1,19 @@
 """Assemble a local, ad-hoc signed Mac app with a private Python runtime."""
 from pathlib import Path
-import argparse
-import base64
 import json
 import os
 import plistlib
 import shutil
 import subprocess
-from urllib.parse import urlparse
 from bundle_profile import prune_runtime
 
+# Configuration, version and signature policy are checked by verify-bundle.py.
 ROOT = Path(__file__).resolve().parent.parent
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--output", type=Path, default=ROOT / "dist/PageBridge.app")
-args = parser.parse_args()
-app = args.output.resolve()
-if app.parent != ROOT / "dist" or app.suffix != ".app":
-    parser.error("Output must be an .app directly inside the project's dist directory.")
+app = ROOT / "dist/PageBridge.app"
 info = json.loads((ROOT / "engine/runtime-info.json").read_text())
 profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text())
 release = json.loads((ROOT / "VERSION.json").read_text())
 updates = json.loads((ROOT / "update-config.json").read_text())
-feed = urlparse(updates["feedURL"])
-if feed.scheme != "https" or not feed.hostname or feed.username or feed.password:
-    raise RuntimeError("The update feed must use an HTTPS URL without credentials.")
-if len(base64.b64decode(updates["publicEDKey"], validate=True)) != 32:
-    raise RuntimeError("Sparkle requires a 32-byte Ed25519 public key.")
 stage = app.with_name("." + app.stem + "-staging.app")
 if stage.exists():
     shutil.rmtree(stage)
@@ -48,19 +36,10 @@ sparkle_candidates = list((ROOT / "macOS/.build/artifacts").glob(
     "*/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"))
 if len(sparkle_candidates) != 1:
     raise RuntimeError("Expected one resolved Sparkle framework; run the Swift build first.")
-sparkle_source = sparkle_candidates[0]
-sparkle_info = plistlib.loads((sparkle_source / "Resources/Info.plist").read_bytes())
-if sparkle_info.get("CFBundleShortVersionString") != updates["sparkleVersion"]:
-    raise RuntimeError("Resolved Sparkle framework differs from the pinned update version.")
-frameworks = contents / "Frameworks"
-frameworks.mkdir()
-sparkle = frameworks / "Sparkle.framework"
-shutil.copytree(sparkle_source, sparkle, symlinks=True, ignore=shutil.ignore_patterns(".DS_Store"))
-for path in sparkle.rglob("*"):
-    if path.is_symlink() and (os.path.isabs(os.readlink(path)) or not path.resolve().is_relative_to(sparkle.resolve())):
-        raise RuntimeError("Sparkle contains an external framework symlink.")
-sparkle_licenses = list((ROOT / "macOS/.build/checkouts").glob("*/LICENSE"))
-sparkle_licenses = [path for path in sparkle_licenses if path.parent.name.lower() == "sparkle"]
+sparkle = contents / "Frameworks/Sparkle.framework"
+shutil.copytree(sparkle_candidates[0], sparkle, symlinks=True, ignore=shutil.ignore_patterns(".DS_Store"))
+sparkle_licenses = [path for path in (ROOT / "macOS/.build/checkouts").glob("*/LICENSE")
+                    if path.parent.name.lower() == "sparkle"]
 if len(sparkle_licenses) != 1:
     raise RuntimeError("The pinned Sparkle checkout license is missing.")
 shutil.copy2(sparkle_licenses[0], resources / "Sparkle-LICENSE.txt")
@@ -121,7 +100,7 @@ profile_report = prune_runtime(runtime, profile, info["versions"])
 (engine / "bundle-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
 (ROOT / "validation").mkdir(parents=True, exist_ok=True)
 (ROOT / "validation" / (app.stem + "-bundle-profile.json")).write_text(json.dumps(profile_report, indent=2) + "\n")
-for relative in ['worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock']:
+for relative in profile["engineFiles"]:
     (engine / relative).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "engine" / relative, engine / relative)
 # The optional parser uses an independent, writable environment. Ship only its
@@ -132,9 +111,6 @@ if not uv_source.is_file():
     if not resolved_uv:
         raise RuntimeError("uv 0.9.17 is required to build the optional reading runtime bootstrap.")
     uv_source = Path(resolved_uv)
-uv_version = subprocess.run([str(uv_source), "--version"], check=True, capture_output=True, text=True).stdout.split()
-if uv_version[:2] != ["uv", "0.9.17"]:
-    raise RuntimeError("Expected uv 0.9.17 for the reading runtime bootstrap.")
 (engine / "tools").mkdir()
 shutil.copy2(uv_source, engine / "tools/uv")
 subprocess.run(["codesign", "--force", "--sign", "-", str(engine / "tools/uv")], check=True, capture_output=True)

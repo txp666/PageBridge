@@ -19,11 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def digest(path):
-    h = hashlib.sha256()
     with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            h.update(block)
-    return h.hexdigest()
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def stop_worker_group(process):
@@ -90,10 +87,6 @@ def main():
     if app:
         env['PYTHONHOME'] = str(engine / 'runtime')
     source_hash = digest(source)
-    source_files = {'workerSHA256': engine / 'worker.py',
-                    'guardSHA256': engine / 'translation_guard.py',
-                    'layoutGuardSHA256': engine / 'layout_guard.py'}
-    runtime_hashes = {key: digest(path) for key, path in source_files.items()}
     module_hashes = {p.name: digest(p) for p in engine.glob('*.py')}
     started = time.monotonic()
     last_print, last_stage, terminal = 0, None, None
@@ -119,15 +112,12 @@ def main():
             code = process.wait()
         if source_hash != digest(source):
             raise RuntimeError('Source file changed during translation.')
-        if runtime_hashes != {key: digest(path) for key, path in source_files.items()}:
-            raise RuntimeError('Bundled translation code changed during this run; results require a fresh run.')
         if module_hashes != {p.name: digest(p) for p in engine.glob('*.py')}:
             raise RuntimeError('Engine modules changed during this run; results require a fresh run.')
         report = dict(createdAt=datetime.now(timezone.utc).isoformat(), app=str(app) if app else None,
                       runtimeMode='source-engine' if args.source_engine else 'signed-app-bundle',
                       engineModulesSHA256=module_hashes,
                       source=str(source), sourceSHA256=source_hash, sourceUnchanged=True,
-                      **runtime_hashes, runtimeSourcesUnchanged=True,
                       model=args.model, service=args.service, selectedPages=args.pages,
                       sourceLanguage=args.source_language, targetLanguage=args.target_language,
                       elapsedSeconds=round(time.monotonic() - started, 2),

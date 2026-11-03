@@ -31,15 +31,14 @@ def finish(temporary, destination):
     print(f"{destination.name}: {destination.stat().st_size:,} bytes")
 
 
-def source_files(source_root=None):
+def source_files(source_root=ROOT):
     # Include the working copy of tracked files AND new non-ignored files. git
     # archive HEAD would silently omit unreleased application source.
-    source_root = Path(source_root) if source_root is not None else ROOT
     result = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
                             cwd=source_root, check=True, capture_output=True)
     allowed_roots = {"macOS", "windows", "desktop", "engine", "scripts", "docs", "assets", "demos", ".github"}
     allowed_files = {".gitignore", "VERSION.json", "update-config.json", "LICENSE", "README.md", "CHANGELOG.md",
-                     "DESIGN.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"}
+                     "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"}
     banned_parts = {".git", "node_modules", ".venv", ".build", "__pycache__", ".cache", ".tools", ".artifacts",
                     "bin", "obj", ".vs", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
     files = []

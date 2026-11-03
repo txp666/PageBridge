@@ -70,24 +70,7 @@ try {
         $ActualVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Stage $Binary)).FileVersion
         if ($ActualVersion -ne $ExpectedFileVersion) { throw "Published $Binary version $ActualVersion differs from $ExpectedFileVersion." }
     }
-    $Executables = @(@('PageBridge.Windows.exe', 'PageBridge.exe') | Where-Object { Test-Path (Join-Path $Stage $_) })
-    if ($Executables.Count -eq 0) { throw 'Publish did not produce the WinUI application executable.' }
-    $ApplicationPri = Join-Path $Stage ([IO.Path]::GetFileNameWithoutExtension($Executables[0]) + '.pri')
-    if (!(Test-Path $ApplicationPri -PathType Leaf) -or (Get-Item $ApplicationPri).Length -eq 0) {
-        throw 'Publish omitted the application PRI resources; this WinUI bundle cannot be shipped.'
-    }
-    $ApplicationXbf = Join-Path $Stage 'App.xbf'
-    if (!(Test-Path $ApplicationXbf -PathType Leaf) -or (Get-Item $ApplicationXbf).Length -eq 0) {
-        throw 'Publish omitted the compiled App.xaml resources (App.xbf); this WinUI bundle cannot be shipped.'
-    }
-    foreach ($PeName in @($Executables[0], 'Microsoft.ui.xaml.dll', 'Microsoft.WindowsAppRuntime.dll')) {
-        $PeStream = [IO.File]::OpenRead((Join-Path $Stage $PeName))
-        try {
-            if ($PeStream.ReadByte() -ne 0x4d -or $PeStream.ReadByte() -ne 0x5a) {
-                throw ("Published executable resource is not a PE file: " + $PeName)
-            }
-        } finally { $PeStream.Dispose() }
-    }
+    # windows_package.py manifest/archive steps require the PRI, App.xbf and valid PE payloads.
     $Resolved = Get-Content (Join-Path (Split-Path $Project -Parent) 'obj\project.assets.json') -Raw | ConvertFrom-Json
     $UnusedSdkPackages = @($Resolved.libraries.PSObject.Properties.Name | Where-Object { $_ -match '^Microsoft\.WindowsAppSDK(?:\.(?:AI|ML|Search|Widgets))?/' })
     if ($UnusedSdkPackages.Count -gt 0) { throw ('Unused Windows App SDK components entered the build: ' + ($UnusedSdkPackages -join ', ')) }

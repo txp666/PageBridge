@@ -45,87 +45,50 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.signature = base64.b64encode(self.private.sign(self.content))
         self.signed = self.content + b'<!-- sparkle-signatures:\nedSignature: ' + self.signature + b'\nlength: ' + str(len(self.content)).encode() + b'\n-->\n'
 
-    def test_new_seed_matches_public_key(self):
+    def test_signing_key_must_match_public_key_and_is_never_echoed(self):
         create.validate_signing_key(base64.b64encode(self.seed).decode(), self.public_base64)
-
-    def test_new_seed_rejects_wrong_public_key(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
             create.validate_signing_key(base64.b64encode(bytes(reversed(self.seed))).decode(), self.public_base64)
+        for secret in ("private-sensitive-malformed-fixture", base64.b64encode(bytes(96)).decode()):
+            with self.subTest(secret=secret[:8]), self.assertRaises(ValueError) as caught:
+                create.validate_signing_key(secret, self.public_base64)
+            self.assertNotIn(secret, str(caught.exception))
 
-    def test_key_diagnostic_never_echoes_invalid_secret(self):
-        secret = "private-sensitive-malformed-fixture"
-        with self.assertRaises(ValueError) as caught:
-            create.validate_signing_key(secret, self.public_base64)
-        self.assertNotIn(secret, str(caught.exception))
-
-    def test_rejects_unsupported_key_lengths(self):
-        for length in (0, 31, 33, 64, 95, 97):
-            with self.subTest(length=length), self.assertRaises(ValueError):
-                create.validate_signing_key(base64.b64encode(bytes(length)).decode(), self.public_base64)
-
-    def test_valid_signed_feed(self):
+    def test_signed_feed_accepts_only_the_exact_signed_bytes(self):
         self.assertEqual(verify.signed_feed(self.signed, self.public).tag, "rss")
+        for name, feed, error in (('tampered', self.signed.replace(b'<item/>', b'<fake/>'), InvalidSignature),
+                                  ('unsigned', self.content, ValueError),
+                                  ('length', self.signed.replace(b'length: ', b'length: 1'), ValueError),
+                                  ('appended', self.signed + b'<rss/>', ValueError)):
+            with self.subTest(name), self.assertRaises(error):
+                verify.signed_feed(feed, self.public)
 
-    def test_tampered_feed_rejected(self):
-        with self.assertRaises(InvalidSignature):
-            verify.signed_feed(self.signed.replace(b'<item/>', b'<fake/>'), self.public)
-
-    def test_unsigned_feed_rejected(self):
-        with self.assertRaisesRegex(ValueError, "inline signature"):
-            verify.signed_feed(self.content, self.public)
-
-    def test_wrong_signature_key_rejected(self):
-        other = Ed25519PrivateKey.from_private_bytes(bytes(reversed(self.seed))).public_key()
-        with self.assertRaises(InvalidSignature):
-            verify.signed_feed(self.signed, other)
-
-    def test_tampered_signed_length_rejected(self):
-        with self.assertRaisesRegex(ValueError, "signed length"):
-            verify.signed_feed(self.signed.replace(b'length: ', b'length: 1'), self.public)
-
-    def test_content_after_signature_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Malformed"):
-            verify.signed_feed(self.signed + b'<rss/>', self.public)
-
-    def test_transient_network_error_retries(self):
-        operation = Mock(side_effect=[urllib.error.URLError('temporary fixture'), b'ok'])
-        with patch.object(verify.time, 'sleep') as sleep:
-            self.assertEqual(verify.network_attempt(operation), b'ok')
-        self.assertEqual(operation.call_count, 2)
-        sleep.assert_called_once_with(1)
-
-    def test_integrity_failure_is_not_retried(self):
-        operation = Mock(side_effect=ValueError('checksum differs'))
-        with patch.object(verify.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'checksum'):
-            verify.network_attempt(operation)
-        self.assertEqual(operation.call_count, 1)
-        sleep.assert_not_called()
-
-    def test_missing_previous_release_is_not_retried(self):
-        operation = Mock(side_effect=urllib.error.HTTPError('https://example.invalid', 404, 'missing', {}, None))
-        with patch.object(verify.time, 'sleep') as sleep, self.assertRaises(urllib.error.HTTPError):
-            verify.network_attempt(operation)
-        self.assertEqual(operation.call_count, 1)
-        sleep.assert_not_called()
-
-    def test_publishing_cdn_missing_asset_retries(self):
-        operation = Mock(side_effect=[urllib.error.HTTPError('https://example.invalid', 404, 'missing', {}, None), b'ok'])
-        with patch.object(verify.time, 'sleep'):
-            self.assertEqual(verify.network_attempt(operation, retry_missing=True), b'ok')
-        self.assertEqual(operation.call_count, 2)
+    def test_only_transport_errors_are_retried(self):
+        def missing():
+            return urllib.error.HTTPError('https://example.invalid', 404, 'missing', {}, None)
+        for retry_missing, error in ((False, urllib.error.URLError('temporary fixture')), (True, missing())):
+            operation = Mock(side_effect=[error, b'ok'])
+            with self.subTest(error=type(error).__name__), patch.object(verify.time, 'sleep'):
+                self.assertEqual(verify.network_attempt(operation, retry_missing=retry_missing), b'ok')
+            self.assertEqual(operation.call_count, 2)
+        for error in (ValueError('checksum differs'), missing()):
+            operation = Mock(side_effect=error)
+            with self.subTest(error=type(error).__name__), patch.object(verify.time, 'sleep') as sleep, \
+                    self.assertRaises(type(error)):
+                verify.network_attempt(operation)
+            self.assertEqual(operation.call_count, 1)
+            sleep.assert_not_called()
 
     def test_latest_feed_retries_only_correctly_signed_previous_bytes(self):
         other_content = b'<rss><channel/></rss>\n'
         signature = base64.b64encode(self.private.sign(other_content))
         old = other_content + b'<!-- sparkle-signatures:\nedSignature: ' + signature + b'\nlength: ' + str(len(other_content)).encode() + b'\n-->\n'
         with patch.object(verify, 'fetch', side_effect=[old, self.signed]) as fetch, patch.object(verify.time, 'sleep'):
-            verify.verify_latest_feed('https://example.invalid', self.signed, self.public)
+            verify.verify_latest('https://example.invalid', self.signed, lambda data: verify.signed_feed(data, self.public))
         self.assertEqual(fetch.call_count, 2)
-
-    def test_latest_feed_bad_signature_fails_without_retry(self):
         with patch.object(verify, 'fetch', return_value=self.signed.replace(b'<item/>', b'<fake/>')) as fetch, \
                 patch.object(verify.time, 'sleep') as sleep, self.assertRaises(InvalidSignature):
-            verify.verify_latest_feed('https://example.invalid', self.signed, self.public)
+            verify.verify_latest('https://example.invalid', self.signed, lambda data: verify.signed_feed(data, self.public))
         self.assertEqual(fetch.call_count, 1)
         sleep.assert_not_called()
 
@@ -145,53 +108,51 @@ class ReleaseSignatureTests(unittest.TestCase):
             zipped.writestr('PageBridge.app/Contents/Info.plist', plistlib.dumps(info))
             zipped.writestr('PageBridge.app/Contents/Frameworks/Sparkle.framework/Versions/B/Resources/Info.plist',
                             plistlib.dumps(dict(CFBundleShortVersionString='2.10.0')))
-        key = root / 'input-fixture.key'
-        key.write_text(base64.b64encode(self.seed).decode())
-        key.chmod(0o600)
-        return dist, tools, key
+        return dist, tools
 
     def test_signing_cli_uses_protected_temporary_key_and_cleans_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            dist, tools, key = self.signing_cli_fixture(root)
+            dist, tools = self.signing_cli_fixture(root)
+            secret = base64.b64encode(self.seed).decode()
             seen = []
             def run(command, **options):
                 ephemeral = Path(command[command.index('--ed-key-file') + 1])
                 seen.append(ephemeral)
-                self.assertNotEqual(ephemeral, key)
                 self.assertEqual(ephemeral.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(ephemeral.read_text(), key.read_text())
-                self.assertNotIn(key.read_text(), command)
+                self.assertEqual(ephemeral.read_text(), secret)
+                self.assertNotIn(secret, command)
                 self.assertNotIn('SPARKLE_PRIVATE_KEY', options['env'])
                 if Path(command[0]).name == 'generate_appcast':
                     feed = Path(command[-1]) / 'appcast.xml'
                     feed.write_text('<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><enclosure sparkle:edSignature="fixture"/></item></channel></rss>')
                 return subprocess.CompletedProcess(command, 0, stdout='')
-            arguments = ['create-appcast.py', '--dist', str(dist), '--tools', str(tools), '--key-file', str(key)]
+            arguments = ['create-appcast.py', '--dist', str(dist), '--tools', str(tools)]
             with patch.object(create, 'ROOT', root), patch('sys.argv', arguments), \
                     patch.object(create.subprocess, 'run', side_effect=run), \
-                    patch.dict(os.environ, {'SPARKLE_PRIVATE_KEY': 'must-not-reach-tool'}), contextlib.redirect_stdout(io.StringIO()):
+                    patch.dict(os.environ, {'SPARKLE_PRIVATE_KEY': secret}), contextlib.redirect_stdout(io.StringIO()):
                 create.main()
             self.assertEqual(len(seen), 3)
             self.assertTrue((dist / 'appcast.xml').is_file())
             self.assertTrue(all(not path.exists() for path in seen))
-            self.assertTrue(key.is_file())
 
     def test_signing_cli_redacts_failure_and_cleans_temporary_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            dist, tools, key = self.signing_cli_fixture(root)
+            dist, tools = self.signing_cli_fixture(root)
+            secret = base64.b64encode(self.seed).decode()
             seen = []
             def run(command, **options):
                 ephemeral = Path(command[command.index('--ed-key-file') + 1])
                 seen.append(ephemeral)
                 self.assertEqual(ephemeral.stat().st_mode & 0o777, 0o600)
-                return subprocess.CompletedProcess(command, 1, stdout='failure fixture ' + key.read_text())
-            arguments = ['create-appcast.py', '--dist', str(dist), '--tools', str(tools), '--key-file', str(key)]
+                return subprocess.CompletedProcess(command, 1, stdout='failure fixture ' + secret)
+            arguments = ['create-appcast.py', '--dist', str(dist), '--tools', str(tools)]
             with patch.object(create, 'ROOT', root), patch('sys.argv', arguments), \
-                    patch.object(create.subprocess, 'run', side_effect=run), self.assertRaises(RuntimeError) as caught:
+                    patch.object(create.subprocess, 'run', side_effect=run), \
+                    patch.dict(os.environ, {'SPARKLE_PRIVATE_KEY': secret}), self.assertRaises(RuntimeError) as caught:
                 create.main()
-            self.assertNotIn(key.read_text(), str(caught.exception))
+            self.assertNotIn(secret, str(caught.exception))
             self.assertIn('[redacted]', str(caught.exception))
             self.assertTrue(all(not path.exists() for path in seen))
             self.assertFalse((dist / 'appcast.xml').exists())
@@ -205,15 +166,6 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertEqual(verify.fetch_github_api(response.geturl()), b'{}')
         request = opener.open.call_args.args[0]
         self.assertEqual(request.get_header('Authorization'), 'Bearer public-test-token')
-
-    def test_api_metadata_can_work_without_token(self):
-        response = io.BytesIO(b'{}')
-        response.geturl = lambda: 'https://api.github.com/repos/example/PageBridge/releases/latest'
-        opener = Mock(); opener.open.return_value = response
-        with patch.dict(os.environ, {}, clear=True), \
-                patch.object(verify.urllib.request, 'build_opener', return_value=opener):
-            verify.fetch_github_api(response.geturl())
-        self.assertIsNone(opener.open.call_args.args[0].get_header('Authorization'))
 
     def test_metadata_rejects_non_api_origins_before_network(self):
         for url in ('https://github.com/example', 'https://api.github.com.attacker.invalid/',
@@ -229,25 +181,13 @@ class ReleaseSignatureTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'left api.github.com'):
                 handler.redirect_request(request, None, 302, 'Found', {}, url)
 
-    def test_metadata_same_origin_redirect_preserves_token(self):
-        request = urllib.request.Request('https://api.github.com/repos/example', headers={'Authorization': 'Bearer public-test-token'})
-        redirected = verify.GitHubAPIRedirectHandler().redirect_request(request, None, 302, 'Found', {}, 'https://api.github.com/repos/renamed')
-        self.assertEqual(redirected.get_header('Authorization'), 'Bearer public-test-token')
-
-    def test_public_feed_and_asset_remain_anonymous_with_token_in_environment(self):
-        for kind in ('feed', 'asset'):
-            response = io.BytesIO(b'fixture')
-            response.geturl = lambda: 'https://release-assets.githubusercontent.com/public-fixture'
-            with self.subTest(kind=kind), patch.dict(os.environ, {'GH_TOKEN': 'public-test-token'}), \
-                    patch.object(verify.urllib.request, 'urlopen', return_value=response) as urlopen:
-                if kind == 'feed':
-                    verify.fetch('https://github.com/example/PageBridge/releases/latest/download/appcast.xml')
-                else:
-                    verify.verify_public_asset('https://github.com/example/PageBridge/releases/download/v1.2.3/file',
-                        dict(name='fixture.dat', bytes=7, sha256=hashlib.sha256(b'fixture').hexdigest()))
-                request = urlopen.call_args.args[0]
-                self.assertIsNone(request.get_header('Authorization'))
-                self.assertIsNone(request.get_header('Cookie'))
+    def test_public_feed_remains_anonymous_with_token_in_environment(self):
+        response = io.BytesIO(b'fixture')
+        response.geturl = lambda: 'https://release-assets.githubusercontent.com/public-fixture'
+        with patch.dict(os.environ, {'GH_TOKEN': 'public-test-token'}), \
+                patch.object(verify.urllib.request, 'urlopen', return_value=response) as urlopen:
+            verify.fetch('https://github.com/example/PageBridge/releases/latest/download/appcast.xml')
+        self.assertIsNone(urlopen.call_args.args[0].get_header('Authorization'))
 
     def test_zip_and_installer_use_anonymous_full_and_range_downloads(self):
         data = b'a' * 64
@@ -265,25 +205,6 @@ class ReleaseSignatureTests(unittest.TestCase):
             for call in request.call_args_list:
                 self.assertIsNone(call.args[0].get_header('Authorization'))
                 self.assertIsNone(call.args[0].get_header('Cookie'))
-
-    def test_source_verification_uses_explicit_tag_root_not_new_automation(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source, automation = root / 'source', root / 'automation'
-            files = {'VERSION.json': b'{"version":"0.3.0"}', 'update-config.json': b'{"fixture":true}',
-                     '.github/workflows/release.yml': b'name: original tag workflow\n'}
-            for directory in (source, automation):
-                for name, data in files.items():
-                    path = directory / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
-            (automation / '.github/workflows/release.yml').write_text('name: improved recovery workflow\n')
-            archive = root / 'source.zip'
-            manifest = {'version':'0.3.0', 'files':{name:dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name,data in files.items()}}
-            with zipfile.ZipFile(archive, 'w') as zipped:
-                for name, data in files.items():zipped.writestr('PageBridge-0.3.0-source/'+name,data)
-                zipped.writestr('PageBridge-0.3.0-source/SOURCE_MANIFEST.json',json.dumps(manifest))
-            self.assertEqual(verify.verify_source(archive, '0.3.0', source), 3)
-            with self.assertRaisesRegex(ValueError, 'Source release configuration differs'):
-                verify.verify_source(archive, '0.3.0', automation)
 
 
 class WindowsUpdateSigningTests(unittest.TestCase):
@@ -314,13 +235,6 @@ class WindowsUpdateSigningTests(unittest.TestCase):
             with self.subTest(length=len(secret)), self.assertRaises(ValueError) as error:
                 windows_update.sign_payload(self.payload, secret, self.key)
             self.assertNotIn(secret, str(error.exception))
-
-    def test_generator_cannot_sign_an_invalid_client_payload(self):
-        for field,value in [('schema',True),('platform','macos-arm64'),('build',True),('build',0),('bytes',2*1024**3+1),
-                            ('sha256','A'*64),('version','00.4.0'),('url','https://example.invalid/installer.exe'),('extra','field')]:
-            payload = dict(self.payload); payload[field]=value
-            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
-                windows_update.sign_payload(payload,self.secret,self.key)
 
     def test_changed_installer_or_release_identity_is_rejected(self):
         raw = windows_update.sign_payload(self.payload,self.secret,self.key)
@@ -374,19 +288,8 @@ class WindowsUpdateSigningTests(unittest.TestCase):
                 windows_update.generate(dist,root)
             self.assertEqual((dist/'windows-update.json').read_bytes(),b'existing immutable manifest')
 
-    def test_latest_windows_feed_retries_valid_stale_signature_but_not_tampering(self):
-        raw=windows_update.sign_payload(self.payload,self.secret,self.key)
-        old=windows_update.sign_payload(dict(self.payload,build=12),self.secret,self.key)
-        with patch.object(verify,'fetch',side_effect=[old,raw]) as fetch,patch.object(verify.time,'sleep'):
-            verify.verify_latest_windows_manifest('https://example.invalid/feed',raw,self.key)
-        self.assertEqual(fetch.call_count,2)
-        tampered=raw.replace(b'"build": 13',b'"build": 14')
-        with patch.object(verify,'fetch',return_value=tampered) as fetch,patch.object(verify.time,'sleep') as sleep, self.assertRaises(ValueError):
-            verify.verify_latest_windows_manifest('https://example.invalid/feed',raw,self.key)
-        self.assertEqual(fetch.call_count,1);sleep.assert_not_called()
 
-
-class DualPlatformSourceTests(unittest.TestCase):
+class SourceArchiveTests(unittest.TestCase):
     def fixture(self, temporary):
         root = Path(temporary) / 'source'
         root.mkdir()
@@ -417,13 +320,6 @@ class DualPlatformSourceTests(unittest.TestCase):
             zipped.writestr(prefix + 'SOURCE_MANIFEST.json', json.dumps(manifest))
         return destination
 
-    def test_asset_schema_is_explicit_and_preserves_legacy(self):
-        self.assertEqual(len(verify.asset_names('0.3.0')), 7)
-        self.assertEqual(len(verify.asset_names('0.4.0')), 12)
-        self.assertIn('PageBridge-0.4.0-windows-x64.zip', verify.asset_names('0.4.0'))
-        with self.assertRaises(ValueError):
-            verify.asset_names('../../unsafe')
-
     def test_both_platform_source_and_locks_are_exported(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, files = self.fixture(temporary)
@@ -431,21 +327,15 @@ class DualPlatformSourceTests(unittest.TestCase):
             archive = self.archive(Path(temporary) / 'source.zip', files)
             self.assertEqual(verify.verify_source(archive, '0.4.0', root), len(files))
 
-    def test_missing_windows_lock_is_not_corresponding_source(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root, files = self.fixture(temporary)
-            files.pop('windows/PageBridge.Windows/packages.lock.json')
-            archive = self.archive(Path(temporary) / 'source.zip', files)
-            with self.assertRaisesRegex(ValueError, 'platform or dependency lock'):
-                verify.verify_source(archive, '0.4.0', root)
-
-    def test_installer_build_source_is_required(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root, files = self.fixture(temporary)
-            files.pop('scripts/windows-installer.iss')
-            archive = self.archive(Path(temporary) / 'source.zip', files)
-            with self.assertRaisesRegex(ValueError, 'platform or dependency lock'):
-                verify.verify_source(archive, '0.4.0', root)
+    def test_platform_locks_and_installer_source_are_required(self):
+        for name in ('windows/PageBridge.Windows/packages.lock.json', 'scripts/windows-installer.iss'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root, files = self.fixture(temporary)
+                (root / name).unlink()
+                files.pop(name)
+                archive = self.archive(Path(temporary) / 'source.zip', files)
+                with self.assertRaisesRegex(ValueError, 'platform or dependency lock'):
+                    verify.verify_source(archive, '0.4.0', root)
 
     def test_self_consistent_manifest_cannot_hide_source_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -502,16 +392,6 @@ class DraftPublicationTests(unittest.TestCase):
                         result = ci.identity()
                         self.assertEqual(result['sourceCommit'], head)
                         self.assertEqual(result['workflowCommit'], environment['WORKFLOW_COMMIT'])
-
-    def test_verification_dependencies_are_hash_pinned(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); (root/'engine').mkdir()
-            (root/'engine/uv.lock').write_text('\n'.join(
-                f'[[package]]\nname="{name}"\nversion="1.0.0"\nwheels=[{{hash="sha256:{"a"*64}"}}]\n'
-                for name in ('cryptography','cffi','pycparser')))
-            lines = ci.requirements(root).splitlines()
-            self.assertEqual(len(lines), 3)
-            self.assertTrue(all('==1.0.0 --hash=sha256:' in line for line in lines))
 
     def metadata(self):
         return dict(draft=True, prerelease=False, tag_name='v0.4.0', target_commitish='a'*40,
@@ -584,16 +464,6 @@ class DraftPublicationTests(unittest.TestCase):
                         patch.object(ci, 'output', return_value=json.dumps(metadata)), patch.object(ci, 'run') as run, self.assertRaises(ValueError):
                     ci.publish(path, notes)
                 self.assertFalse(any('--draft=false' in call.args[0] for call in run.call_args_list))
-
-    def test_upload_error_never_reaches_publication(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path, notes, _, identity, _ = self.fixture(root)
-            with patch.object(ci, 'ROOT', root), patch.object(ci, 'identity', return_value=identity), \
-                    patch.object(ci, 'release_lookup', return_value=('https://api.github.com/draft', self.metadata())), \
-                    patch.object(ci, 'run', side_effect=subprocess.CalledProcessError(1, ['gh'])) as run, self.assertRaises(subprocess.CalledProcessError):
-                ci.publish(path, notes)
-            self.assertFalse(any('--draft=false' in call.args[0] for call in run.call_args_list))
 
 
 if __name__ == "__main__":

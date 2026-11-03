@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Published version tag to verify (for example v0.4.0; v0.3.0 is also supported)
+        description: Published version tag to verify (for example v0.5.0)
         required: true
         type: string
 
@@ -43,7 +43,7 @@ jobs:
       - name: Validate source and workflow identity
         run: |
           python3 - <<'PY'
-          import json, os, re, subprocess, tomllib
+          import json, os, re, subprocess
           from pathlib import Path
           tag = os.environ['RELEASE_TAG']
           assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Expected a vMAJOR.MINOR.PATCH tag'
@@ -62,20 +62,10 @@ jobs:
           identity = dict(tag=tag, sourceCommit=commit, workflowCommit=os.environ['WORKFLOW_COMMIT'])
           (output/'identity.json').write_text(json.dumps(identity, indent=2)+'\n')
           print(json.dumps(identity))
-          # Install only the verification library and its two dependencies, all
-          # pinned by the automation checkout's existing uv lock (including hashes).
-          lock = tomllib.loads(Path('automation/engine/uv.lock').read_text())
-          packages = {item['name']:item for item in lock['package']}
-          lines = []
-          for name in ('cryptography','cffi','pycparser'):
-              package = packages[name]
-              hashes = sorted({wheel['hash'] for wheel in package['wheels']})
-              assert hashes
-              lines.append(name+'=='+package['version']+' '+' '.join('--hash='+value for value in hashes))
-          (output/'verification-requirements.txt').write_text('\n'.join(lines)+'\n')
           PY
       - name: Install hash-pinned verification dependencies
         run: |
+          python3 automation/scripts/release-ci.py requirements --output validation/verification-requirements.txt
           python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r validation/verification-requirements.txt
       - name: Download the complete versioned public asset set anonymously
         env:
@@ -89,9 +79,7 @@ jobs:
           tag = os.environ['RELEASE_TAG']; version = tag[1:]; repo = os.environ['GITHUB_REPOSITORY']
           metadata = json.loads(verifier.fetch_github_api('https://api.github.com/repos/'+repo+'/releases/tags/'+tag, retry_missing=True))
           assert not metadata['draft'] and not metadata['prerelease'] and metadata['tag_name'] == tag
-          # v0.3.x shipped seven assets; v0.4.0+ requires both platform ZIPs
-          # plus the installer and signed Windows feed (twelve assets). Never
-          # infer the required set from server contents.
+          # Never infer the required asset set from server contents.
           names = verifier.asset_names(version)
           assets = {asset['name']:asset for asset in metadata['assets']}
           assert set(assets) == set(names), 'Unexpected public assets'
