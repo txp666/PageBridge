@@ -162,6 +162,21 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(bridge.dispatch(dict(action="probe", profile={"id": "fixture"},
                                                   apiKey="fixture-private-key"), self.data), {"connected": True})
 
+    def test_reading_export_never_writes_into_the_library(self):
+        # The worker only refuses its own original; another document's copy is library data too.
+        store = DocumentStore(self.data)
+        doc = store.import_pdf(self.source)
+        other = self.root / "other.pdf"
+        with pymupdf.open() as pdf:
+            pdf.new_page()
+            pdf.save(other)
+        target = store.import_pdf(other)["input_path"]
+        events = []
+        with patch.object(bridge, "emit", events.append), patch.object(bridge, "WorkerTask", side_effect=AssertionError("worker started")):
+            bridge.dispatch(dict(action="export_reading", document_id=doc["id"], kind="translated", destination=target), self.data)
+        self.assertEqual([event["type"] for event in events], ["error"])
+        self.assertIn("工作目录之外", events[0]["message"])
+
     def test_short_lived_list_keeps_active_attempt(self):
         store = DocumentStore(self.data)
         doc = store.import_pdf(self.source)

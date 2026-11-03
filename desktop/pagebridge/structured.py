@@ -130,7 +130,7 @@ def commit_reading(store, document_id, attempt_id, event):
     return store.publish_result(document_id, attempt_id, manifest, {"reading.json": (reading, digest)},
                                 lambda destination: dict(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
                                                          reading_sha256=digest, reading_source_language=source_language,
-                                                         reading_target_language=target_language, preferred_artifact="reading",
+                                                         reading_target_language=target_language,
                                                          reading_pages=artifact["selectedPages"],
                                                          reading_failed_blocks=sum(b["status"] == "source_fallback" for b in blocks),
                                                          source_language=source_language, target_language=target_language))

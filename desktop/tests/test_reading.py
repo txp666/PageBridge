@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pymupdf
-from pagebridge.core import AppError, DocumentStore, atomic_json, sha256
+from pagebridge.core import AppError, DocumentStore, sha256
 from pagebridge.reading import dispatch_reading
 
 
@@ -35,7 +35,6 @@ class ReadingTests(unittest.TestCase):
         self.store = DocumentStore(self.root / "library")
         self.source = make_pdf(self.root / "public fixture.pdf")
         self.doc = self.store.import_pdf(self.source)
-        self.variant = "original"
 
     def test_search_batches_and_rotation(self):
         for rotation in (0, 90, 180, 270):
@@ -85,7 +84,7 @@ class ReadingTests(unittest.TestCase):
         self.temp.cleanup()
 
     def call(self, action, **values):
-        request = dict(action=action, document_id=self.doc["id"], variant=self.variant)
+        request = dict(action=action, document_id=self.doc["id"])
         request.update(values)
         return dispatch_reading(self.store, request)
 
@@ -96,23 +95,6 @@ class ReadingTests(unittest.TestCase):
         annotation = dict(kind=kind, page=page, note=note)
         annotation.update(values)
         return self.call("save_annotation", source_sha256=self.bind(), annotation=annotation)
-
-    def translated(self):
-        attempt, work = self.store.new_attempt(self.doc["id"])
-        folder = work / "output"
-        folder.mkdir()
-        mono = make_pdf(folder / "translated.pdf", rotation=90)
-        dual = folder / "bilingual.pdf"
-        with pymupdf.open(mono) as source, pymupdf.open() as combined:
-            combined.insert_pdf(source)
-            combined.insert_pdf(source)
-            combined.save(dual)
-        atomic_json(folder / "manifest.json", dict(protocolVersion=1, jobId="reading-test", attemptId=attempt,
-            sourceSHA256=self.doc["input_sha256"], sourcePages=2, translatedSHA256=sha256(mono), bilingualSHA256=sha256(dual),
-            qualityGuard=dict(guardInstalled=True, layoutGuard=dict(guardInstalled=True), unresolvedCount=0,
-                              preparedParagraphs=1, validatedParagraphs=1)))
-        self.doc = self.store.commit_result(self.doc["id"], attempt,
-            dict(type="result", attemptId=attempt, jobId="reading-test", translatedPath=str(mono), bilingualPath=str(dual)))
 
     def test_navigation_has_depth_and_zero_based_destinations(self):
         navigation = self.call("document_navigation")
@@ -196,22 +178,6 @@ class ReadingTests(unittest.TestCase):
             self.add("bookmark", page=1)
         self.assertEqual(len(self.call("annotations")["annotations"]), 1)
 
-    def test_original_translation_and_retranslation_keep_separate_revisions(self):
-        original = self.add(note="Original note")
-        self.translated()
-        self.variant = "translated"
-        self.assertEqual(self.call("annotations")["annotations"], [])
-        translated = self.add(note="Translation note")
-        self.assertNotEqual(translated["source_sha256"], original["source_sha256"])
-        self.translated()
-        self.assertEqual(self.call("annotations")["annotations"], [])
-        with self.assertRaisesRegex(AppError, "内容已变化"):
-            self.call("save_annotation", source_sha256=translated["source_sha256"], annotation=dict(kind="note", page=0, note="Stale"))
-        self.variant = "original"
-        self.assertEqual(self.call("annotations")["annotations"][0]["note"], "Original note")
-        old = self.store.root / "annotations" / self.doc["id"] / "translated" / (translated["source_sha256"] + ".json")
-        self.assertTrue(old.is_file())
-
     def test_invalid_geometry_types_pages_and_stale_hash_do_not_write(self):
         base = dict(kind="highlight", page=0, regions=[dict(page=0, rect=dict(x=30, y=30, width=20, height=15))])
         cases = [dict(base, page=-1), dict(base, page=True), dict(base, regions=[]), dict(base, kind="../../outside"), dict(base, kind=[]),
@@ -227,8 +193,6 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(self.call("annotations")["annotations"], [])
         for number in (-1, True, 2):
             with self.assertRaises(AppError): self.call("page_text", page=number)
-        with self.assertRaises(AppError): self.call("annotations", variant="../original")
-        with self.assertRaises(AppError): self.call("annotations", variant=[])
 
     def test_full_snapshot_size_guard_is_atomic(self):
         self.add(note="Keep")
@@ -279,7 +243,7 @@ class ReadingTests(unittest.TestCase):
                 self.assertNotEqual(page.get_pixmap().samples, original_pixels)
                 self.assertEqual(list(pdf[1].annots() or []), [])
 
-    def test_markdown_export_keeps_quote_note_page_and_variant(self):
+    def test_markdown_export_keeps_quote_note_and_page(self):
         result = self.add("note", page=1, note="Interpretation\nNext line", selected_text="Quoted\nparagraph")
         destination = self.root / "notes.md"
         self.call("export_notes", source_sha256=result["source_sha256"], destination=str(destination))

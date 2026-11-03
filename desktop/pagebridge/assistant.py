@@ -130,9 +130,7 @@ def build_context(documents, request):
     document = documents.get(request.get("document_id"))
     mode = request.get("mode", "paper")
     page = request.get("page", 0)
-    variant = request.get("variant", "original")
-    if (not isinstance(mode, str) or mode not in MODES or not isinstance(variant, str)
-            or variant not in VARIANTS or type(page) is not int or not 0 <= page < document["page_count"]):
+    if not isinstance(mode, str) or mode not in MODES or type(page) is not int or not 0 <= page < document["page_count"]:
         raise AppError("助手提问范围或页码无效。")
     context = dict(mode=mode, total_pages=document["page_count"], scanned_pages=[], evidence=[], extraction_limited=False)
     if mode == "freeQuestion":
@@ -143,17 +141,12 @@ def build_context(documents, request):
         if not isinstance(raw, str) or not raw.strip():
             raise AppError("请先在 PDF 中选择文字。")
         raw = raw.strip()
-        evidence = dict(page=page, variant=variant, origin="selection", text=raw[:SELECTION_LIMIT],
+        evidence = dict(page=page, variant="original", origin="selection", text=raw[:SELECTION_LIMIT],
                         truncated=len(raw) > SELECTION_LIMIT or request.get("selection_truncated") is True)
         context["evidence"] = [evidence]
         context["scope"] = f"仅发送当前选文（{len(evidence['text'])} 字符）与最近对话；不附带整页。"
         return context
-    # Whole-document retrieval uses the original, while current-page questions
-    # use the pane being read. Every citation retains its actual source variant.
-    source_variant = "original" if mode == "paper" else variant
-    source = document["input_path" if source_variant == "original" else "translated_path"]
-    if not source:
-        raise AppError("尚未生成译文，请切换原文后提问。")
+    source = document["input_path"]
     pages, scanned, remaining = {}, [], 240000
     try:
         with pymupdf.open(source) as pdf:
@@ -190,13 +183,13 @@ def build_context(documents, request):
             continue
         seen.add(index)
         text = _excerpt(pages[index], min(2400, remaining), terms)
-        context["evidence"].append(dict(page=index, variant=source_variant, origin="page", text=text, truncated=len(text) < len(pages[index])))
+        context["evidence"].append(dict(page=index, variant="original", origin="page", text=text, truncated=len(text) < len(pages[index])))
         remaining -= len(text)
     context["scanned_pages"] = sorted(scanned)
     context["extraction_limited"] = len(scanned) < (1 if mode == "currentPage" else document["page_count"]) or extraction_exhausted or remaining <= 0
     characters = sum(len(c["text"]) for c in context["evidence"])
     if mode == "currentPage":
-        context["scope"] = f"发送第 {page + 1} 页的{'译文' if source_variant == 'translated' else '原文'}片段（{characters} 字符）与最近对话。"
+        context["scope"] = f"发送第 {page + 1} 页的原文片段（{characters} 字符）与最近对话。"
     else:
         labels = "、".join(str(c["page"] + 1) for c in context["evidence"])
         context["scope"] = f"本机检查 {len(scanned)}/{document['page_count']} 页文字，发送第 {labels} 页原文片段（{characters} 字符）。模型未通读全文。"

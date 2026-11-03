@@ -305,12 +305,12 @@ class WorkerTask:
             if self.cancelled:
                 raise AppError("翻译已取消。")
             if terminal and terminal["type"] == "error":
-                raise AppError(str(terminal.get("message") or "翻译引擎返回错误。")[:2000])
+                raise AppError(str(terminal.get("message") or "引擎返回错误。")[:2000])
             if code != 0 or not terminal or terminal["type"] != "result":
-                raise AppError("翻译引擎意外退出，结果未提交。")
+                raise AppError("引擎意外退出，结果未提交。")
             self.result = terminal
         except BaseException as error:
-            self.error = str(error) if isinstance(error, AppError) else "无法启动或读取翻译引擎，请检查私有运行环境。"
+            self.error = str(error) if isinstance(error, AppError) else "无法启动或读取引擎，请检查私有运行环境。"
             self._kill_tree()
             if child and child.poll() is None:
                 try:

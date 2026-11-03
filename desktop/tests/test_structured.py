@@ -60,7 +60,6 @@ class StructuredReadingTests(unittest.TestCase):
         result = self.store.commit_result(self.doc["id"], attempt, event)
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["reading_failed_blocks"], 1)
-        self.assertIsNone(result["translated_path"])
         self.assertEqual(sha256(self.doc["input_path"]), original_hash)
         with pymupdf.open(self.doc["input_path"]) as pdf:
             self.assertEqual(next(pdf[0].widgets()).field_value, "kept")
@@ -70,17 +69,26 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(page["blocks"][1]["status"], "source_fallback")
         self.assertEqual(structured.page_result(restored, dict(document_id=self.doc["id"], page=0))["page_status"], "not_selected")
 
-    def test_separate_artifact_preserves_pdf_results_and_failed_retry(self):
-        self.store._change(self.doc["id"], lambda d: d.update(translated_path=d["input_path"], bilingual_path=d["input_path"]))
+    def test_failed_retry_keeps_previous_reading(self):
         attempt, event, _ = self.prepare()
         result = self.store.commit_result(self.doc["id"], attempt, event)
-        self.assertEqual(result["translated_path"], self.doc["input_path"])
-        self.assertEqual(result["preferred_artifact"], "reading")
         old_path = result["reading_path"]
         self.store.new_attempt(self.doc["id"])
         self.store.finish_failure(self.doc["id"], "Cancelled", cancelled=True)
         self.assertEqual(self.store.get(self.doc["id"])["reading_path"], old_path)
         self.assertTrue(Path(old_path).exists())
+        attempt, event, _ = self.prepare()
+
+        def fail_library_save(path, value):
+            if Path(path) == self.store.path:
+                raise OSError("disk full")
+            return atomic_json(path, value)
+
+        with mock.patch("pagebridge.core.atomic_json", side_effect=fail_library_save):
+            with self.assertRaises(OSError):
+                self.store.commit_result(self.doc["id"], attempt, event)
+        self.assertEqual(self.store.get(self.doc["id"])["reading_path"], old_path)
+        self.assertFalse((self.store.root / "documents" / self.doc["id"] / "results" / attempt).exists())
 
     def test_source_font_size_is_response_only_and_preserves_committed_artifact(self):
         attempt, event, artifact = self.prepare()
@@ -387,7 +395,7 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual((page["width"], page["height"]), (220, 280))
         self.assertEqual(page["page_status"], "not_selected")
         bridge = Path(__file__).resolve().parents[1] / "bridge.py"
-        request = dict(action="render", dataRoot=str(self.store.root), document_id=self.doc["id"], variant="original", page=0, width=660)
+        request = dict(action="render", dataRoot=str(self.store.root), document_id=self.doc["id"], page=0, width=660)
         result = subprocess.run([sys.executable, "-B", str(bridge)], input=(json.dumps(request) + "\n").encode(), capture_output=True, timeout=15)
         response = json.loads(result.stdout)
         self.assertTrue(response["ok"], response)

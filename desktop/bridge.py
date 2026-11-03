@@ -2,7 +2,8 @@
 """Private UTF-8 RPC bridge, with optional persistent local-document sessions.
 
 Normal replies: {ok: true, result: ...} / {ok: false, error: ...}.
-Translation replies: protocol-v1 NDJSON; terminal result includes document.
+Translation and reading-export replies: protocol-v1 NDJSON. A translation's
+terminal result includes document; an export's includes outputPath.
 Serve starts with action=serve, protocolVersion=1 and a UUID requestId. Each
 following local request receives exactly one response with the same requestId.
 Credentials are never returned. All request/response bytes are UTF-8.
@@ -29,8 +30,8 @@ if __name__ == "__main__":
 
 import pymupdf
 
-from pagebridge.core import AppError, DocumentStore, atomic_file, sha256, variant_path
-from pagebridge.reading import READING_ACTIONS, dispatch_reading
+from pagebridge.core import AppError, DocumentStore, atomic_file, sha256
+from pagebridge.reading import READING_ACTIONS, _destination, dispatch_reading
 from pagebridge import assistant
 from pagebridge import literature
 from pagebridge import updates
@@ -44,6 +45,8 @@ MAX_RESPONSE_BYTES = 1048576
 LOCAL_ACTIONS = frozenset({"list", "recover", "import", "rename", "folders", "create_folder", "rename_folder",
                            "delete_folder", "move", "trash", "favorite", "reading", "export", "render", "page_info",
                            "reading_page", "assistant_history", "assistant_clear"}) | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
+STREAMING_ACTIONS = frozenset({"translate", "export_reading"})
+ENGINE_ROOT = Path(__file__).resolve().parent.parent / "engine"
 
 
 def make_protocol_reader(descriptor):
@@ -159,7 +162,7 @@ def data_root(request):
 
 
 def render(store, request):
-    source = variant_path(store.get(request["document_id"]), request.get("variant", "original"))
+    source = store.get(request["document_id"])["input_path"]
     page_number = request.get("page", 0)
     width = request.get("width", 1100)
     if type(page_number) is not int or type(width) is not int or not 140 <= width <= 1800:
@@ -257,6 +260,9 @@ def dispatch(request, root):
     if action == "translate":
         translate(request, root)
         return
+    if action == "export_reading":
+        export_reading(request, root)
+        return
     if action in {"list_models", "probe"}:
         return network_request(request, root)
     if action == "assistant_ask":
@@ -285,7 +291,7 @@ def dispatch(request, root):
         elif action == "export": result = str(store.export_pdf(identifier, request["kind"], request["destination"]))
         elif action == "reading_page": result = structured.page_result(store, request)
         elif action == "render": result = render(store, request)
-        elif action == "page_info": result = store.page_info(identifier, request.get("variant", "original"))
+        elif action == "page_info": result = store.page_info(identifier)
         elif action in READING_ACTIONS: result = dispatch_reading(store, request)
         elif action == "assistant_history": result = assistant.AssistantStore(store).history(identifier)
         elif action == "assistant_clear": result = assistant.AssistantStore(store).clear(identifier)
@@ -309,24 +315,46 @@ def dispatch(request, root):
     return result
 
 
+class JobEvents:
+    """Protocol-v1 events of one worker job. Progress passes through; the
+    terminal event is withheld and sent by the bridge after its own checks."""
+
+    def __init__(self):
+        self.job_id, self.attempt_id, self.sequence = str(uuid.uuid4()), str(uuid.uuid4()), 0
+
+    def forward(self, event):
+        if event["type"] not in {"result", "error"}:
+            self.sequence = event["sequence"]
+            emit(event)
+
+    def finish(self, event_type, **values):
+        emit(dict(protocolVersion=1, jobId=self.job_id, attemptId=self.attempt_id, sequence=self.sequence + 1, type=event_type, **values))
+
+
+def start_task(envelope, events):
+    """Start the worker; a later {"action": "cancel"} line on stdin cancels it."""
+    task = WorkerTask(ENGINE_ROOT, envelope, on_event=events.forward).start()
+
+    def controls():
+        while task.running:
+            try:
+                line = read_line()
+                if not line:
+                    return
+                command = json.loads(line)
+                if command == {"action": "cancel"}:
+                    task.cancel()
+            except (ValueError, OSError):
+                return
+
+    threading.Thread(target=controls, name="PageBridge-bridge-control", daemon=True).start()
+    return task
+
+
 def translate(request, root):
     identifier = request.get("document_id")
-    attempt = str(uuid.uuid4())
-    job_id = str(uuid.uuid4())
-    sequence = 0
+    events = JobEvents()
     task = None
-
-    def send(event):
-        nonlocal sequence
-        # Terminal result is withheld until our independent commit has passed.
-        if event["type"] in {"result", "error"}:
-            return
-        sequence = event["sequence"]
-        emit(event)
-
-    def terminal(kind, **values):
-        emit(dict(protocolVersion=1, jobId=job_id, attemptId=attempt, sequence=sequence + 1, type=kind, **values))
-
     try:
         with library_lock(root):
             store = DocumentStore(root)
@@ -335,53 +363,34 @@ def translate(request, root):
             service_id = request.get("service_id") or services.active_id
             profile = services.get(service_id)
             service = worker_service(profile, services.key(service_id))
-            output_mode = request.get("outputMode", "pdf")
-            if output_mode not in {"pdf", "reading"}:
-                raise AppError("不支持的翻译输出类型。")
             retry_ids = request.get("retryBlockIds")
             previous_reading = None
             if retry_ids is not None:
-                if output_mode != "reading" or not isinstance(retry_ids, list) or not retry_ids or any(not isinstance(i, str) for i in retry_ids):
+                if not isinstance(retry_ids, list) or not retry_ids or any(not isinstance(i, str) for i in retry_ids):
                     raise AppError("请选择需要重试的阅读块。")
                 _, artifact = structured.committed_artifact(store, identifier)
                 available = {b["id"] for p in artifact["pages"] for b in p["blocks"]}
                 if len(retry_ids) != len(set(retry_ids)) or not set(retry_ids) <= available:
                     raise AppError("需要重试的阅读块已变化，请刷新后重试。")
                 previous_reading = doc["reading_path"]
-            attempt, directory = store.new_attempt(identifier)
-        envelope = dict(protocolVersion=1, jobId=job_id, attemptId=attempt, action="translate", inputPath=doc["input_path"],
+            events.attempt_id, directory = store.new_attempt(identifier)
+        envelope = dict(protocolVersion=1, jobId=events.job_id, attemptId=events.attempt_id, action="translate", inputPath=doc["input_path"],
                         outputDirectory=str(directory), sourceLanguage=request.get("sourceLanguage", "en"),
-                        targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service, outputMode=output_mode)
+                        targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service)
         if previous_reading:
             envelope.update(readingPath=previous_reading, retryBlockIds=retry_ids,
                             sourceLanguage=artifact.get("sourceLanguage", "en"), targetLanguage=artifact.get("targetLanguage", "zh"))
-        engine_root = Path(__file__).resolve().parent.parent / "engine"
-        task = WorkerTask(engine_root, envelope, on_event=send).start()
-
-        def controls():
-            while task.running:
-                try:
-                    line = read_line()
-                    if not line:
-                        return
-                    command = json.loads(line)
-                    if command == {"action": "cancel"}:
-                        task.cancel()
-                except (ValueError, OSError):
-                    return
-
-        threading.Thread(target=controls, name="PageBridge-bridge-control", daemon=True).start()
+        task = start_task(envelope, events)
         task.join()
         with library_lock(root):
             store = DocumentStore(root)
             if task.error or task.cancelled or not task.result:
                 document = store.finish_failure(identifier, task.error, task.cancelled)
-                terminal("error", stage="cancelled" if task.cancelled else "failed", message=document["last_error"], document=document)
+                events.finish("error", stage="cancelled" if task.cancelled else "failed", message=document["last_error"], document=document)
             else:
-                document = store.commit_result(identifier, attempt, task.result)
-                terminal("result", progress=1.0, message="部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。", document=document,
-                         artifactType=task.result.get("artifactType", "pdf"), readingPath=document.get("reading_path"),
-                         translatedPath=document.get("translated_path"), bilingualPath=document.get("bilingual_path"))
+                document = store.commit_result(identifier, events.attempt_id, task.result)
+                events.finish("result", progress=1.0, message="部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。", document=document,
+                              artifactType=task.result.get("artifactType"), readingPath=document.get("reading_path"))
     except BaseException as error:
         if task and task.running:
             task.cancel()
@@ -392,11 +401,48 @@ def translate(request, root):
                 store = DocumentStore(root)
                 doc = store.get(identifier)
                 # A preflight failure must not overwrite a separate live task.
-                if doc.get("attempt_id") == attempt:
+                if doc.get("attempt_id") == events.attempt_id:
                     store.finish_failure(identifier, message)
         except Exception:
             pass
-        terminal("error", message=message)
+        events.finish("error", message=message)
+
+
+def export_reading(request, root):
+    """Write the current reading draft as a translated or bilingual PDF to a path chosen outside the library."""
+    identifier = request.get("document_id")
+    events = JobEvents()
+    task = None
+    try:
+        kind = request.get("kind")
+        if kind not in {"translated", "bilingual"}:
+            raise AppError("不支持的导出类型。")
+        with library_lock(root):
+            store = DocumentStore(root)
+            doc = store.get(identifier)
+            if doc["status"] in ("running", "cancelling"):
+                raise AppError("请等待翻译完成或先取消翻译。")
+            target = _destination(store, Path(doc["input_path"]).resolve(), request.get("destination"), ".pdf")
+            structured.committed_artifact(store, identifier)
+        envelope = dict(protocolVersion=1, jobId=events.job_id, attemptId=events.attempt_id, action="export_reading",
+                        inputPath=doc["input_path"], readingPath=doc["reading_path"], outputPath=str(target), kind=kind)
+        task = start_task(envelope, events)
+        task.join()
+        result = task.result or {}
+        if task.cancelled:
+            events.finish("error", stage="cancelled", message="导出已取消。")
+        elif task.error or not task.result:
+            events.finish("error", stage="failed", message=task.error or "导出未完成，请重试。")
+        elif result.get("outputPath") != str(target) or type(result.get("pageCount")) is not int:
+            events.finish("error", stage="failed", message="导出结果与保存位置不一致，请重新导出。")
+        else:
+            events.finish("result", progress=1.0, artifactType=result.get("artifactType"), kind=kind, outputPath=str(target),
+                          pageCount=result["pageCount"], message="双语 PDF 已导出。" if kind == "bilingual" else "译文 PDF 已导出。")
+    except BaseException as error:
+        if task and task.running:
+            task.cancel()
+            task.join(12)
+        events.finish("error", message=str(error) if isinstance(error, AppError) else "无法导出 PDF，请重试。")
 
 
 def checked_request(raw):
@@ -452,7 +498,7 @@ def main():
         if request["action"] == "serve":
             return serve(request, root)
         result = dispatch(request, root)
-        if request["action"] != "translate":
+        if request["action"] not in STREAMING_ACTIONS:
             emit({"ok": True, "result": result})
         return 0
     except BaseException as error:

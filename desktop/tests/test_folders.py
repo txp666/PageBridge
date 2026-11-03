@@ -43,10 +43,7 @@ class FolderManagementTests(unittest.TestCase):
         self.store.move_to_folder(third["id"], self.other["id"])
         self.store.set_favorite(first["id"], True)
         self.store.trash(second["id"])
-        original = Path(first["input_path"])
-        translated = original.parent / "translated.pdf"
-        translated.write_bytes(original.read_bytes())
-        self.store._change(first["id"], lambda d: d.update(translated_path=str(translated), status="running"))
+        self.store._change(first["id"], lambda d: d.update(status="running"))
         before = self.store.documents()
         hashes = {str(p): sha256(p) for p in self.store.root.rglob("*.pdf")}
         self.assertEqual(self.store.delete_folder(self.folder["id"]), {"deleted_id": self.folder["id"]})
