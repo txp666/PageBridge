@@ -42,7 +42,7 @@ import sys
 
 root = pathlib.Path(sys.prefix).resolve()
 modules = {}
-for name in ("pdf2zh_next", "babeldoc", "pymupdf", "onnxruntime", "bitstring"):
+for name in ("pymupdf", "httpx", "psutil", "cryptography"):
     module = importlib.import_module(name)
     origin = getattr(module, "__file__", None)
     paths = [str(pathlib.Path(origin).resolve())] if origin else [str(pathlib.Path(p).resolve()) for p in getattr(module, "__path__", [])]
@@ -52,7 +52,7 @@ for name in ("pdf2zh_next", "babeldoc", "pymupdf", "onnxruntime", "bitstring"):
 
 versions = {}
 distributions = {}
-for name in ("pdf2zh-next", "babeldoc", "PyMuPDF", "onnxruntime", "bitstring"):
+for name in ("PyMuPDF", "httpx", "psutil", "cryptography"):
     distribution = importlib.metadata.distribution(name)
     versions[name] = distribution.version
     distributions[name] = str(pathlib.Path(distribution.locate_file("")).resolve())
@@ -331,7 +331,7 @@ def main():
                 probe = verify_imports(environment, expected)
                 require(probe["pythonVersion"] == source_info["pythonVersion"], "Bundled Python version does not match the locked runtime.")
                 require(probe["architecture"] == source_info["architecture"], "Bundled runtime architecture does not match metadata.")
-                report["paths"] = {"prefix": probe["prefix"], "engine": probe["modules"]["pdf2zh_next"][0], "executable": probe["executable"]}
+                report["paths"] = {"prefix": probe["prefix"], "worker": str(WORKER), "executable": probe["executable"]}
                 report["runtimeProbe"] = probe
                 profile_path = ENGINE / "bundle-profile.json"
                 require(profile_path.is_file(), "Native runtime profile is missing from the application.")

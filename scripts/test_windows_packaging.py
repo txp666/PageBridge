@@ -141,8 +141,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.runtime = self.stage / "runtime"
         self.packages = self.runtime / "Lib/site-packages"
         self.packages.mkdir(parents=True)
-        self.profile = {"auditedEngineVersions": {"pdf2zh-next": "2.9.0"},
-                        "excludedDistributions": {"web-interface": ["gradio", "tzdata"]},
+        self.versions = {"PyMuPDF": "1.25.2"}
+        self.profile = {"auditedEngineVersions": dict(self.versions),
+                        "excludedDistributions": {"development-tool": ["pip"]},
                         "testDirectoryPackages": ["example"]}
 
     def package(self, name, receipt=None):
@@ -189,35 +190,33 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_refuses_non_staging_runtime(self):
         with self.assertRaisesRegex(ValueError, "generated Windows"):
-            builder.prune(self.packages, self.profile, {"pdf2zh-next": "2.9.0"})
+            builder.prune(self.packages, self.profile, self.versions)
 
     def test_refuses_changed_engine_before_removal(self):
-        source = self.package("gradio")
+        source = self.package("pip")
         with self.assertRaisesRegex(ValueError, "Re-audit"):
-            builder.prune(self.runtime, self.profile, {"pdf2zh-next": "3.0.0"})
+            builder.prune(self.runtime, self.profile, {"PyMuPDF": "1.26.0"})
         self.assertTrue(source.exists())
 
     def test_receipt_escape_cannot_delete_external_file(self):
         outside = self.stage / "keep.txt"
         outside.write_text("protected")
-        source = self.package("gradio", "gradio/__init__.py,,\n../../../keep.txt,,\n")
+        source = self.package("pip", "pip/__init__.py,,\n../../../keep.txt,,\n")
         with self.assertRaisesRegex(ValueError, "leaves runtime"):
-            builder.prune(self.runtime, self.profile, {"pdf2zh-next": "2.9.0"})
+            builder.prune(self.runtime, self.profile, self.versions)
         self.assertEqual(outside.read_text(), "protected")
         self.assertTrue(source.exists())
 
-    def test_windows_timezone_and_retained_runtime_data_survive(self):
-        excluded = self.package("gradio")
-        timezone = self.package("tzdata")
+    def test_retained_runtime_data_survives(self):
+        excluded = self.package("pip")
         data = self.packages / "example/data/weights.bin"
         tests = self.packages / "example/tests/test_unused.py"
         for path in (data, tests):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture")
-        result = builder.prune(self.runtime, self.profile, {"pdf2zh-next": "2.9.0"})
+        result = builder.prune(self.runtime, self.profile, self.versions)
         self.assertFalse(excluded.exists())
         self.assertFalse(tests.exists())
-        self.assertTrue(timezone.exists())
         self.assertTrue(data.exists())
         self.assertLess(result["after"]["bytes"], result["before"]["bytes"])
 

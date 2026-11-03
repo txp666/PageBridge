@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fetch hash-pinned AGPL sources and create the versioned source-material ZIP.
 
-Downloaded code is never executed or extracted onto the filesystem. The three
-PyPI pins must agree with uv.lock; MuPDF is pinned to the reviewed official
-archive because PyMuPDF's sdist does not include the MuPDF sources.
+Downloaded code is never executed or extracted onto the filesystem. The PyMuPDF
+pin must agree with uv.lock; MuPDF is pinned to the reviewed official archive
+because PyMuPDF's sdist does not include the MuPDF sources.
 """
 import argparse
 import hashlib
@@ -101,9 +101,9 @@ def main():
     materials["engine-uv.lock"] = ROOT / "engine/uv.lock"
     materials["README.txt"] = (
         f"PageBridge {version} - selected AGPL upstream source materials\n\n"
-        "Contains the exact pinned pdf2zh-next, BabelDOC, PyMuPDF and MuPDF sources,\n"
-        "their licenses and engine/uv.lock. PageBridge's own source, engine guards,\n"
-        "build scripts and installation instructions are in the matching source ZIP.\n"
+        "Contains the exact pinned PyMuPDF and MuPDF sources, their licenses and\n"
+        "engine/uv.lock. PageBridge's own source, build scripts and installation\n"
+        "instructions are in the matching source ZIP.\n"
         "Consult each upstream archive's build instructions. MuPDF is supplied\n"
         "separately because PyMuPDF's source distribution does not embed it.\n"
         "No downloaded source was executed during packaging. This selection is\n"
