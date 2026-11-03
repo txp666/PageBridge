@@ -1,15 +1,14 @@
 [project]
 name = "pagebridge-engine"
 version = "0.1.0"
-description = "Private PageBridge worker using the official pdf2zh-next Python API"
+description = "Private PageBridge worker: MinerU reading drafts, their translation and PDF export"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "pdf2zh-next==2.9.0",
-  "babeldoc==0.6.2",
   "pymupdf==1.25.2",
   "httpx==0.28.1",
-  # BabelDOC uses BitStream, removed by the incompatible bitstring 5 major.
-  "bitstring==4.3.0",
+  "psutil==7.2.2",
+  # Windows update signatures (desktop/pagebridge/updates.py) and the release scripts.
+  "cryptography==50.0.2",
 ]
 
 [tool.uv]

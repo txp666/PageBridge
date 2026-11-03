@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import copy
 from datetime import datetime, timezone
 import hashlib
 from html.parser import HTMLParser
@@ -697,7 +696,8 @@ async def parse_pages(input_path, dimensions, selected, temporary, events, sourc
     return pages
 
 
-def load_retry(path, input_hash, page_count, source_language, target_language):
+def load_reading(path, input_hash, page_count, languages=None):
+    """A reading draft bound to this exact source; retry also binds its languages."""
     try:
         path = Path(path)
         if not path.is_absolute() or path.stat().st_size > MAX_ARTIFACT_BYTES:
@@ -705,7 +705,7 @@ def load_retry(path, input_hash, page_count, source_language, target_language):
         data = json.loads(path.read_text(encoding="utf-8"))
         if (data.get("schemaVersion") != 1 or data.get("artifactType") != ARTIFACT_TYPE or
                 data.get("sourceSHA256") != input_hash or data.get("pageCount") != page_count or
-                data.get("sourceLanguage") != source_language or data.get("targetLanguage") != target_language):
+                languages and (data.get("sourceLanguage"), data.get("targetLanguage")) != languages):
             raise ValueError()
         actual = data["selectedPages"]
         if not isinstance(actual, list) or not actual or any(type(n) is not int or not 1 <= n <= page_count for n in actual) or len(set(actual)) != len(actual):
@@ -719,9 +719,10 @@ def load_retry(path, input_hash, page_count, source_language, target_language):
                 if not isinstance(identifier, str) or identifier in seen or not isinstance(block["sourceText"], str):
                     raise ValueError()
                 seen.add(identifier)
-        return copy.deepcopy(data)
-    except (OSError, ValueError, KeyError, TypeError):
-        raise ReadingError("阅读稿与当前原文或语言不匹配，请重新生成阅读稿。") from None
+        return data
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise ReadingError("阅读稿与当前原文或语言不匹配，请重新生成阅读稿。" if languages
+                           else "阅读稿与当前原文不匹配，请重新生成阅读稿。") from None
 
 
 def translation_error(error):
@@ -838,7 +839,7 @@ async def translate(request, events):
     with tempfile.TemporaryDirectory(prefix=".pagebridge-reading-", dir=output) as folder:
         temporary = Path(folder)
         if retry_ids:
-            document = load_retry(request["readingPath"], input_hash, count, source_language, target_language)
+            document = load_reading(request["readingPath"], input_hash, count, (source_language, target_language))
             found = {b["id"] for p in document["pages"] for b in p["blocks"]}
             if any(identifier not in found for identifier in retry_ids):
                 raise ReadingError("未找到待重试的译文块，请重新打开阅读稿。")

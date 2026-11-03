@@ -3,41 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-from functools import wraps
-import hashlib
-import html
 import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path
 import re
-import shutil
 import signal
 import sys
-import tempfile
 import threading
 import time
-import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 65536
-EXPECTED = {"pdf2zh-next": "2.9.0", "babeldoc": "0.6.2", "PyMuPDF": "1.25.2", "bitstring": "4.3.0"}
-_UPSTREAM_TRANSLATE_WRAPPER = None
-STAGES = {
-    "Parse PDF and Create Intermediate Representation": ("parse", "正在解析 PDF。"),
-    "DetectScannedFile": ("preflight", "正在检查文档文字层。"),
-    "Parse Page Layout": ("layout", "正在分析页面版式。"),
-    "Parse Paragraphs": ("paragraphs", "正在识别段落。"),
-    "Parse Formulas and Styles": ("formulas", "正在识别公式与样式。"),
-    "Translate Paragraphs": ("translate", "正在翻译段落。"),
-    "Typesetting": ("typeset", "正在排版译文。"),
-    "Add Fonts": ("fonts", "正在嵌入字体。"),
-    "Generate drawing instructions": ("render", "正在生成页面。"),
-    "Subset font": ("fonts", "正在优化字体。"),
-    "Save PDF": ("save", "正在保存 PDF。"),
-}
+EXPECTED = {"PyMuPDF": "1.25.2", "httpx": "0.28.1", "psutil": "7.2.2"}
 
 
 class WorkerError(Exception):
@@ -130,114 +110,6 @@ class ProtocolInput:
             return
 
 
-def checked_completion_create(create):
-    """Do not let the upstream string-only adapter accept a partial response."""
-    @wraps(create)
-    def checked(*args, **kwargs):
-        response = create(*args, **kwargs)
-        if any(getattr(choice, 'finish_reason', None) in ('length', 'content_filter')
-               for choice in getattr(response, 'choices', [])):
-            raise ValueError('translation-response-incomplete')
-        return response
-    return checked
-
-
-def install_response_guard():
-    from pdf2zh_next.translator.translator_impl.openai import OpenAITranslator
-    original = OpenAITranslator.__init__
-    if getattr(original, '_pagebridge_checked', False):
-        return
-
-    @wraps(original)
-    def initialize(self, *args, **kwargs):
-        original(self, *args, **kwargs)
-        extra = self.options.get('extra_body', {})
-        local = urlsplit(str(self.client.base_url)).hostname in ('localhost', '127.0.0.1', '::1')
-        if local and extra.get('max_tokens') == 8192 and extra.get('presence_penalty') == 0:
-            # These two options are emitted only by our local Ollama preset.
-            # Repeating an identical timed-out deterministic request does not
-            # repair it; the paragraph guard owns the explicit repair retries.
-            self.client.max_retries = 0
-        completions = self.client.chat.completions
-        completions.create = checked_completion_create(completions.create)
-    initialize._pagebridge_checked = True
-    OpenAITranslator.__init__ = initialize
-
-
-def guarded_translate_wrapper(settings, *args):
-    """Install the checked adapter inside the actual translation subprocess.
-
-    macOS and Windows use spawn: a parent-only monkeypatch does nothing in the
-    process that translates paragraphs. Keep this target at module scope so it
-    can be pickled; the original entrypoint is fresh on spawn and saved on fork.
-    """
-    import pdf2zh_next.high_level as high_level
-    import translation_guard
-    import layout_guard
-    import pdf_links
-    original = _UPSTREAM_TRANSLATE_WRAPPER or high_level._translate_wrapper
-    layout_guard.install()
-    translation_guard.install()
-    install_response_guard()
-    report_path = Path(settings.translation.output) / "translation-quality.json"
-    file, progress_pipe, *remaining = args
-    pdf_links.configure(file)
-    report_written = False
-
-    def write_report():
-        pdf_links.write_mapping(Path(settings.translation.output) / 'link-mapping.json')
-        report = translation_guard.snapshot()
-        report["layoutGuard"] = layout_guard.snapshot()
-        temporary_report = report_path.with_suffix(".json.tmp")
-        temporary_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary_report.replace(report_path)
-
-    class CheckedProgressPipe:
-        def send(self, event):
-            nonlocal report_written
-            # The parent receives finish before upstream's child wrapper returns.
-            # Publish the report first, so accepting results never races teardown.
-            if isinstance(event, dict) and event.get("type") == "finish":
-                write_report()
-                report_written = True
-            return progress_pipe.send(event)
-
-        def __getattr__(self, name):
-            return getattr(progress_pipe, name)
-
-    try:
-        original(settings, file, CheckedProgressPipe(), *remaining)
-    finally:
-        if not report_written:
-            write_report()
-
-
-def read_quality_report(path):
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise WorkerError("翻译质量校验未完成，结果未提交。") from None
-    if not isinstance(report, dict):
-        raise WorkerError("翻译质量校验未完成，结果未提交。")
-    counts = [report.get(key) for key in ("preparedParagraphs", "validatedParagraphs", "unresolvedCount")]
-    if any(type(value) is not int or value < 0 for value in counts) or counts[0] != counts[1] + counts[2]:
-        raise WorkerError("翻译质量校验记录不完整，结果未提交。")
-    if report.get("guardInstalled") is not True or report.get("layoutGuard", {}).get("guardInstalled") is not True or counts[2] != 0:
-        raise WorkerError("部分段落未通过译文完整性校验，已保留上次结果。请重试或更换模型。")
-    return report
-
-
-def artifact_marker_count(text):
-    # PDF text extraction sometimes inserts control characters inside tag names.
-    clean = re.sub(r"[\x00-\x1f\x7f\u200b\u00ad]", "", html.unescape(unicodedata.normalize("NFKC", text)))
-    return len(re.findall(r"<\s*/?\s*(?:span|style|font)\b|[<＜]\s*/?\s*(?:风格|样式)|<\s*/?\s*[a-z][a-z ]{1,16}(?:[=\s][^<>]{0,80})?\s*/?>", clean, re.IGNORECASE))
-
-
-def sha256(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def require_text(data, key, limit=256):
     value = data.get(key)
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
@@ -274,7 +146,7 @@ def provider_request_options(service, *, probe=False):
         result["presence_penalty"] = 0
         if not probe:
             # A pathological paragraph must stop rather than consume the
-            # model's entire context window. A length finish is rejected above.
+            # model's entire context window. A length finish fails that block.
             result["max_tokens"] = 8192
     if provider == "deepSeek":
         result["thinking"] = {"type": "disabled"}
@@ -309,8 +181,7 @@ def normalized_service(service):
     path = url.path.rstrip("/")
     if path.endswith("/chat/completions"):
         raise WorkerError("请填写 Base URL，不要包含 /chat/completions。")
-    # Ollama implements OpenAI chat completions. This gives both kinds the same
-    # timeout-aware official pdf2zh-next translator and response contract.
+    # Ollama implements OpenAI chat completions; both kinds share one response contract.
     if kind == "ollama":
         if path.endswith("/api"):
             path = path[:-4]
@@ -357,19 +228,20 @@ def parse_request(raw):
         value = require_text(request, key, 128)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise WorkerError(f"{key} 格式无效。")
-    if request.get("action") not in ("health", "probe", "translate", "prepare_reading"):
+    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading"):
         raise WorkerError("不支持此操作。")
     if request["action"] in ("probe", "translate"):
         request["service"] = normalized_service(request.get("service"))
+    paths = {"translate": ("inputPath", "outputDirectory"),
+             "export_reading": ("inputPath", "readingPath", "outputPath")}.get(request["action"], ())
+    for key in paths:
+        path = Path(require_text(request, key, 8192)).expanduser()
+        if not path.is_absolute():
+            raise WorkerError(f"{key} 必须是绝对路径。")
+        request[key] = str(path.resolve())
+    if request["action"] == "export_reading" and request.get("kind") not in ("translated", "bilingual"):
+        raise WorkerError("不支持此导出形式。")
     if request["action"] == "translate":
-        request.setdefault("outputMode", "pdf")
-        if request["outputMode"] not in ("pdf", "reading"):
-            raise WorkerError("不支持的译文格式。")
-        for key in ("inputPath", "outputDirectory"):
-            path = Path(require_text(request, key, 8192)).expanduser()
-            if not path.is_absolute():
-                raise WorkerError(f"{key} 必须是绝对路径。")
-            request[key] = str(path.resolve())
         for key, default in (("sourceLanguage", "en"), ("targetLanguage", "zh")):
             request.setdefault(key, default)
             if not isinstance(request[key], str) or not re.fullmatch(r"[a-zA-Z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?", request[key]):
@@ -380,8 +252,6 @@ def parse_request(raw):
         retry = request.get("retryBlockIds")
         reading_path = request.get("readingPath")
         if retry is not None or reading_path is not None:
-            if request["outputMode"] != "reading":
-                raise WorkerError("仅对照阅读支持按块重试。")
             if (not isinstance(retry, list) or not 1 <= len(retry) <= 1000
                     or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) for value in retry)
                     or len(set(retry)) != len(retry)):
@@ -447,10 +317,6 @@ def safe_error(error):
         return "服务请求超时，请检查模型和超时设置。"
     if "connect" in name:
         return "无法连接所选翻译服务，请检查服务是否启动及地址设置。"
-    if "scanned" in message:
-        return "检测到扫描 PDF，当前版本需要可读取文字的 PDF。"
-    if "database is locked" in message:
-        return "引擎翻译缓存正忙，请等待其他任务完成后重试。"
     if isinstance(error, ImportError):  # Includes importlib.metadata.PackageNotFoundError.
         return "翻译引擎安装不完整，请重新安装引擎。"
     return "翻译失败，请检查 PDF、所选模型及引擎资源。"
@@ -498,172 +364,6 @@ def page_selection(value, count):
     return ",".join(map(str, sorted(selected)))
 
 
-def build_settings(request, temporary_output):
-    from pdf2zh_next.config.model import SettingsModel
-    service = request["service"]
-    engine = {"translate_engine_type": "OpenAICompatible", "openai_compatible_base_url": service["baseURL"],
-              "openai_compatible_api_key": service["apiKey"], "openai_compatible_model": service["model"],
-              "openai_compatible_timeout": str(service["timeoutSeconds"])}
-    if service["kind"] == "ollama":
-        engine.update(openai_compatible_send_reasoning_effort=True, openai_compatible_reasoning_effort="none",
-                      openai_compatible_send_temperature=True, openai_compatible_temperature="0")
-    request_options = provider_request_options(service)
-    if "reasoning_effort" in request_options:
-        engine.update(openai_compatible_send_reasoning_effort=True,
-                      openai_compatible_reasoning_effort=request_options["reasoning_effort"])
-    settings = SettingsModel.model_validate({
-        "basic": {"debug": False, "gui": False},
-        "report_interval": 0.2,
-        "translation": {"lang_in": request["sourceLanguage"], "lang_out": request["targetLanguage"],
-                        "output": str(temporary_output), "qps": service["concurrency"],
-                        "pool_max_workers": service["concurrency"], "no_auto_extract_glossary": True,
-                        "ignore_cache": True,
-                        "custom_system_prompt": "/no_think You are a professional scientific translation engine. Translate the human-readable content faithfully. Preserve personal author names, email addresses and URLs in their original spelling. Preserve classification identifiers such as Zone 1/Division 2 and Class I, Div. 1 verbatim. Preserve every formula token, variable, number and unit. Copy all markup tokens byte-for-byte, including tag names, numeric IDs and quotation marks. Never turn style into span or translate tag names. Return only the requested translation or JSON structure."},
-        "pdf": {"pages": request.get("pages"), "no_mono": False, "no_dual": False,
-                "watermark_output_mode": "no_watermark", "use_alternating_pages_dual": True,
-                "only_include_translated_page": False, "translate_table_text": False,
-                "split_short_lines": True, "short_line_split_factor": 0.8,
-                "no_remove_non_formula_lines": True},
-        "gui_settings": {"disable_config_auto_save": True},
-        "translate_engine_settings": engine,
-    })
-    extra_body = {key: value for key, value in request_options.items() if key != "reasoning_effort"}
-    if extra_body:
-        # Convert using the upstream transform, then retain its private request options.
-        # OpenAISettings survives the worker process pickle without putting keys/options in logs.
-        settings.translate_engine_settings = settings.translate_engine_settings.transform()
-        settings.translate_engine_settings._openai_extra_body = extra_body
-    return settings
-
-
-def validate_pdf(path, root, expected_pages):
-    import pymupdf
-    if not path:
-        raise WorkerError("引擎未生成所需的两份 PDF。")
-    resolved = Path(path).resolve()
-    if not resolved.is_relative_to(root.resolve()) or not resolved.is_file() or resolved.stat().st_size < 100:
-        raise WorkerError("引擎返回的输出路径无效。")
-    with pymupdf.open(resolved) as pdf:
-        if pdf.needs_pass or not pdf.is_pdf or pdf.page_count != expected_pages:
-            raise WorkerError("生成的 PDF 未通过页数或格式验证。")
-        # Reading/rendering each output page catches invalid page objects/streams.
-        for page in pdf:
-            page.get_text()
-            page.get_pixmap(matrix=pymupdf.Matrix(0.1, 0.1), alpha=False)
-    return resolved
-
-
-async def translate(request, events):
-    global _UPSTREAM_TRANSLATE_WRAPPER
-    import pymupdf
-    input_path = Path(request["inputPath"])
-    output = Path(request["outputDirectory"])
-    if not input_path.is_file():
-        raise WorkerError("输入 PDF 不存在。")
-    events.emit("stage", stage="preflight", message="正在检查输入 PDF。")
-    try:
-        with pymupdf.open(input_path) as pdf:
-            if pdf.needs_pass or not pdf.is_pdf or pdf.page_count < 1:
-                raise WorkerError("请使用未加密且至少包含一页的 PDF。")
-            page_count = pdf.page_count
-            request["pages"] = page_selection(request.get("pages"), page_count)
-            selected_pages = ([int(number) - 1 for number in request["pages"].split(",")]
-                              if request["pages"] else range(page_count))
-            if not any(pdf[index].get_text().strip() for index in selected_pages):
-                if request["pages"]:
-                    raise WorkerError("所选页面没有可读取的文字，暂不支持纯扫描页。请选择带文字层的页面。")
-                raise WorkerError("PDF 没有可读取的文字，暂不支持纯扫描件。")
-    except WorkerError:
-        raise
-    except Exception:
-        raise WorkerError("无法读取输入 PDF。") from None
-    output.mkdir(parents=True, exist_ok=True)
-    destination = output / ("result-" + request["attemptId"])
-    if destination.exists():
-        raise WorkerError("本次尝试已存在输出，请开始新的翻译尝试。")
-    # Reject unusable input before upstream imports can initialize their cache,
-    # layout resources or translation provider.
-    events.emit("stage", stage="prepare", message="正在加载翻译组件，首次使用可能下载官方版面模型和字体。")
-    import pdf2zh_next.high_level as high_level
-    if _UPSTREAM_TRANSLATE_WRAPPER is None:
-        _UPSTREAM_TRANSLATE_WRAPPER = high_level._translate_wrapper
-        high_level._translate_wrapper = guarded_translate_wrapper
-    input_hash = sha256(input_path)
-    with tempfile.TemporaryDirectory(prefix=".pagebridge-", dir=output) as temporary:
-        temporary = Path(temporary)
-        settings = build_settings(request, temporary)
-        last_stage, last_progress = None, 0.0
-        result = None
-        events.emit("stage", stage="prepare", message="正在准备版面模型和字体，首次使用可能需要下载资源。")
-        stream = high_level.do_translate_async_stream(settings, input_path)
-        try:
-            async for event in stream:
-                kind = event.get("type")
-                if kind == "error":
-                    raise WorkerError(safe_error(Exception(str(event.get("error", "")))))
-                if kind == "finish":
-                    result = event.get("translate_result")
-                    break
-                if kind in ("progress_start", "progress_update", "progress_end"):
-                    # Only recognized fixed labels cross the protocol; upstream
-                    # strings can contain arbitrary data and are not UI messages.
-                    stage, message = STAGES.get(str(event.get("stage", "")), ("translate", "正在处理文档。"))
-                    if stage != last_stage:
-                        last_stage = stage
-                        events.emit("stage", stage=stage, message=message)
-                    progress = event.get("overall_progress")
-                    if isinstance(progress, (float, int)) and math.isfinite(progress):
-                        last_progress = max(last_progress, min(0.98, max(0.0, progress / 100)))
-                        events.emit("progress", stage=stage, progress=last_progress, message=message)
-        finally:
-            await stream.aclose()
-        if result is None:
-            raise WorkerError("翻译进程已结束，但未返回结果。")
-        report_path = temporary / "translation-quality.json"
-        try:
-            quality = read_quality_report(report_path)
-        except WorkerError:
-            # Keep text-free diagnostic counters when rejecting a result. Never
-            # expose the rejected PDFs as a successful result or retain prompts.
-            if report_path.is_file():
-                shutil.copyfile(report_path, output / ("rejected-quality-" + request["attemptId"] + ".json"))
-            raise
-        events.emit("stage", stage="verify", progress=0.99, message="正在验证生成的 PDF。")
-        # no_watermark mode stores the same paths in mono_pdf_path/dual_pdf_path.
-        mono = validate_pdf(result.mono_pdf_path, temporary, page_count)
-        dual = validate_pdf(result.dual_pdf_path, temporary, page_count * 2)
-        if input_path in (mono, dual) or mono == dual:
-            raise WorkerError("引擎未生成独立的译文和双语 PDF。")
-        import pdf_links
-        quality['links'] = pdf_links.restore_links(input_path, mono, dual, temporary / 'link-mapping.json')
-        with pymupdf.open(input_path) as original, pymupdf.open(mono) as translated:
-            for index in selected_pages:
-                if artifact_marker_count(translated[index].get_text()) > artifact_marker_count(original[index].get_text()):
-                    raise WorkerError("译文仍含未解析的样式标记，结果未提交。请重试或更换模型。")
-            original_text = "".join(original[index].get_text() for index in selected_pages)
-            translated_text = "".join(translated[index].get_text() for index in selected_pages)
-            if not translated_text.strip() or re.sub(r"\s+", "", original_text) == re.sub(r"\s+", "", translated_text):
-                raise WorkerError("输出未包含已翻译的文字，请尝试其他模型。")
-            if request["targetLanguage"].lower().startswith("zh") and not re.search(r"[\u3400-\u9fff]", translated_text):
-                raise WorkerError("输出没有中文译文，所选模型可能不兼容。")
-        # Fixed names and same-volume directory rename publish both outputs together.
-        committed = temporary / "committed"
-        committed.mkdir()
-        shutil.copyfile(mono, committed / "translated.pdf")
-        shutil.copyfile(dual, committed / "bilingual.pdf")
-        (committed / "translation-quality.json").write_text(json.dumps(quality, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        manifest = {"protocolVersion": 1, "jobId": request["jobId"], "attemptId": request["attemptId"],
-                    "sourceSHA256": input_hash, "sourcePages": page_count, "pages": request["pages"],
-                    "sourceLanguage": request["sourceLanguage"], "targetLanguage": request["targetLanguage"],
-                    "model": request["service"]["model"], "engineVersions": EXPECTED,
-                    "qualityGuard": quality,
-                    "translatedSHA256": sha256(committed / "translated.pdf"),
-                    "bilingualSHA256": sha256(committed / "bilingual.pdf")}
-        (committed / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        committed.rename(destination)
-        events.emit("result", progress=1.0, translatedPath=str(destination / "translated.pdf"), bilingualPath=str(destination / "bilingual.pdf"), message="翻译完成，译文和双语 PDF 均已通过验证。")
-
-
 async def run(request, events, control_input=None):
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
@@ -678,19 +378,18 @@ async def run(request, events, control_input=None):
     events.emit("ready", engineVersion=version)
     if request["action"] == "health":
         import pymupdf
-        import onnxruntime
-        # Importing pdf2zh_next opens a shared SQLite translation cache. Health
-        # must remain safe to run while a translation worker owns that cache.
-        events.emit("result", message="引擎依赖已就绪，首次翻译可能需要下载官方模型和字体。")
+        import psutil
+        events.emit("result", message="引擎依赖已就绪，首次翻译会准备 MinerU 本地识别组件。")
     elif request["action"] == "probe":
         await probe(request, events)
     elif request["action"] == "prepare_reading":
         from structured_reading import prepare
         await prepare(events)
-    elif request.get("outputMode") == "reading":
-        from structured_reading import translate as translate_reading
-        await translate_reading(request, events)
+    elif request["action"] == "export_reading":
+        from reading_export import export
+        await export(request, events)
     else:
+        from structured_reading import translate
         await translate(request, events)
 
 
@@ -709,6 +408,7 @@ def main():
     os.dup2(null, 2)
     os.close(null)
     events = Events(protocol)
+    action = None
     try:
         control_input = ProtocolInput(sys.stdin.fileno())
         raw = control_input.readline()
@@ -719,11 +419,12 @@ def main():
         except (ValueError, UnicodeError):
             pass
         request = parse_request(raw)
+        action = request["action"]
         events = Events(protocol, request)
         asyncio.run(run(request, events, control_input))
         return 0
     except (asyncio.CancelledError, KeyboardInterrupt):
-        events.emit("error", stage="cancelled", message="翻译已取消。")
+        events.emit("error", stage="cancelled", message="导出已取消。" if action == "export_reading" else "翻译已取消。")
         return 130
     except BaseException as error:
         message = safe_error(error)
