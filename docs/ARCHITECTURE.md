@@ -15,7 +15,7 @@
 
 ## 原页版式阅读稿
 
-默认的翻译输出。流程：**原 PDF → MinerU 逐页解析出带坐标的块 → 每个完整段落独立翻译 → `reading.json` + `manifest.json` → 原生页画布显示**。协议与产物格式见 [engine/STRUCTURED_READING.md](../engine/STRUCTURED_READING.md)。
+流程：**原 PDF → MinerU 逐页解析出带坐标的块 → 每个完整段落独立翻译 → `reading.json` + `manifest.json` → 原生页画布显示**。协议与产物格式见 [engine/STRUCTURED_READING.md](../engine/STRUCTURED_READING.md)。
 
 - **解析：** 每个所选物理页在独立子进程中解析，单页失败继续处理其余页。子进程清除 Python 路径变量和名称像密钥的环境变量；推理只用本地模型。坐标为归一化的原页左上角 PDF 点（旋转后扣除页面原点），没有可靠坐标的块只在页旁入口显示。
 - **背景：** 有原生文字的页面，在内存副本中透明移除已翻译段落的原字形，得到保留照片、色块、水印和细线的 `backgroundImage`；只有 `backgroundBlocks` 列出的块在其上绘制译文，不填纯色矩形。描边和填充形状的边界只用于恢复原页像素。
@@ -28,7 +28,7 @@
 
 ### 为什么选择 MinerU
 
-在重排 PDF 路径上为单篇文档不断追加内容规则，无法解决版面解析、表格漏译、日文漏译和表单控件丢失等问题。因此改为“保留原 PDF，在原页上叠加结构化译文”的阅读模式，并对四种解析方案在六份公开 PDF 的七个问题页上做了同条件实测（同一模型、提示和分批）：
+阅读模式保留原 PDF，在原页上叠加结构化译文。选择解析器时，对四种方案在六份公开 PDF 的七个问题页上做了同条件实测（同一模型、提示和分批）：
 
 | 方案 | 结果 | 定位 |
 |---|---|---|
@@ -39,18 +39,13 @@
 
 实测得出的设计约束：强制 OCR 不能统一解决表格；结构化输出不保证数字归属正确；以视觉行为翻译单位会让模型把译文挪到相邻块，所以按完整段落翻译并把失败限制在单块；没有哪个方案对扫描页全面胜出；表单只能保留在原 PDF 中。MinerU 的许可证含附加条款，见[第三方说明](../THIRD_PARTY_NOTICES.md#按需下载的对照阅读组件)。
 
-## 重排 PDF
+## 导出译文 PDF 与双语 PDF
 
-由锁定的 PDFMathTranslate-next 2.9.0 / BabelDOC 0.6.2 解析、翻译并重新排版，生成单语 N 页和双语 2N 页 PDF。worker 通过官方 `pdf2zh_next.high_level.do_translate_async_stream` 调用上游，并接入内部数据结构做内容与排版保护，因此升级上游需要重新审查和验证。
+宿主先让用户选择保存位置，再启动 worker 的 `export_reading`（见 [engine/README.md](../engine/README.md#request-and-response-protocol)），只读取原 PDF 和已提交的 `reading.json`，不调用翻译服务、不联网。worker 核对阅读稿的源 SHA-256 与页数，在目标文件夹写临时文件，重新打开核对页数后才替换目标文件。
 
-1. 导入时检查 PDF，在应用数据目录创建副本并记录 SHA-256。
-2. worker 解析源文档，记录源字形与段落结构，保护变量、数值、元数据、目录、索引和列表。
-3. 每段模型回复检查占位符、原公式对象、数字与技术标识和漏译；有问题时用完整语境重试，无法恢复则任务失败。
-4. 排版保留有源证据的上下标与列表关系；链接按源到译文的内容映射恢复，不直接拷贝源链接框。
-5. 重新读取输出，验证页数、源哈希和标记，一次提交译文、双语文件和 manifest。
-6. 宿主原子更新文档记录。完整性检查失败时只保存白名单诊断（计数、原因类别、段落哈希）到文档的 `diagnostics/<attempt>.json`，然后清理临时目录。
-
-各项保护规则（跨栏与跨页断句、姓名字形组、数字与公式恢复、链接映射等）都要求源字形、几何和语法证据同时明确，见 [engine/README.md](../engine/README.md#content-and-layout-protection)。此模式不提供 OCR；所选页都没有可提取文字时，在加载翻译组件前即被拒绝。
+- **译文页：** 从原页本身开始，图片、线条和未译文字保持矢量。有原生文字的页面只删去 `backgroundBlocks` 中译文块的原字形，规则与页画布背景相同；扫描页用各块的 `backgroundColor` 覆盖译文区域（图表、公式和代码区域除外），并删去其下不可见的 OCR 文字层。译文用 PyMuPDF `Story` 写成真实文字：起始字号取区域内原文字号的中位数（下限 8 点，表格标签 6.5 点），放不下时整体缩小到放进原框，不截断；行内公式从原页同一矩形裁图嵌入。`preserved` 与 `source_fallback` 块保持原样，被删文字上的链接重新加回。
+- **页序：** 译文 PDF 与原文页数相同，未选页原样复制；双语 PDF 在每个已选原页之后插入其译文页。
+- **字体：** 中文、拉丁文字和数学符号使用 MuPDF 内置字体，只嵌入用到的子集，许可见[第三方说明](../THIRD_PARTY_NOTICES.md#导出-pdf-中的字体)。
 
 ## 文档库与批注
 
@@ -58,7 +53,7 @@ Mac 的 `LibraryStore` 在 `library.json` 中按文档 UUID 保存文件夹、�
 
 `PDFPreviewCache` 在独立 actor 中生成缩略图并读取 PDF 大纲，限制缓存的文档数、缩略图数和字节数。个人书签来自阅读元数据，与 PDF 内置目录分开显示。
 
-`AnnotationStore` 按文档 UUID、原文／译文和 PDF 文件 SHA-256 保存高亮、下划线、笔记和书签，坐标为 PDF 页面坐标；保存和导出时核对哈希，重新翻译的文件不复用旧坐标。批注作为 PDFKit 叠加层显示，工作文件不被改写；显示层只接管 PageBridge 创建的批注对象，源 PDF 自带的批注、链接、表单和文字选择保持 PDFKit 原生处理。便笺点击和批注右键打开 `ReaderWorkspace` 的编辑器；编辑前快照原文／译文绑定，保存时重新核对，防止切换文档或重新翻译时写错。批注 PDF 导出重新打开对应文件并写入完整批注内容；Markdown 导出包含来源、页码、摘录和哈希。
+`AnnotationStore` 按文档 UUID 和原 PDF 的 SHA-256 保存高亮、下划线、笔记和书签，坐标为 PDF 页面坐标；保存和导出时核对哈希。批注只加在原 PDF 上。批注作为 PDFKit 叠加层显示，工作文件不被改写；显示层只接管 PageBridge 创建的批注对象，源 PDF 自带的批注、链接、表单和文字选择保持 PDFKit 原生处理。便笺点击和批注右键打开 `ReaderWorkspace` 的编辑器；编辑前快照文档与哈希绑定，保存时重新核对，防止切换文档时写错。批注 PDF 导出重新打开对应文件并写入完整批注内容；Markdown 导出包含来源、页码、摘录和哈希。
 
 ## 在线文献检索
 
@@ -86,17 +81,16 @@ Windows 由 `desktop/pagebridge/literature.py` 和 `SciHubBrowserPanel` 实现�
 | API Key | macOS 钥匙串 | Windows 凭据管理器 |
 | MinerU 运行环境 | `…/PageBridge/mineru/4.0.12/` | `%LOCALAPPDATA%\PageBridge\mineru\4.0.12\` |
 
-Mac 数据目录中：`documents.json`（文档记录）、`services.json`（不含密钥的服务配置）、`library.json`（分类）、`annotations/<文档 UUID>/<原文或译文>/<PDF 哈希>.json`、`assistant/<文档 UUID>.json`。每份文档有原始副本、`results/`（已提交的译文 PDF 或阅读稿）和 `diagnostics/`。元数据都以原子方式写入 JSON。
+Mac 数据目录中：`documents.json`（文档记录）、`services.json`（不含密钥的服务配置）、`library.json`（分类）、`annotations/<文档 UUID>/original/<PDF 哈希>.json`、`assistant/<文档 UUID>.json`。每份文档有原始副本和各次翻译的输出目录（已提交的阅读稿在其中）。元数据都以原子方式写入 JSON。
 
-重排 PDF 的上游还会使用 `~/.config/pdf2zh/`、`~/.cache/babeldoc`（字体与版面资源）和 `~/.cache/pdf2zh_next`；worker 关闭了翻译缓存读写，但不会删除已有缓存。测试日志和模型调试响应可能包含文档文字，不应公开。
+测试日志和模型调试响应可能包含文档文字，不应公开。
 
 ## 本地与在线
 
 | 功能 | 本机处理 | 联网 |
 |---|---|---|
-| 解析、排版、预览、批注、助手片段提取 | 全部 | 无 |
+| 解析、排版、导出、预览、批注、助手片段提取 | 全部 | 无 |
 | MinerU 首次准备 | — | Python 与依赖（GitHub、PyPI），模型（ModelScope 或 Hugging Face） |
-| 重排 PDF 首次使用 | — | 上游字体与版面资源 |
 | 本机 Ollama 翻译／问答 | 全部（仅连接回环地址） | 无 |
 | 在线 API 翻译／问答 | — | 待翻译文本，或问题、片段与近期对话发送至所选服务 |
 | 文献检索与下载 | — | 检索词发往 OpenAlex，DOI 发往所选 Sci-Hub 站点，下载连接文献来源 |

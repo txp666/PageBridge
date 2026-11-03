@@ -1,5 +1,19 @@
 # 版本记录
 
+## 未发布
+
+**不兼容变更：** 移除“重排 PDF”模式，翻译只生成原页版式阅读稿。0.5.x 以“重排 PDF”生成的译文不再显示，文件仍保留在磁盘上，直到删除该文档；请用阅读模式重新翻译。译文 PDF 上的批注也不再显示，批注只加在原 PDF 上。
+
+- 阅读稿可从“导出 PDF”菜单导出为译文 PDF（页数与原文相同，未翻译的页不变）或双语 PDF（每个已翻译的页紧跟在原页之后）。译文是可选择、可搜索的文字，放不下时缩小字号，不截断；导出在本机完成，不需要翻译服务。
+- 应用大幅变小：Mac ZIP 从约 230 MB 减到约 60 MB，安装后从约 670 MB 减到约 150 MB；Windows 安装器从约 200 MB 减到约 90 MB，安装后从约 830 MB 减到约 330 MB。两端都不再附带 PDFMathTranslate-next、BabelDOC 和 ONNX Runtime。
+
+**English**
+
+**Breaking change:** The Reflowed PDF (重排 PDF) mode is removed; translating always produces an original-layout reading draft. Translations made in Reflowed PDF mode by 0.5.x are no longer shown; their files stay on disk until the document is deleted, so translate again in reading mode. Annotations on translated PDFs are no longer shown; annotations go on the original PDF only.
+
+- Reading drafts export from the "导出 PDF" menu to a translated PDF (same page count as the original, untranslated pages unchanged) or a bilingual PDF (each translated page right after its original). The translation is real, selectable and searchable text, shrunk to fit rather than truncated; export runs locally and needs no translation service.
+- Much smaller apps: the Mac ZIP drops from about 230 MB to about 60 MB and the installed app from about 670 MB to about 150 MB; the Windows installer from about 200 MB to about 90 MB and the installed app from about 830 MB to about 330 MB. Neither platform ships PDFMathTranslate-next, BabelDOC or ONNX Runtime any more.
+
 ## 0.5.1 / build 15 — MinerU 模型下载修复
 
 修复首次使用阅读模式时一直停在“正在下载 MinerU 模型”的问题。
