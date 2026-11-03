@@ -152,6 +152,7 @@ public sealed partial class MainWindow : Window
         await UnbindDocumentAsync();
         if (generation != selectionGeneration) return;
         ContinuousPdfPane.Anchor? retainedPosition = Text(selected, "id") == Text(doc, "id") ? ActiveReadingPosition : null;
+        if (Text(selected, "id") != Text(doc, "id")) annotationHistory.Clear();
         bindingPages = true; selected = doc; loading = true; title.Text = Path.GetFileNameWithoutExtension(Text(doc, "name")); subtitle.Text = $"{LanguageName(Text(doc, "source_language"))} → {LanguageName(Text(doc, "target_language"))} · {doc["page_count"]} 页";
         ResetStructuredReading();
         if (mode.SelectedIndex == 2 && !HasReading) mode.SelectedIndex = 0;

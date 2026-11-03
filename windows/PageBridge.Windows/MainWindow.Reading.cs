@@ -22,6 +22,8 @@ public sealed partial class MainWindow
     private string? inspectorKind;
     private string navigationIdentity = "", annotationHash = "";
     private JsonArray savedAnnotations = [];
+    private readonly AnnotationHistory annotationHistory = new();
+    private bool steppingAnnotations;
 
     private void InitializeReadingWorkspace()
     {
@@ -61,12 +63,14 @@ public sealed partial class MainWindow
         Grid.SetRow(inspectorContent, 1); readingInspector.Children.Add(inspectorContent);
         annotationsPanel = new AnnotationsPanel(backend, ShowDialogAsync, NavigateReading, AddMarkupAsync, AddNoteAsync, ToggleBookmarkAsync, ExportAnnotationsAsync);
         annotationsPanel.AnnotationsChanged += AcceptAnnotations;
+        annotationsPanel.StepCompleted += annotationHistory.Record;
         assistantPanel = new AssistantPanel(backend, NavigateReading, () => Math.Max(0, (int)page.Value - 1), () => originalPages.Selection?.Text ?? "", SaveNoteAsync, ShowDialogAsync, () => originalPages.Selection?.Page ?? Math.Max(0, (int)page.Value - 1));
         inspectorContent.Children.Add(assistantPanel); inspectorContent.Children.Add(annotationsPanel);
         readerArea.SizeChanged += (_, _) => UpdateReadingVisibility();
         originalPages.SelectionChanged += _ => { UpdateSelectionTools(); assistantPanel.RefreshContext(); };
         originalPages.SelectionAction += async (_, action) => await Attempt(async () => { ActivateOriginal(); if (action == "assistant") { await ShowInspectorAsync("assistant"); assistantPanel.UseSelectionContext(); } else if (action == "note") await AddNoteAsync(); else await AddMarkupAsync(action); });
         originalPages.AnnotationInvoked += async (_, id) => await Attempt(async () => { ActivateOriginal(); await ShowInspectorAsync("notes"); await annotationsPanel.EditAnnotationAsync(id); });
+        originalPages.AnnotationDeleteRequested += async (_, id) => await Attempt(async () => { ActivateOriginal(); if (await annotationsPanel.DeleteAnnotationAsync(id)) status.Text = "批注已删除"; });
         UpdateReadingTheme(); UpdateReadingVisibility(); UpdateSelectionTools();
     }
 
@@ -194,7 +198,35 @@ public sealed partial class MainWindow
     private void AcceptAnnotations(string hash, JsonArray items)
     {
         annotationHash = hash; savedAnnotations = (JsonArray)items.DeepClone();
+        annotationHistory.Bind(Text(selected, "id"), hash);
         originalPages.SetAnnotations(items); RefreshBookmarks();
+    }
+    private void RecordAnnotationStep(string id, JsonNode? response, JsonNode? before, JsonNode? after)
+    {
+        if (before is null && after is null) return;
+        annotationHistory.Record(id, Text(response, "source_sha256"), new AnnotationStep(before?.DeepClone() as JsonObject, after?.DeepClone() as JsonObject));
+    }
+    /// <summary>One undo or redo at a time; input during the bridge call is ignored.</summary>
+    private async Task StepAnnotationsAsync(bool redo)
+    {
+        if (selected is null || steppingAnnotations || annotationsPanel.IsBusy) return;
+        string id = Text(selected, "id"), hash = annotationHash; int generation = selectionGeneration;
+        if (annotationHistory.Take(redo, id, hash) is not { } next) { status.Text = redo ? "没有可重做的批注操作" : "没有可撤销的批注操作"; return; }
+        var (step, version) = next;
+        var (action, args) = redo ? AnnotationStep.Request(id, hash, step.Before, step.After) : AnnotationStep.Request(id, hash, step.After, step.Before);
+        steppingAnnotations = true;
+        try
+        {
+            JsonNode? response;
+            try { response = await backend.CallAsync(action, args); }
+            catch { annotationHistory.Clear(); throw; }
+            annotationHistory.Complete(redo, step, version);
+            if (generation != selectionGeneration || id != Text(selected, "id")) return;
+            string message = (redo ? "已重做：" : "已撤销：") + step.Label;
+            if (!annotationsPanel.Accept(id, response, message)) AcceptAnnotations(Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []);
+            status.Text = message;
+        }
+        finally { steppingAnnotations = false; }
     }
     private async Task LoadReadingAsync()
     {
@@ -249,8 +281,10 @@ public sealed partial class MainWindow
     {
         if (selected is null || originalPages.Selection is not { } selection) { status.Text = "请先在 PDF 中拖动选择文字，再添加高亮或下划线。"; return; }
         string id = Text(selected, "id"); int generation = selectionGeneration;
+        var known = savedAnnotations.Select(a => Text(a, "id")).ToHashSet();
         var response = await backend.CallAsync("save_annotation", new JsonObject { ["document_id"] = id, ["source_sha256"] = selection.SourceHash, ["annotation"] = new JsonObject { ["kind"] = kind, ["page"] = selection.Page, ["regions"] = selection.Regions, ["selected_text"] = selection.Text, ["note"] = "" } });
         if (generation != selectionGeneration || id != Text(selected, "id")) return;
+        RecordAnnotationStep(id, response, null, response?["annotations"]?.AsArray().LastOrDefault(a => !known.Contains(Text(a, "id"))));
         AcceptAnnotations(Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []);
         if (ReferenceEquals(originalPages.Selection, selection)) originalPages.ClearSelection();
         await annotationsPanel.RefreshAsync();
@@ -263,8 +297,10 @@ public sealed partial class MainWindow
         var existing = savedAnnotations.FirstOrDefault(a => Text(a, "kind") == "bookmark" && a?["page"]?.GetValue<int>() == number);
         var args = new JsonObject { ["document_id"] = id, ["source_sha256"] = annotationHash };
         if (existing is not null) args["annotation_id"] = Text(existing, "id"); else args["annotation"] = new JsonObject { ["kind"] = "bookmark", ["page"] = number, ["regions"] = new JsonArray(), ["note"] = "", ["selected_text"] = "" };
+        var known = savedAnnotations.Select(a => Text(a, "id")).ToHashSet();
         var response = await backend.CallAsync(existing is null ? "save_annotation" : "delete_annotation", args);
         if (generation != selectionGeneration || id != Text(selected, "id")) return;
+        RecordAnnotationStep(id, response, existing, existing is null ? response?["annotations"]?.AsArray().LastOrDefault(a => !known.Contains(Text(a, "id"))) : null);
         AcceptAnnotations(Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []); await annotationsPanel.RefreshAsync();
         status.Text = existing is null ? "已添加当前页书签" : "已移除当前页书签";
     }
