@@ -23,10 +23,7 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
     public var pageCount: Int
     public var status: DocumentStatus
     public var inputPath: String
-    public var translatedPath: String?
-    public var bilingualPath: String?
     public var readingPath: String?
-    public var preferredOutputMode: String?
     public var sourceLanguage: String
     public var targetLanguage: String
     public var lastError: String?
@@ -40,13 +37,12 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
         self.sourceLanguage = "en"; self.targetLanguage = "zh"
     }
     public var readingURL: URL? { readingPath.map(URL.init(fileURLWithPath:)) }
-    public var hasTranslation: Bool { readingPath != nil || translatedPath != nil }
-    public var originalURL: URL { URL(fileURLWithPath: inputPath) }
-    public var translatedURL: URL? { translatedPath.map(URL.init(fileURLWithPath:)) }
-    public var bilingualURL: URL? { bilingualPath.map(URL.init(fileURLWithPath:)) }
-    public func url(for kind: ExportKind) -> URL? {
-        switch kind { case .original: originalURL; case .translated: translatedURL; case .bilingual: bilingualURL }
+    public var hasTranslation: Bool { readingPath != nil }
+    /// A 0.5.x 重排 PDF result is no longer shown, so such a document reads as untranslated.
+    public var statusTitle: String {
+        (status == .completed || status == .partial) && readingPath == nil ? DocumentStatus.ready.title : status.title
     }
+    public var originalURL: URL { URL(fileURLWithPath: inputPath) }
 }
 
 public enum ReadingMode: String, CaseIterable, Identifiable, Sendable {

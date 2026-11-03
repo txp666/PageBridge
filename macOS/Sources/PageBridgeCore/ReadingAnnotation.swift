@@ -2,19 +2,12 @@ import Foundation
 import PDFKit
 import AppKit
 
-public enum PDFDocumentVariant: String, Codable, CaseIterable, Identifiable, Sendable {
-    case original, translated
-    public var id: String { rawValue }
-    public var title: String { self == .original ? "原文" : "译文" }
-}
-
-/// A revision is the PDF's bytes, not its filename or the document's latest attempt.
+/// Annotations belong to the original PDF. A revision is its bytes, not its filename.
 public struct AnnotationBinding: Codable, Hashable, Sendable {
     public var documentID: UUID
-    public var variant: PDFDocumentVariant
     public var sourceSHA256: String
-    public init(documentID: UUID, variant: PDFDocumentVariant, sourceSHA256: String) {
-        self.documentID = documentID; self.variant = variant; self.sourceSHA256 = sourceSHA256
+    public init(documentID: UUID, sourceSHA256: String) {
+        self.documentID = documentID; self.sourceSHA256 = sourceSHA256
     }
 }
 

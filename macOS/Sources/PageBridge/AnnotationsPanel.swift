@@ -13,9 +13,6 @@ struct AnnotationsPanel: View {
                 Button { workspace.addNote() } label: { Image(systemName: "square.and.pencil") }
                     .help("在选区或当前页添加笔记").disabled(!workspace.hasDocument)
             }.padding()
-            Picker("批注来源", selection: $workspace.selectedVariant) {
-                ForEach(PDFDocumentVariant.allCases) { variant in Text(variant.title).tag(variant) }
-            }.pickerStyle(.segmented).padding(.horizontal).padding(.bottom, 10)
             HStack {
                 Button { workspace.highlightSelection() } label: { Image(systemName: "highlighter") }.help("高亮选中文字").disabled(!workspace.canAnnotateSelection)
                 Button { workspace.underlineSelection() } label: { Image(systemName: "underline") }.help("为选中文字添加下划线").disabled(!workspace.canAnnotateSelection)

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The reading artifact stores translated text alongside its immutable source
-/// identity. It is deliberately independent of a regenerated PDF's page count.
+/// identity.
 public struct StructuredReadingDocument: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var artifactType: String
@@ -211,7 +211,6 @@ extension DocumentRepository {
         try fm.moveItem(at: commit, to: destination)
         var updated = document
         updated.readingPath = destination.appendingPathComponent("reading.json").path
-        updated.preferredOutputMode = "reading"
         updated.sourceLanguage = reading.sourceLanguage; updated.targetLanguage = reading.targetLanguage
         updated.status = reading.isPartial ? .partial : .completed
         updated.lastError = nil; updated.attemptID = attempt

@@ -151,7 +151,7 @@ private struct StructuredReadingBlockDetails: View {
                 Spacer()
                 Button("定位原文", action: onLocate).buttonStyle(.link)
                 if block.status == "source_fallback" {
-                    Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isTranslating)
+                    Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isWorkerBusy)
                 }
             }
             if let error = block.error {

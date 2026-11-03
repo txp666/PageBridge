@@ -15,9 +15,10 @@ public final class AnnotationStore {
         guard binding.sourceSHA256.count == 64, binding.sourceSHA256.allSatisfy({ "0123456789abcdef".contains($0) }) else {
             throw BridgeError.message("批注文件的 PDF 校验值无效。")
         }
+        // Only the original PDF is annotated; its folder name is part of the stored layout.
         return root.appendingPathComponent("annotations", isDirectory: true)
             .appendingPathComponent(binding.documentID.uuidString, isDirectory: true)
-            .appendingPathComponent(binding.variant.rawValue, isDirectory: true)
+            .appendingPathComponent("original", isDirectory: true)
             .appendingPathComponent(binding.sourceSHA256 + ".json")
     }
     public func load(for binding: AnnotationBinding) throws -> [ReadingAnnotation] {
@@ -55,7 +56,7 @@ public final class AnnotationStore {
         try Data(text.utf8).write(to: destination, options: .atomic)
     }
     public func markdown(title: String, binding: AnnotationBinding, annotations: [ReadingAnnotation]) -> String {
-        var lines = ["# " + title.replacingOccurrences(of: "\n", with: " "), "", "来源：\(binding.variant.title)", "", "PDF SHA-256：`\(binding.sourceSHA256)`", ""]
+        var lines = ["# " + title.replacingOccurrences(of: "\n", with: " "), "", "原文 PDF SHA-256：`\(binding.sourceSHA256)`", ""]
         for item in annotations.sorted(by: { $0.page == $1.page ? $0.createdAt < $1.createdAt : $0.page < $1.page }) {
             lines += ["## 第 \(item.page) 页 · \(item.kind.title)", ""]
             if !item.selectedText.isEmpty { lines += item.selectedText.components(separatedBy: .newlines).map { "> " + $0 }; lines.append("") }
@@ -68,7 +69,7 @@ public final class AnnotationStore {
         let managed = root.resolvingSymlinksInPath().standardizedFileURL.path
         guard target.isFileURL, target.path != managed, !target.path.hasPrefix(managed + "/"),
               !protectedURLs.contains(where: { $0.resolvingSymlinksInPath().standardizedFileURL == target }) else {
-            throw BridgeError.message("请另存到文稿或桌面；不能覆盖原文、译文或 PageBridge 工作文件。")
+            throw BridgeError.message("请另存到文稿或桌面；不能覆盖原文或 PageBridge 工作文件。")
         }
     }
 }

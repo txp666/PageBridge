@@ -28,23 +28,19 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertTrue(document.write(to: url))
         return url
     }
-    private func binding(_ url: URL, variant: PDFDocumentVariant = .original, id: UUID = UUID()) throws -> AnnotationBinding {
-        AnnotationBinding(documentID: id, variant: variant, sourceSHA256: try DocumentRepository.sha256(url))
+    private func binding(_ url: URL, id: UUID = UUID()) throws -> AnnotationBinding {
+        AnnotationBinding(documentID: id, sourceSHA256: try DocumentRepository.sha256(url))
     }
-    func testOriginalTranslatedAndNewRevisionAreIsolatedEvenWithSameBytes() throws {
-        let source = try pdf("source.pdf"), updated = try pdf("new-translation.pdf", text: "A different translation")
-        let id = UUID(), original = try binding(source, id: id), translated = try binding(source, variant: .translated, id: id)
-        let newTranslation = try binding(updated, variant: .translated, id: id)
+    func testAnnotationsBelongToTheExactPDFRevision() throws {
+        let source = try pdf("source.pdf"), updated = try pdf("new-revision.pdf", text: "A different revision")
+        let id = UUID(), original = try binding(source, id: id), revised = try binding(updated, id: id)
         let store = try AnnotationStore(root: root.appendingPathComponent("library"))
-        let note = ReadingAnnotation(kind: .note, page: 1, note: "original only")
+        let note = ReadingAnnotation(kind: .note, page: 1, note: "first revision only")
         try store.save([note], for: original, sourceURL: source)
-        XCTAssertEqual(try store.load(for: translated), [])
-        try store.save([ReadingAnnotation(kind: .bookmark, page: 1)], for: translated, sourceURL: source)
-        XCTAssertEqual(try store.load(for: newTranslation), [])
+        XCTAssertEqual(try store.load(for: revised), [])
         XCTAssertEqual(try store.load(for: original), [note])
-        XCTAssertEqual(try store.load(for: translated).count, 1)
-        XCTAssertThrowsError(try store.save([note], for: translated, sourceURL: updated))
-        XCTAssertThrowsError(try store.exportAnnotatedPDF(source: updated, binding: translated, destination: root.appendingPathComponent("bad.pdf")))
+        XCTAssertThrowsError(try store.save([note], for: original, sourceURL: updated))
+        XCTAssertThrowsError(try store.exportAnnotatedPDF(source: updated, binding: original, destination: root.appendingPathComponent("bad.pdf")))
     }
     func testMultiLinePageSpaceSelectionSurvivesAllPageRotationsAndPDFExport() throws {
         for rotation in [0, 90, 180, 270] {
@@ -224,7 +220,7 @@ final class AnnotationStoreTests: XCTestCase {
         try store.save([], for: key, sourceURL: source)
         let file = try store.fileURL(for: key)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        var b = try XCTUnwrap(json["binding"] as? [String: Any]); b["variant"] = "translated"; json["binding"] = b
+        var b = try XCTUnwrap(json["binding"] as? [String: Any]); b["documentID"] = UUID().uuidString; json["binding"] = b
         try JSONSerialization.data(withJSONObject: json).write(to: file)
         XCTAssertThrowsError(try store.load(for: key))
     }

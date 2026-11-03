@@ -36,16 +36,12 @@ final class StructuredReadingTests: XCTestCase {
         return (staging, event)
     }
 
-    func testPartialReadingCommitsAndSurvivesRestartWithoutReplacingPDFResults() throws {
-        let (repository, imported) = try fixture()
-        var record = imported; record.translatedPath = "/previous/translated.pdf"; record.bilingualPath = "/previous/bilingual.pdf"
+    func testPartialReadingCommitsAndSurvivesRestart() throws {
+        let (repository, record) = try fixture()
         let attempt = UUID(), reading = artifact(record)
         let (staging, event) = try staged(reading, record: record, repository: repository, attempt: attempt)
         let updated = try repository.commitReading(result: event, document: record, attempt: attempt, staging: staging)
         XCTAssertEqual(updated.status, .partial)
-        XCTAssertEqual(updated.translatedPath, record.translatedPath)
-        XCTAssertEqual(updated.bilingualPath, record.bilingualPath)
-        XCTAssertEqual(updated.preferredOutputMode, "reading")
         try repository.saveDocuments([updated])
         try FileManager.default.removeItem(at: staging)
         let restarted = try DocumentRepository(root: repository.root).loadDocuments().first!

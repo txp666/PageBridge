@@ -10,7 +10,6 @@ struct ContentView: View {
     @AppStorage("PageBridge.showPageNavigation") private var showsNavigation = true
     @AppStorage("PageBridge.assistantServiceID") private var assistantServiceID = ""
     @State private var inspector: ReaderInspector?
-    @State private var navigationVariant: PDFDocumentVariant = .original
     @State private var pageNavigation = PDFPageNavigation()
     @State private var independentTranslatedPage = 1
     @State private var isDropTargeted = false
@@ -75,30 +74,17 @@ struct ContentView: View {
             showsSearchResults = false
             openReadingWorkspace()
         }
-        .onChange(of: model.selectedDocument?.translatedPath) { _, _ in openReadingWorkspace() }
         .onChange(of: model.selectedDocument?.readingPath) { _, _ in openReadingWorkspace() }
         .onChange(of: model.readingNavigationRequest) { _, request in
-            if let request { navigate(to: request.page, variant: .original) }
-        }
-        .onChange(of: model.usesStructuredReading) { _, _ in
-            workspace.clearSelection(); openReadingWorkspace()
-            model.searchHits = []; model.searchQuery = ""
+            if let request { navigate(to: request.page, inOriginal: true) }
         }
         .onChange(of: model.selectedDocument?.name) { _, _ in
             if let document = model.selectedDocument { workspace.open(document: document) }
         }
         .onChange(of: model.readingMode) { _, mode in
-            if mode != .dual {
-                let structured = model.selectedDocument.map(usesStructuredReader) ?? false
-                workspace.selectedVariant = mode == .translated && !structured ? .translated : .original
-                if structured { workspace.clearSelection() }
-            }
+            if mode != .dual { workspace.clearSelection() }
         }
-        .onChange(of: model.page) { _, value in
-            if model.syncScrolling || workspace.selectedVariant == .original || model.readingMode != .dual {
-                workspace.currentPage = value
-            }
-        }
+        .onChange(of: model.page) { _, value in workspace.currentPage = value }
         .onChange(of: model.searchHits.count) { _, count in
             if model.searchPresented && count > 0 { showsSearchResults = true }
         }
@@ -122,31 +108,25 @@ struct ContentView: View {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
                     if showsNavigation && (inspector == nil || geometry.size.width >= 1180) {
-                        PDFNavigationPanel(document: document, url: navigationURL(document), page: workspace.currentPage,
-                                           bookmarks: workspace.bookmarkPageNumbers) { navigate(to: $0, variant: workspace.selectedVariant) }
+                        PDFNavigationPanel(document: document, url: document.originalURL, page: workspace.currentPage,
+                                           bookmarks: workspace.bookmarkPageNumbers) { navigate(to: $0, inOriginal: true) }
                         Divider()
                     }
                     HStack(spacing: 1) {
-                        if effectiveMode(document) != .translated {
-                            pane(document.originalURL, variant: .original, document: document)
-                        }
+                        if effectiveMode(document) != .translated { originalPane(document) }
                         if effectiveMode(document) == .dual { Divider() }
                         if effectiveMode(document) != .original {
-                            if usesStructuredReader(document) {
-                                StructuredReadingView(model: model, document: document,
-                                    pageNumber: effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
-                                    navigation: pageNavigation,
-                                    acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual || navigationVariant == .translated,
-                                    synchronizesScrolling: model.syncScrolling && effectiveMode(document) == .dual,
-                                    synchronizer: scrollSynchronizer,
-                                    onLocate: { page, bbox in
-                                        model.readingMode = .dual
-                                        navigate(to: page, variant: .original)
-                                        pageNavigation = PDFPageNavigation(page: page, sourceBounds: bbox)
-                                    })
-                            } else if let url = readableTranslation(document) {
-                                pane(url, variant: .translated, document: document)
-                            }
+                            StructuredReadingView(model: model, document: document,
+                                pageNumber: effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
+                                navigation: pageNavigation,
+                                acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual,
+                                synchronizesScrolling: model.syncScrolling && effectiveMode(document) == .dual,
+                                synchronizer: scrollSynchronizer,
+                                onLocate: { page, bbox in
+                                    model.readingMode = .dual
+                                    navigate(to: page, inOriginal: true)
+                                    pageNavigation = PDFPageNavigation(page: page, sourceBounds: bbox)
+                                })
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let inspector {
@@ -156,7 +136,7 @@ struct ContentView: View {
                 }
             }
             .background(Color(nsColor: .separatorColor).opacity(0.2))
-            if model.isTranslating { translationProgress }
+            if model.isWorkerBusy { jobProgress }
             else if !model.statusMessage.isEmpty {
                 HStack(spacing: 7) {
                     Image(systemName: "info.circle").foregroundStyle(.secondary)
@@ -183,12 +163,6 @@ struct ContentView: View {
             }
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
             .help("\(document.name)\n\(documentSummary(document))")
-            if document.readingPath != nil && readableTranslation(document) != nil {
-                Picker("译文形式", selection: $model.usesStructuredReading) {
-                    Text("原页对照").tag(true)
-                    Text("重排 PDF").tag(false)
-                }.labelsHidden().frame(width: 125).help("选择原页版式对照或重排 PDF")
-            }
             readingModeControl(document)
             Menu {
                 Button("适合宽度") { model.zoom = 1 }
@@ -211,11 +185,11 @@ struct ContentView: View {
             } label: {
                 Label(hasReadableTranslation(document) ? "重新翻译" : "翻译", systemImage: "character.bubble")
             }
-            .disabled(model.isTranslating).help("翻译当前 PDF")
+            .disabled(model.isWorkerBusy).help("翻译当前 PDF")
             Menu {
                 ForEach(ExportKind.allCases) { kind in
-                    Button(kind.title) { model.exportSelected(kind) }
-                        .disabled(!canExport(kind, document: document))
+                    Button("导出\(kind.title)") { model.exportSelected(kind) }
+                        .disabled(!model.canExport(kind))
                 }
                 Divider()
                 Button("带批注的 PDF…") { workspace.exportAnnotatedPDF() }
@@ -265,24 +239,23 @@ struct ContentView: View {
         .padding(2).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
     }
 
-    private func pane(_ url: URL, variant: PDFDocumentVariant, document: DocumentRecord) -> some View {
+    private func originalPane(_ document: DocumentRecord) -> some View {
         VStack(spacing: 0) {
             if effectiveMode(document) == .dual {
                 HStack {
-                    Text(variant.title).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+                    Text("原文").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
                     Spacer()
-                    Text(variant == .original ? languageName(document.sourceLanguage) : languageName(document.targetLanguage) + (model.syncScrolling ? "" : " · 第 \(independentTranslatedPage) 页"))
+                    Text(languageName(document.sourceLanguage))
                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                 }.lineLimit(1).padding(.horizontal, 16).frame(height: 22)
             }
-            PDFReaderView(url: url, page: variant == .translated && effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
+            PDFReaderView(url: document.originalURL, page: $model.page,
                           navigation: pageNavigation,
-                          acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual || navigationVariant == variant,
                           zoom: model.zoom,
                           synchronizesScrolling: model.syncScrolling && effectiveMode(document) == .dual,
                           synchronizer: scrollSynchronizer,
                           searchQuery: model.searchPresented ? model.searchQuery : "",
-                          workspace: workspace, documentID: document.id, variant: variant)
+                          workspace: workspace, documentID: document.id)
         }
     }
 
@@ -304,7 +277,7 @@ struct ContentView: View {
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(model.searchHits) { hit in
                                     Button {
-                                        navigate(to: hit.page, variant: model.readingMode == .translated ? .translated : .original)
+                                        navigate(to: hit.page)
                                         showsSearchResults = false
                                     } label: {
                                         VStack(alignment: .leading, spacing: 6) {
@@ -326,7 +299,7 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    private var translationProgress: some View {
+    private var jobProgress: some View {
         HStack(spacing: 12) {
             if let progress = model.progress {
                 ProgressView(value: max(0, min(1, progress))).frame(width: 110)
@@ -339,21 +312,21 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 5)
-            Button("取消翻译") { model.cancelTranslation() }
+            Button(model.isExporting ? "取消导出" : "取消翻译") { model.isExporting ? model.cancelExport() : model.cancelTranslation() }
                 .controlSize(.small)
-                .disabled(model.documents.first(where: { $0.id == model.activeJobDocumentID })?.status == .cancelling)
+                .disabled(model.cancelRequested)
         }
         .padding(.horizontal, 17).padding(.vertical, 11)
         .background(.blue.opacity(0.055))
     }
 
     private var activeJobName: String {
-        model.documents.first(where: { $0.id == model.activeJobDocumentID })?.name ?? "正在翻译"
+        model.documents.first(where: { $0.id == model.activeJobDocumentID })?.name ?? (model.isExporting ? "正在导出" : "正在翻译")
     }
 
     private func readerFooter(_ document: DocumentRecord) -> some View {
         HStack(spacing: 10) {
-            Text(document.status.title).font(.caption).foregroundStyle(.secondary)
+            Text(document.statusTitle).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Button { navigate(to: max(1, model.page - 1)) } label: { Image(systemName: "chevron.left") }
                 .disabled(model.page <= 1).help("上一页").accessibilityLabel("上一页")
@@ -378,32 +351,22 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    private func navigate(to requestedPage: Int, variant requestedVariant: PDFDocumentVariant? = nil) {
-        let variant = requestedVariant ?? workspace.selectedVariant
+    /// Only the original PDF pane follows a jump while dual panes scroll independently.
+    /// A target in the original PDF (outline, notes, evidence) leaves a translation-only view.
+    private func navigate(to requestedPage: Int, inOriginal: Bool = false) {
         guard let document = model.selectedDocument else { return }
         let page = max(1, min(document.pageCount, requestedPage))
-        navigationVariant = variant
-        workspace.selectedVariant = variant
         workspace.currentPage = page
-        if effectiveMode(document) == .dual && !model.syncScrolling && variant == .translated {
-            independentTranslatedPage = page
-        } else { model.page = page }
-        if effectiveMode(document) != .dual && !(usesStructuredReader(document) && requestedVariant == nil) {
-            model.readingMode = variant == .translated && hasReadableTranslation(document) ? .translated : .original
-        }
+        model.page = page
+        if inOriginal && effectiveMode(document) == .translated { model.readingMode = .original }
         pageNavigation = PDFPageNavigation(page: page)
     }
 
     private func openReadingWorkspace() {
         guard let document = model.selectedDocument else { return }
         workspace.open(document: document)
-        workspace.selectedVariant = effectiveMode(document) == .translated && !usesStructuredReader(document) ? .translated : .original
         workspace.currentPage = model.page
         if let error = workspace.errorMessage { model.errorMessage = error; workspace.errorMessage = nil }
-    }
-
-    private func navigationURL(_ document: DocumentRecord) -> URL {
-        workspace.selectedVariant == .translated ? (readableTranslation(document) ?? document.originalURL) : document.originalURL
     }
 
     private var readingTools: some View {
@@ -427,7 +390,7 @@ struct ContentView: View {
                 Button("复制文档与页码") {
                     guard let document = model.selectedDocument else { return }
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("\(document.name) · \(workspace.selectedVariant.title) 第 \(workspace.currentPage) 页", forType: .string)
+                    NSPasteboard.general.setString("\(document.name) · 第 \(workspace.currentPage) 页", forType: .string)
                 }
             } label: { Image(systemName: "doc.on.clipboard") }.menuStyle(.borderlessButton).frame(width: 24).help("复制选文或页码").accessibilityLabel("复制选文或页码")
             Spacer(minLength: 6)
@@ -460,11 +423,11 @@ struct ContentView: View {
                                         get: { assistantService?.id },
                                         set: { assistantServiceID = $0?.uuidString ?? "" }
                                     ), apiKey: { try model.key(for: $0) },
-                                    onNavigate: { navigate(to: $0, variant: .original) }, onSaveNote: { text in
+                                    onNavigate: { navigate(to: $0, inOriginal: true) }, onSaveNote: { text in
                     workspace.addNote(text: text); inspector = .notes
                 })
             } else {
-                AnnotationsPanel(workspace: workspace) { navigate(to: $0, variant: workspace.selectedVariant) }
+                AnnotationsPanel(workspace: workspace) { navigate(to: $0, inOriginal: true) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -505,25 +468,10 @@ struct ContentView: View {
         .padding(30)
     }
 
-    private func readableTranslation(_ document: DocumentRecord) -> URL? {
-        guard let url = document.translatedURL, FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url
-    }
-
-    private func usesStructuredReader(_ document: DocumentRecord) -> Bool {
-        model.usesStructuredReading && document.readingPath != nil
-    }
-
-    private func hasReadableTranslation(_ document: DocumentRecord) -> Bool {
-        usesStructuredReader(document) || readableTranslation(document) != nil
-    }
+    private func hasReadableTranslation(_ document: DocumentRecord) -> Bool { document.readingPath != nil }
 
     private func effectiveMode(_ document: DocumentRecord) -> ReadingMode {
         hasReadableTranslation(document) ? model.readingMode : .original
-    }
-
-    private func canExport(_ kind: ExportKind, document: DocumentRecord) -> Bool {
-        document.url(for: kind).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 
     private func languageName(_ code: String) -> String {

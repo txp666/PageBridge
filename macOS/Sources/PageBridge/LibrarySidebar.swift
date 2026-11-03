@@ -169,7 +169,7 @@ struct LibrarySidebar: View {
                 Text(document.name).font(.system(size: 12, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
                 HStack(spacing: 4) {
                     if isBusy(document) { ProgressView().controlSize(.mini) }
-                    Text("\(document.pageCount) 页 · \(document.status.title)").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(document.pageCount) 页 · \(document.statusTitle)").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
                     if library.isFavorite(id: document.id) { Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(.orange) }
                 }
             }

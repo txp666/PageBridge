@@ -12,7 +12,6 @@ final class AppModel: ObservableObject {
     @Published var selectedID: UUID?
     @Published var settingsPresented = false
     @Published var readingMode: ReadingMode = .original
-    @Published var usesStructuredReading = true
     @Published var structuredReading: StructuredReadingDocument?
     @Published var readingLoadError: String?
     @Published var readingLoading = false
@@ -34,6 +33,8 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = "正在检查翻译引擎…"
     @Published var progress: Double?
     @Published var isTranslating = false
+    @Published var isExporting = false
+    @Published private(set) var cancelRequested = false
     @Published var activeJobDocumentID: UUID?
     @Published var engineReady = false
     @Published var engineDescription = "正在检查…"
@@ -42,12 +43,13 @@ final class AppModel: ObservableObject {
     private var repository: DocumentRepository?
     private var runner: EngineRunner?
     private var activeAttempt: UUID?
-    private var cancelRequested = false
     private var healthCheckRunning = false
     private var searchRevision = 0
 
     var selectedDocument: DocumentRecord? { documents.first { $0.id == selectedID } }
     var activeService: ServiceConfiguration? { services.first { $0.id == activeServiceID } }
+    /// The worker runs one job at a time: a translation or a reading export.
+    var isWorkerBusy: Bool { isTranslating || isExporting }
 
     init() {
         do {
@@ -90,7 +92,6 @@ final class AppModel: ObservableObject {
     private func restoreReadingState(_ document: DocumentRecord) {
         page = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: Self.pageKey(document.id))))
         readingMode = document.hasTranslation ? .dual : .original
-        usesStructuredReading = document.readingPath != nil && document.preferredOutputMode != "pdf"
     }
 
     func importPDFs() {
@@ -157,25 +158,21 @@ final class AppModel: ObservableObject {
                 let event = try await health.run(WorkerRequest(action: "health"))
                 engineReady = true
                 engineDescription = event.engineVersion ?? "翻译引擎就绪"
-                if !isTranslating { statusMessage = "引擎就绪。选择 PDF 开始翻译。" }
+                if !isWorkerBusy { statusMessage = "引擎就绪。选择 PDF 开始翻译。" }
             } catch {
                 engineReady = false; engineDescription = error.localizedDescription
-                if !isTranslating { statusMessage = "引擎未就绪，请检查安装。" }
+                if !isWorkerBusy { statusMessage = "引擎未就绪，请检查安装。" }
             }
         }
     }
 
-    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, outputMode: String = "reading", retryBlockIds: [String]? = nil) {
-        guard !isTranslating, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
+    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, retryBlockIds: [String]? = nil) {
+        guard !isWorkerBusy, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
         do {
             guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
             guard let service = activeService else { throw BridgeError.message("请先配置翻译服务。") }
             try service.validate()
             guard let pdf = PDFDocument(url: document.originalURL), pdf.pageCount == document.pageCount else { throw BridgeError.message("输入副本不可用，请重新导入。") }
-            if outputMode != "reading" {
-                let hasText = (0..<pdf.pageCount).contains { !(pdf.page(at: $0)?.string?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) }
-                guard hasText else { throw BridgeError.message("这份 PDF 没有可读取的文本层。请使用“对照阅读”进行扫描识别。") }
-            }
             let apiKey = try key(for: service.id)
             if service.kind == .openAI && apiKey.isEmpty { throw BridgeError.message("请在翻译服务设置中填写 API Key。") }
             let attempt = UUID()
@@ -185,12 +182,12 @@ final class AppModel: ObservableObject {
             let request = WorkerRequest(action: "translate", jobID: document.id, attemptID: attempt,
                 inputPath: document.inputPath, outputDirectory: staging.path, sourceLanguage: sourceLanguage,
                 targetLanguage: targetLanguage, pages: pages, service: EngineService(configuration: service, apiKey: apiKey),
-                outputMode: outputMode, readingPath: retryBlockIds == nil ? nil : document.readingPath, retryBlockIds: retryBlockIds)
+                readingPath: retryBlockIds == nil ? nil : document.readingPath, retryBlockIds: retryBlockIds)
             var record = document; record.status = .running; record.attemptID = attempt; record.lastError = nil
             try replaceRecord(record)
             runner = process; activeAttempt = attempt; activeJobDocumentID = document.id
             cancelRequested = false; isTranslating = true; progress = nil
-            statusMessage = outputMode == "reading" ? "正在准备对照阅读；首次使用会下载本地识别模型…" : "正在启动引擎；首次运行可能需要准备字体与版面模型…"
+            statusMessage = "正在准备对照阅读；首次使用会下载本地识别模型…"
             translationPresented = false
             Task { [self] in
                 defer {
@@ -203,32 +200,21 @@ final class AppModel: ObservableObject {
                     }
                     guard !cancelRequested else { throw BridgeError.cancelled }
                     statusMessage = "正在验证输出并保存…"
-                    let completed: DocumentRecord
-                    if outputMode == "reading" {
-                        completed = try repository.commitReading(result: result, document: document, attempt: attempt, staging: staging)
-                    } else {
-                        completed = try repository.commit(result: result, document: document, attempt: attempt, staging: staging,
-                            service: service, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage, pages: pages)
-                    }
+                    let completed = try repository.commitReading(result: result, document: document, attempt: attempt, staging: staging)
                     try replaceRecord(completed)
                     if selectedID == document.id {
-                        readingMode = .dual; usesStructuredReading = outputMode == "reading"
-                        if outputMode == "reading" && retryBlockIds == nil { syncScrolling = true }
-                        if retryBlockIds == nil && outputMode != "reading" { page = 1 }
-                        reloadStructuredReading(navigateToFirst: retryBlockIds == nil && outputMode == "reading")
+                        readingMode = .dual
+                        if retryBlockIds == nil { syncScrolling = true }
+                        reloadStructuredReading(navigateToFirst: retryBlockIds == nil)
                     }
-                    if outputMode == "reading" {
-                        statusMessage = completed.status == .partial
-                            ? "原页译文已保存，未完成的段落保留原文，可单独重试。"
-                            : "\(document.name) 原页译文已保存。点击文字或图表可查看完整内容。"
-                    } else { statusMessage = "\(document.name) 翻译完成，译文和双语 PDF 已保存。" }
+                    statusMessage = completed.status == .partial
+                        ? "原页译文已保存，未完成的段落保留原文，可单独重试。"
+                        : "\(document.name) 原页译文已保存。点击文字或图表可查看完整内容。"
                     // Only disposable scratch output; committed results are in a different directory.
                     try? FileManager.default.removeItem(at: staging)
                 } catch {
                     var failed = documents.first { $0.id == document.id } ?? document
-                    let summary: TranslationFailureSummary? = cancelRequested || outputMode == "reading" ? nil : (try? repository.retainFailureDiagnostics(document: document, attempt: attempt, staging: staging))
-                    let failureMessage = summary?.message(hasPreviousResult: failed.hasTranslation)
-                        ?? TranslationFailureSummary.fallbackMessage(error.localizedDescription, hasPreviousResult: failed.hasTranslation)
+                    let failureMessage = error.localizedDescription
                     failed.status = cancelRequested ? .cancelled : .failed
                     failed.lastError = cancelRequested ? nil : failureMessage
                     do { try replaceRecord(failed) } catch { errorMessage = "任务记录保存失败：\(error.localizedDescription)" }
@@ -243,7 +229,7 @@ final class AppModel: ObservableObject {
     }
 
     private func receive(_ event: WorkerEvent, documentID: UUID, attempt: UUID) {
-        guard isTranslating, activeJobDocumentID == documentID, activeAttempt == attempt, !cancelRequested else { return }
+        guard isWorkerBusy, activeJobDocumentID == documentID, activeAttempt == attempt, !cancelRequested else { return }
         if event.type == "stage" || event.type == "progress" || event.type == "ready" {
             if let value = event.progress { progress = value }
             else if event.type == "stage" { progress = nil }
@@ -262,22 +248,72 @@ final class AppModel: ObservableObject {
         runner?.cancel()
     }
 
+    func canExport(_ kind: ExportKind) -> Bool {
+        guard let record = selectedDocument else { return false }
+        guard kind != .original else { return FileManager.default.fileExists(atPath: record.inputPath) }
+        return !isWorkerBusy && record.readingURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+    }
+
+    /// The original is copied; translated and bilingual PDFs are built by the worker from the reading draft.
     func exportSelected(_ kind: ExportKind) {
-        guard let record = selectedDocument, let repository else { return }
-        guard let source = record.url(for: kind) else { errorMessage = "请先完成翻译。"; return }
+        guard canExport(kind), let record = selectedDocument, let repository else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = (record.name as NSString).deletingPathExtension + "-" + kind.title.replacingOccurrences(of: " PDF", with: "") + ".pdf"
-        panel.title = "导出 \(kind.title)"; panel.prompt = "导出"
+        panel.title = "导出\(kind.title)"; panel.prompt = "导出"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         do {
-            try DocumentRepository.export(source: source, destination: destination, protectedInput: record.originalURL, managedRoot: repository.root)
-            statusMessage = "已导出至 \(destination.path)"
+            if kind == .original {
+                try DocumentRepository.export(source: record.originalURL, destination: destination, protectedInput: record.originalURL, managedRoot: repository.root)
+                statusMessage = "已导出至 \(destination.path)"
+            } else {
+                try exportReading(kind, record: record, destination: destination, repository: repository)
+            }
         } catch { errorMessage = "导出失败：\(error.localizedDescription)" }
+    }
+
+    private func exportReading(_ kind: ExportKind, record: DocumentRecord, destination: URL, repository: DocumentRepository) throws {
+        guard !isWorkerBusy, let reading = record.readingURL else { return }
+        guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
+        try DocumentRepository.validateExportDestination(destination, protectedInput: record.originalURL, managedRoot: repository.root)
+        let attempt = UUID()
+        let process = EngineRunner(location: try EngineLocation.find())
+        let request = WorkerRequest(action: "export_reading", jobID: record.id, attemptID: attempt, inputPath: record.inputPath,
+            readingPath: reading.path, outputPath: destination.path, kind: kind.rawValue)
+        runner = process; activeAttempt = attempt; activeJobDocumentID = record.id
+        cancelRequested = false; isExporting = true; progress = nil
+        statusMessage = "正在导出\(kind.title)…"
+        Task { [self] in
+            defer {
+                runner = nil; isExporting = false; activeJobDocumentID = nil
+                activeAttempt = nil; progress = nil
+            }
+            do {
+                let result = try await process.run(request) { [weak self] event in
+                    Task { @MainActor in self?.receive(event, documentID: record.id, attempt: attempt) }
+                }
+                guard !cancelRequested else { throw BridgeError.cancelled }
+                guard result.artifactType == "reading-export", let count = result.pageCount,
+                      PDFDocument(url: destination)?.pageCount == count else {
+                    throw BridgeError.message("导出的 PDF 未通过完整性检查。")
+                }
+                statusMessage = "\(kind.title) 已导出至 \(destination.path)"
+            } catch {
+                // The worker replaces the target only after a complete export, so nothing partial is left.
+                statusMessage = cancelRequested ? "已取消导出。" : "导出失败：\(error.localizedDescription)"
+                if !cancelRequested { errorMessage = "导出失败：\(error.localizedDescription)" }
+            }
+        }
+    }
+
+    func cancelExport() {
+        guard isExporting, !cancelRequested else { return }
+        cancelRequested = true; statusMessage = "正在取消导出…"; progress = nil
+        runner?.cancel()
     }
 
     func openOutputFolder() {
         guard let record = selectedDocument else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([usesStructuredReading ? (record.readingURL ?? record.originalURL) : (record.translatedURL ?? record.originalURL)])
+        NSWorkspace.shared.activateFileViewerSelecting([record.readingURL ?? record.originalURL])
     }
 
     func renameDocument(id: UUID, name: String) -> Bool {
@@ -297,13 +333,13 @@ final class AppModel: ObservableObject {
         searchRevision += 1; let revision = searchRevision
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let selectedDocument, !query.isEmpty else { searchHits = []; return }
-        if readingMode == .translated && usesStructuredReading, let reading = structuredReading {
+        if readingMode == .translated, let reading = structuredReading {
             searchHits = reading.pages.compactMap { page in
                 Self.hit(page: page.pageNumber, content: page.blocks.map(\.displayText).joined(separator: "\n"), query: query)
             }
             return
         }
-        let url = (readingMode == .translated ? selectedDocument.translatedURL : nil) ?? selectedDocument.originalURL
+        let url = selectedDocument.originalURL
         Task {
             let hits = await Task.detached(priority: .userInitiated) { () -> [SearchHit] in
                 guard let pdf = PDFDocument(url: url) else { return [] }
@@ -354,7 +390,7 @@ final class AppModel: ObservableObject {
     func retryReadingBlock(_ block: StructuredReadingBlock) {
         guard let document = selectedDocument, let reading = structuredReading, document.readingPath != nil, block.status == "source_fallback" else { return }
         startTranslation(sourceLanguage: reading.sourceLanguage, targetLanguage: reading.targetLanguage,
-                         pages: nil, outputMode: "reading", retryBlockIds: [block.id])
+                         pages: nil, retryBlockIds: [block.id])
     }
 
     func key(for id: UUID) throws -> String { try KeychainStore.read(serviceID: id) ?? "" }
