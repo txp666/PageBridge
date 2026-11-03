@@ -4,7 +4,6 @@ import SwiftUI
 struct TranslationSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var outputMode = "reading"
     @State private var sourceLanguage = "en"
     @State private var targetLanguage = "zh"
     @State private var selectedRange = "all"
@@ -31,12 +30,6 @@ struct TranslationSheet: View {
                 Spacer()
             }
             Form {
-                LabeledContent("阅读方式") {
-                    Picker("阅读方式", selection: $outputMode) {
-                        Text("原页版式对照").tag("reading")
-                        Text("重排 PDF").tag("pdf")
-                    }.labelsHidden().frame(width: 175)
-                }
                 LabeledContent("源语言") {
                     Picker("源语言", selection: $sourceLanguage) {
                         ForEach(Self.languages, id: \.0) { Text($0.1).tag($0.0) }
@@ -63,9 +56,7 @@ struct TranslationSheet: View {
                 }
             }
             .formStyle(.columns)
-            Text(outputMode == "reading"
-                 ? "译文按原页位置显示，图表、公式和代码保留原区域；过长的文字可点击展开。扫描页会在本机识别。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间。"
-                 : "生成保留页面布局的译文 PDF 与双语 PDF。复杂版面可能无法完成重排。")
+            Text("译文按原页位置显示，图表、公式和代码保留原区域；过长的文字可点击展开。扫描页会在本机识别。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -100,12 +91,12 @@ struct TranslationSheet: View {
             }
             Divider()
             HStack {
-                Text(outputMode == "reading" ? "保留原页版式，可点击全文与逐段重试" : "输出译文与双语 PDF").font(.caption).foregroundStyle(.secondary)
+                Text("保留原页版式，可点击全文与逐段重试").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("开始翻译", action: start)
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-                    .disabled(!model.engineReady || model.activeService == nil || model.selectedDocument == nil || model.isTranslating || sourceLanguage == targetLanguage)
+                    .disabled(!model.engineReady || model.activeService == nil || model.selectedDocument == nil || model.isWorkerBusy || sourceLanguage == targetLanguage)
             }
         }
         .padding(26).frame(width: 490)
@@ -136,7 +127,7 @@ struct TranslationSheet: View {
                 }
             }
         }
-        model.startTranslation(sourceLanguage: sourceLanguage, targetLanguage: targetLanguage, pages: selectedRange == "custom" ? range : nil, outputMode: outputMode)
+        model.startTranslation(sourceLanguage: sourceLanguage, targetLanguage: targetLanguage, pages: selectedRange == "custom" ? range : nil)
         dismiss()
     }
 }

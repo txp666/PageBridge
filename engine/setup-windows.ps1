@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$Assets)
+param()
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -62,9 +62,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Runtime metadata check failed.' }
     [System.IO.File]::WriteAllText((Join-Path $EngineDirectory 'runtime-info.json'), ($Metadata -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
     Write-Output $Metadata
-    if ($Assets) {
-        Invoke-CheckedNative (Join-Path $EngineDirectory '.venv\Scripts\babeldoc.exe') @('--warmup')
-    }
 } finally {
     Pop-Location
 }

@@ -36,7 +36,7 @@ internal sealed partial class ContinuousPdfPane
     private readonly Dictionary<(int Page, int Width), string> cache = [];
     private readonly HashSet<(int Page, int Width)> failed = [];
     private double[] offsets = [], pageHeights = [];
-    private string documentId = "", variant = "", identity = "";
+    private string documentId = "", identity = "";
     private int generation;
     private bool pumping, arranging, active = true;
     private double zoom = 1, paperWidth = 500;
@@ -72,12 +72,12 @@ internal sealed partial class ContinuousPdfPane
         if (allowSelection) AttachSelectionKeyboard();
     }
 
-    internal async Task BindAsync(string id, string kind, string key, int page)
+    internal async Task BindAsync(string id, string key, int page)
     {
         if (identity == key && sizes.Count > 0) { Jump(page); return; }
-        Clear(); identity = key; documentId = id; variant = kind; pending = new Anchor(Math.Max(0, page - 1), 0);
+        Clear(); identity = key; documentId = id; pending = new Anchor(Math.Max(0, page - 1), 0);
         int current = generation;
-        var data = await backend.CallAsync("page_info", new JsonObject { ["document_id"] = id, ["variant"] = kind });
+        var data = await backend.CallAsync("page_info", new JsonObject { ["document_id"] = id });
         if (current != generation) return;
         foreach (var entry in data?["pages"]?.AsArray() ?? [])
         {
@@ -98,7 +98,7 @@ internal sealed partial class ContinuousPdfPane
 
     internal void Clear()
     {
-        generation++; identity = documentId = variant = ""; pending = null;
+        generation++; identity = documentId = ""; pending = null;
         ClearSelection(); annotationItems = []; searchHits = []; selectingPage = -1;
         foreach (var view in views) { view.Image.Source = null; view.Overlay.Child = null; }
         sizes.Clear(); views.Clear(); stack.Children.Clear(); offsets = []; pageHeights = []; cache.Clear(); failed.Clear();
@@ -172,7 +172,7 @@ internal sealed partial class ContinuousPdfPane
                 {
                     if (!cache.TryGetValue(key, out string? path) || !File.Exists(path))
                     {
-                        var reply = await backend.CallAsync("render", new JsonObject { ["document_id"] = documentId, ["variant"] = variant, ["page"] = index, ["width"] = width });
+                        var reply = await backend.CallAsync("render", new JsonObject { ["document_id"] = documentId, ["page"] = index, ["width"] = width });
                         if (current != generation) continue;
                         path = reply?["path"]?.GetValue<string>() ?? throw new InvalidOperationException("预览路径无效。"); cache[key] = path;
                     }

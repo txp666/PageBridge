@@ -1,11 +1,9 @@
 import asyncio
-import builtins
 from contextlib import contextmanager
 import io
 import json
 import os
 from pathlib import Path
-import pickle
 import subprocess
 import sys
 import signal
@@ -15,9 +13,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from unittest.mock import AsyncMock, patch
-from types import SimpleNamespace
-
-import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import worker
@@ -60,48 +55,6 @@ def api_server(status=200, content="控制阀调节水流。", redirect=False, d
 
 
 class WorkerTests(unittest.TestCase):
-    def test_child_shim_publishes_quality_before_finish_with_original_arguments(self):
-        import translation_guard
-        import pdf_links
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            settings = SimpleNamespace(translation=SimpleNamespace(output=str(root)))
-            input_pdf = root / "input.pdf"
-            cancel, logs = object(), object()
-            sent = []
-            def send(event):
-                self.assertTrue((root / "translation-quality.json").exists())
-                sent.append(event)
-            def upstream(actual_settings, actual_file, pipe, actual_cancel, actual_logs):
-                self.assertIs(actual_settings, settings)
-                self.assertEqual(actual_file, input_pdf)
-                self.assertIs(actual_cancel, cancel)
-                self.assertIs(actual_logs, logs)
-                pipe.send({"type": "finish"})
-            with patch.object(worker, "_UPSTREAM_TRANSLATE_WRAPPER", upstream), patch.object(translation_guard, "install"), patch.object(pdf_links, 'configure') as configure:
-                worker.guarded_translate_wrapper(settings, input_pdf, SimpleNamespace(send=send), cancel, logs)
-                configure.assert_called_once_with(input_pdf)
-                self.assertTrue((root / 'link-mapping.json').is_file())
-            self.assertEqual(sent, [{"type": "finish"}])
-
-    def test_quality_gate_requires_subprocess_report_without_pending_paragraphs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "translation-quality.json"
-            with self.assertRaises(worker.WorkerError):
-                worker.read_quality_report(path)
-            for content in ("invalid", "{}", '{"guardInstalled":true,"unresolvedCount":1}',
-                            '{"guardInstalled":false,"unresolvedCount":0}'):
-                path.write_text(content)
-                with self.assertRaises(worker.WorkerError):
-                    worker.read_quality_report(path)
-            path.write_text('{"guardInstalled":true,"layoutGuard":{"guardInstalled":true},"unresolvedCount":0,"preparedParagraphs":2,"validatedParagraphs":2}')
-            self.assertEqual(worker.read_quality_report(path)["unresolvedCount"], 0)
-
-    def test_pdf_artifacts_include_corrupted_tag_variants(self):
-        for text in ("<span id='2'>文本</span>", "<st\x03yle id='7'>文本", "<风格 id='3'>", "</place>", "<stylid='27'>", "<st yle id='3'>", '&lt;span id="9"&gt;文本', '＜span id="9"＞文本'):
-            self.assertGreater(worker.artifact_marker_count(text), 0, text)
-        self.assertEqual(worker.artifact_marker_count("0 < x < 5, Uo = (U1 + U2) / 2"), 0)
-
     def test_invalid_or_secret_urls_are_rejected(self):
         for url in ("http://remote.example/v1", "https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "file:///tmp/api", "https://example.com/v1/chat/completions"):
             data = request()
@@ -144,28 +97,6 @@ class WorkerTests(unittest.TestCase):
         events.emit("result", message="完成")
         self.assertEqual(json.loads(output.getvalue())["engineVersion"], worker.installed_versions())
 
-    def test_upstream_translation_client_does_not_follow_307(self):
-        # Exercise the pinned translator's actual SDK client, without its
-        # factory's extra "Hello" request or any language-model inference.
-        from pdf2zh_next.translator.translator_impl.openai import OpenAITranslator
-        import openai
-        with api_server(status=307, redirect=True) as (port, calls):
-            data = request()
-            data.update(sourceLanguage="en", targetLanguage="zh-CN", pages=None)
-            data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
-            settings = worker.build_settings(data, Path(tempfile.gettempdir()))
-            settings.validate_settings()
-            translator = OpenAITranslator(settings, None)
-            try:
-                self.assertFalse(translator.client._client.follow_redirects)
-                self.assertEqual(translator.client.timeout, 10.0)
-                with self.assertRaises(openai.APIStatusError) as caught:
-                    translator.client.chat.completions.create(model="fixture", messages=[{"role": "user", "content": "fixture-body-do-not-redirect"}])
-                self.assertEqual(caught.exception.status_code, 307)
-                self.assertEqual(len(calls), 1)
-            finally:
-                translator.client.close()
-
     def test_probe_uses_real_response_and_no_provider_text_leak(self):
         with api_server(content="控制阀调节水流。 fixture-secret-do-not-log") as (port, calls):
             data = request()
@@ -183,20 +114,6 @@ class WorkerTests(unittest.TestCase):
                 data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
                 with self.assertRaises(worker.WorkerError):
                     asyncio.run(worker.probe(data, worker.Events(io.StringIO(), data)))
-
-    def test_pdf_validation_rejects_escape_corruption_and_count(self):
-        import pymupdf
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            valid = root / "valid.pdf"
-            with pymupdf.open() as pdf:
-                pdf.new_page().insert_text((50, 50), "Test document")
-                pdf.save(valid)
-            self.assertEqual(worker.validate_pdf(valid, root, 1), valid.resolve())
-            with self.assertRaises(worker.WorkerError):
-                worker.validate_pdf(valid, root, 2)
-            with self.assertRaises(worker.WorkerError):
-                worker.validate_pdf(valid, root / "other", 1)
 
     def test_subprocess_protocol_and_no_secret_echo(self):
         data = request()
@@ -313,172 +230,6 @@ class CrossPlatformProtocolTests(unittest.TestCase):
                 process.stdout.close()
                 process.stderr.close()
 
-    def test_control_cancel_cleans_actual_translation_subprocess(self):
-        import pymupdf
-        release = threading.Event()
-        with tempfile.TemporaryDirectory(prefix="pagebridge-中文-") as directory, api_server(delay=release) as (port, calls):
-            root = Path(directory)
-            source = root / "原始文档.pdf"
-            with pymupdf.open() as pdf:
-                pdf.new_page().insert_text((60, 60), "The pressure sensor measures water pressure.")
-                pdf.save(source)
-            source_hash = worker.sha256(source)
-            data = request("translate")
-            data.update(inputPath=str(source), outputDirectory=str(root / "output"), sourceLanguage="en", targetLanguage="zh-CN", pages=None)
-            data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
-            process = subprocess.Popen([sys.executable, str(Path(worker.__file__))], stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
-            try:
-                process.stdin.write(json.dumps(data, ensure_ascii=False) + "\n")
-                process.stdin.flush()
-                deadline = time.monotonic() + 60
-                while not calls and process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                self.assertTrue(calls, "Translation subprocess did not reach local fixture")
-                control = {"protocolVersion": 1, "jobId": data["jobId"], "attemptId": data["attemptId"], "action": "cancel"}
-                stdout, stderr = process.communicate(json.dumps(control) + "\n", timeout=20)
-                self.assertEqual(process.returncode, 130)
-                events = [json.loads(line) for line in stdout.splitlines()]
-                self.assertEqual(events[-1]["stage"], "cancelled")
-                self.assertFalse(any(event["type"] == "result" for event in events))
-                self.assertFalse((root / "output" / ("result-" + data["attemptId"])).exists())
-                self.assertFalse(list((root / "output").glob(".pagebridge-*")))
-                self.assertEqual(worker.sha256(source), source_hash)
-                self.assertNotIn("fixture-secret", stdout + stderr)
-            finally:
-                release.set()
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-
-
-class ResponseBoundaryTests(unittest.TestCase):
-    def test_truncated_or_filtered_content_never_reaches_string_adapter(self):
-        from types import SimpleNamespace
-        for reason in ('length', 'content_filter', 'stop', None):
-            response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=reason,
-                message=SimpleNamespace(content='private partial document text'))])
-            checked = worker.checked_completion_create(lambda **kw: response)
-            if reason in ('length', 'content_filter'):
-                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
-                    checked(model='fixture')
-            else:
-                self.assertIs(checked(model='fixture'), response)
-
-    def test_client_guard_installs_once_and_only_local_preset_disables_sdk_retries(self):
-        from types import SimpleNamespace
-        from unittest.mock import patch
-        from pdf2zh_next.translator.translator_impl.openai import OpenAITranslator
-        for endpoint, extra, expected in [
-            ('http://127.0.0.1:11434/v1', {'max_tokens':8192, 'presence_penalty':0}, 0),
-            ('https://api.example/v1', {'max_tokens':8192, 'presence_penalty':0}, 2),
-            ('http://localhost:11434/v1', {}, 2),
-        ]:
-            response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='length')])
-            def initialize(self):
-                self.options = {'extra_body':extra}
-                self.client = SimpleNamespace(base_url=endpoint, max_retries=2,
-                    chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw:response)))
-            with patch.object(OpenAITranslator, '__init__', initialize):
-                worker.install_response_guard()
-                first = OpenAITranslator.__init__
-                worker.install_response_guard()
-                self.assertIs(OpenAITranslator.__init__, first)
-                instance = OpenAITranslator()
-                self.assertEqual(instance.client.max_retries, expected)
-                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
-                    instance.client.chat.completions.create(model='fixture')
-
-
-class SDKResponseBoundaryTests(unittest.TestCase):
-    @contextmanager
-    def translator(self, handler, kind='ollama'):
-        """Use the pinned provider and SDK, replacing only the HTTP transport."""
-        import httpx
-        from pdf2zh_next.translator.translator_impl import openai as provider
-        data = request()
-        data.update(sourceLanguage='en', targetLanguage='zh', pages=None)
-        data['service'].update(kind=kind, baseURL=(
-            'http://127.0.0.1:11434/v1' if kind == 'ollama'
-            else 'https://fixture.invalid/v1'))
-        settings = worker.build_settings(data, Path(tempfile.gettempdir()))
-        settings.validate_settings()
-        # Patch this provider's module reference, not httpx.Client globally:
-        # the SDK still validates and uses a real httpx.Client instance.
-        transport = httpx.MockTransport(handler)
-        http = SimpleNamespace(Limits=httpx.Limits, Client=lambda **kwargs:
-            httpx.Client(transport=transport, **kwargs))
-        original_init = provider.OpenAITranslator.__init__
-        with patch.object(provider, 'httpx', http), \
-             patch.object(provider.OpenAITranslator, '__init__', original_init):
-            worker.install_response_guard()
-            instance = provider.OpenAITranslator(settings, None)
-            try:
-                yield instance
-            finally:
-                instance.client.close()
-
-    def test_real_sdk_rejects_finished_json_marked_partial_in_plain_and_structured_requests(self):
-        import httpx
-        import translation_guard
-        calls = []
-        state = {'reason': 'length'}
-        content = '{"translation":"压力为 10 kPa，公式 {v1} 保持不变。"}'
-        def respond(request):
-            calls.append(json.loads(request.content))
-            return httpx.Response(200, json={
-                'id': 'fixture', 'object': 'chat.completion', 'created': 0,
-                'model': 'fixture', 'choices': [{'index': 0,
-                    'finish_reason': state['reason'],
-                    'message': {'role': 'assistant', 'content': content}}]})
-        with self.translator(respond) as translator:
-            original_options = dict(translator.options)
-            schema = translation_guard._complete_translation_schema()
-            structured = translation_guard._structured_translation_engine(translator, schema)
-            self.assertIsNot(structured, translator)
-            self.assertIs(structured.client, translator.client)
-            self.assertIsNot(structured.options, translator.options)
-            for reason in ('length', 'content_filter'):
-                state['reason'] = reason
-                for engine in (translator, structured):
-                    with self.subTest(reason=reason, structured=engine is structured):
-                        with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
-                            engine.do_llm_translate('fixture scientific paragraph')
-                with self.assertRaisesRegex(ValueError, '^translation-response-incomplete$'):
-                    translator.do_translate('fixture scientific paragraph')
-            # Compatible endpoints may omit a finish reason. Preserve that
-            # behavior and leave content validation to the paragraph guard.
-            for reason in ('stop', None):
-                state['reason'] = reason
-                self.assertEqual(translator.do_llm_translate('fixture paragraph'), content)
-            self.assertEqual(translator.options, original_options)
-            self.assertEqual(len(calls), 8)
-            self.assertNotIn('response_format', calls[0])
-            self.assertEqual(calls[1]['response_format'], schema)
-            self.assertEqual(calls[4]['response_format'], schema)
-            self.assertTrue(all(call['max_tokens'] == 8192 for call in calls))
-            self.assertTrue(all(call['presence_penalty'] == 0 for call in calls))
-
-    def test_real_sdk_timeout_attempt_count_is_one_for_ollama_and_three_for_custom(self):
-        import httpx
-        import openai
-        for kind, expected in (('ollama', 1), ('openai', 3)):
-            with self.subTest(kind=kind):
-                calls = []
-                def timeout(request):
-                    calls.append(json.loads(request.content))
-                    raise httpx.ReadTimeout('offline fixture timeout', request=request)
-                with self.translator(timeout, kind) as translator, \
-                     patch('openai._base_client.time.sleep', return_value=None):
-                    with self.assertRaises(openai.APITimeoutError):
-                        translator.do_llm_translate('fixture scientific paragraph')
-                self.assertEqual(len(calls), expected)
-                if kind == 'ollama':
-                    self.assertEqual(calls[0]['max_tokens'], 8192)
-                else:
-                    self.assertNotIn('max_tokens', calls[0])
-
-
 # Reading-mode requests share the worker protocol.
 def envelope(**fields):
     return dict(protocolVersion=1, jobId='reading-job', attemptId='reading-attempt', **fields)
@@ -490,8 +241,7 @@ def fixture_path(*parts):
 
 def reading_request(**fields):
     data=envelope(action='translate', inputPath=fixture_path('source.pdf'), outputDirectory=fixture_path('reading-output'),
-                  service=dict(kind='openai',baseURL='https://example.com/v1',model='model',apiKey='fixture-key',timeoutSeconds=30,concurrency=2),
-                  outputMode='reading')
+                  service=dict(kind='openai',baseURL='https://example.com/v1',model='model',apiKey='fixture-key',timeoutSeconds=30,concurrency=2))
     data.update(fields)
     return worker.parse_request(json.dumps(data).encode())
 
@@ -509,7 +259,6 @@ class ReadingProtocolTests(unittest.TestCase):
                         dict(readingPath=fixture_path('reading.json'),retryBlockIds=[]),
                         dict(readingPath=fixture_path('reading.json'),retryBlockIds=['p1-b2','p1-b2']),
                         dict(readingPath=fixture_path('reading.json'),retryBlockIds=['../bad']),
-                        dict(outputMode='pdf',readingPath=fixture_path('reading.json'),retryBlockIds=['p1-b2']),
                         dict(retryBlockIds=['p1-b2'])):
             with self.subTest(changes=changes),self.assertRaises(worker.WorkerError):
                 reading_request(**changes)
@@ -557,133 +306,20 @@ class ProviderSettingsTests(unittest.TestCase):
         custom = worker.normalized_service(self.service("custom", model="gpt-6-luna"))
         self.assertEqual(worker.provider_request_options(custom, probe=True), {"max_tokens": 1024})
 
-    def test_provider_options_survive_upstream_transform_and_worker_pickle(self):
+    def test_known_presets_disable_thinking(self):
         for provider, expected in [("deepSeek", {"thinking": {"type": "disabled"}}), ("alibaba", {"enable_thinking": False}), ("siliconFlow", {"enable_thinking": False})]:
             service = worker.normalized_service(self.service(provider))
-            with tempfile.TemporaryDirectory() as directory:
-                settings = worker.build_settings({"service": service, "sourceLanguage": "en", "targetLanguage": "zh"}, directory)
-                engine = settings.translate_engine_settings
-                self.assertEqual(engine.translate_engine_type, "OpenAI")
-                self.assertEqual(engine._openai_extra_body, expected)
-                cloned = pickle.loads(pickle.dumps(settings))
-                self.assertEqual(cloned.translate_engine_settings._openai_extra_body, expected)
-                engine.validate_settings()
-                self.assertEqual(engine.openai_base_url, service["baseURL"])
-                self.assertEqual(engine.openai_model, service["model"])
+            self.assertEqual(worker.provider_request_options(service), expected)
+
+    def test_ollama_disables_presence_penalty_and_custom_keeps_own_options(self):
+        ollama = worker.normalized_service({"kind": "ollama", "baseURL": "http://localhost:11434/v1", "model": "fixture"})
+        self.assertEqual(worker.provider_request_options(ollama), {"reasoning_effort": "none", "presence_penalty": 0, "max_tokens": 8192})
+        custom = worker.normalized_service({"kind": "openai", "baseURL": "http://localhost:11434/v1", "model": "fixture", "apiKey": "fixture"})
+        self.assertEqual(worker.provider_request_options(custom), {})
 
     def test_unknown_alibaba_models_keep_their_own_options(self):
         service = worker.normalized_service(self.service("alibaba", model="glm-5.3"))
         self.assertEqual(worker.provider_request_options(service), {})
-
-    def test_ollama_disables_presence_penalty_and_custom_keeps_own_options(self):
-        for kind in ("ollama", "openai"):
-            service = worker.normalized_service({"kind": kind, "baseURL": "http://localhost:11434/v1", "model": "fixture", "apiKey": "fixture"})
-            with tempfile.TemporaryDirectory() as directory:
-                settings = worker.build_settings({"service": service, "sourceLanguage": "en", "targetLanguage": "zh"}, directory)
-                engine = settings.translate_engine_settings
-                if kind == 'ollama':
-                    self.assertEqual(engine.translate_engine_type, 'OpenAI')
-                    self.assertEqual(engine._openai_extra_body, {'presence_penalty': 0, 'max_tokens': 8192})
-                    self.assertEqual(engine.openai_reasoning_effort, 'none')
-                    self.assertEqual(engine.openai_temperature, '0')
-                    cloned = pickle.loads(pickle.dumps(settings))
-                    self.assertEqual(cloned.translate_engine_settings._openai_extra_body, {'presence_penalty': 0, 'max_tokens': 8192})
-                else:
-                    self.assertEqual(engine.translate_engine_type, 'OpenAICompatible')
-                    self.assertIsNone(engine.openai_compatible_reasoning_effort)
-                    self.assertIsNone(engine.openai_compatible_temperature)
-
-
-# Reject nontranslatable selected pages before loading any translation backend.
-class UpstreamReached(Exception):
-    pass
-
-
-class InputTextPreflightTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.source = self.root / "mixed.pdf"
-        with pymupdf.open() as pdf:
-            pdf.new_page().insert_text((40, 40), "Readable first page.")
-            # Raster content represents a scan without accidentally adding text.
-            image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8))
-            image.clear_with(120)
-            pdf.new_page().insert_image(pymupdf.Rect(40, 40, 200, 200), pixmap=image)
-            pdf.new_page()
-            pdf.new_page().insert_text((40, 40), "Readable final page.")
-            pdf.save(self.source)
-        self.output = self.root / "output"
-
-    def request(self, pages, source=None):
-        return dict(inputPath=str(source or self.source), outputDirectory=str(self.output),
-                    attemptId="preflight-test", jobId="preflight-job", pages=pages)
-
-    @contextmanager
-    def intercept_upstream(self):
-        actual_import = builtins.__import__
-        reached = []
-
-        def guarded_import(name, *args, **kwargs):
-            if name == "pdf2zh_next.high_level":
-                reached.append(name)
-                raise UpstreamReached()
-            return actual_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=guarded_import), \
-             patch.object(worker, "build_settings") as settings:
-            yield reached, settings
-
-    def reject_before_upstream(self, request, message):
-        original = Path(request["inputPath"]).read_bytes()
-        output = io.StringIO()
-        with self.intercept_upstream() as (reached, settings):
-            with self.assertRaisesRegex(worker.WorkerError, message):
-                asyncio.run(worker.translate(request, worker.Events(output, request)))
-            self.assertEqual(reached, [])
-            settings.assert_not_called()
-        self.assertFalse(self.output.exists())
-        self.assertEqual(Path(request["inputPath"]).read_bytes(), original)
-        stages = [json.loads(line)["stage"] for line in output.getvalue().splitlines()]
-        self.assertEqual(stages, ["preflight"])
-
-    def test_image_only_selection_is_rejected_even_when_other_pages_have_text(self):
-        self.reject_before_upstream(self.request("2"), "所选页面没有可读取的文字")
-
-    def test_blank_and_image_only_range_is_rejected(self):
-        for selection in ("3", "2-3", "3,2,2"):
-            with self.subTest(selection=selection):
-                self.reject_before_upstream(self.request(selection), "所选页面没有可读取的文字")
-
-    def test_mixed_ranges_and_whole_document_reach_backend_with_normalized_pages(self):
-        for selection, expected in ((None, None), ("1", "1"), ("2,4", "2,4"),
-                                    ("3-4, 1,1", "1,3,4"), ("1-4", "1,2,3,4")):
-            with self.subTest(selection=selection):
-                request = self.request(selection)
-                output = io.StringIO()
-                with self.intercept_upstream() as (reached, settings):
-                    with self.assertRaises(UpstreamReached):
-                        asyncio.run(worker.translate(request, worker.Events(output, request)))
-                    self.assertEqual(reached, ["pdf2zh_next.high_level"])
-                    settings.assert_not_called()
-                self.assertEqual(request["pages"], expected)
-                stages = [json.loads(line)["stage"] for line in output.getvalue().splitlines()]
-                self.assertEqual(stages, ["preflight", "prepare"])
-                self.assertEqual(list(self.output.iterdir()), [])
-
-    def test_whole_scanned_document_keeps_clear_existing_message(self):
-        scanned = self.root / "scanned.pdf"
-        with pymupdf.open(self.source) as mixed, pymupdf.open() as pdf:
-            pdf.insert_pdf(mixed, from_page=1, to_page=2)
-            pdf.save(scanned)
-        self.reject_before_upstream(self.request(None, scanned), "PDF 没有可读取的文字，暂不支持纯扫描件")
-
-    def test_invalid_page_range_is_rejected_before_text_extraction(self):
-        for selection in ("5", "0", "2-1", ""):
-            with self.subTest(selection=selection), \
-                 patch.object(pymupdf.Page, "get_text", side_effect=AssertionError("text extraction must follow page validation")):
-                self.reject_before_upstream(self.request(selection), "页码")
 
 
 if __name__ == "__main__":

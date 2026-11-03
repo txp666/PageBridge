@@ -22,6 +22,3 @@ fi
 "$UV_BIN" pip check --python "$ENGINE_DIR/.venv/bin/python"
 "$ENGINE_DIR/.venv/bin/python" "$ENGINE_DIR/runtime_info.py" > "$ENGINE_DIR/runtime-info.json"
 cat "$ENGINE_DIR/runtime-info.json"
-if [[ "${1:-}" == "--assets" ]]; then
-  "$ENGINE_DIR/.venv/bin/babeldoc" --warmup
-fi

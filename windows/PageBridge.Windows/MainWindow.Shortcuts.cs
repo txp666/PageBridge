@@ -15,7 +15,7 @@ public sealed partial class MainWindow
         AddShortcut(VirtualKey.O, VirtualKeyModifiers.Control, ImportAsync,
             () => translationCancellation is null && !translationPreparing);
         AddShortcut(VirtualKey.E, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift,
-            () => ExportAsync("translated"), () => selected is not null && Text(selected, "translated_path") != "");
+            () => ExportTranslationAsync("translated"), () => ReadingExportAvailable);
         AddShortcut((VirtualKey)188, VirtualKeyModifiers.Control, SettingsAsync);
         AddShortcut(VirtualKey.F, VirtualKeyModifiers.Control,
             () => { ShowDocumentSearch(); return Task.CompletedTask; }, () => selected is not null && settingsOverlay is null);
@@ -53,7 +53,7 @@ public sealed partial class MainWindow
         try
         {
             magnification = scale;
-            originalPages.SetZoom(scale); translatedPages.SetZoom(scale); structuredReading.SetZoom(scale);
+            originalPages.SetZoom(scale); structuredReading.SetZoom(scale);
             SynchronizeReaders();
             if (scale == 1 && zoom.SelectedItem?.ToString() == "适合宽度") return;
             string label = Math.Round(scale * 100).ToString(CultureInfo.InvariantCulture) + "%";
@@ -66,17 +66,10 @@ public sealed partial class MainWindow
         finally { updatingReaderZoom = false; }
     }
 
-    private Task RevealOutputAsync()
-    {
-        string path = Text(selected, "translated_path");
-        if (path.Length == 0) path = Text(selected, "bilingual_path");
-        return RevealPDFAsync(path);
-    }
-
     private static Task RevealPDFAsync(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || !File.Exists(path))
-            throw new InvalidOperationException("文件不存在，请确认文档仍在本机，或先完成翻译。");
+            throw new InvalidOperationException("文件不存在，请确认文档仍在本机。");
         string fullPath = Path.GetFullPath(path);
         // Windows file paths cannot contain a quote. Reject one explicitly so
         // the Explorer command always receives exactly one existing file path.

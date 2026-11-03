@@ -1,13 +1,11 @@
 {
   "profile": "native-ollama-openai-v1",
-  "auditedEngineVersions": {"pdf2zh-next": "2.9.0", "babeldoc": "0.6.2"},
-  "engineFiles": ["worker.py", "translation_guard.py", "layout_guard.py", "pdf_links.py", "structured_reading.py", "reading_background.py", "reading_tables.py", "mineru_bridge.py", "mineru-requirements.txt", "mineru-models.json", "structured-reading.schema.json", "vendor/uv-LICENSE-MIT", "vendor/uv-LICENSE-APACHE", "pyproject.toml", "uv.lock"],
+  "auditedEngineVersions": {"PyMuPDF": "1.25.2", "httpx": "0.28.1", "psutil": "7.2.2", "cryptography": "50.0.2"},
+  "engineFiles": ["worker.py", "structured_reading.py", "reading_background.py", "reading_tables.py", "reading_export.py", "mineru_bridge.py", "mineru-requirements.txt", "mineru-models.json", "structured-reading.schema.json", "vendor/uv-LICENSE-MIT", "vendor/uv-LICENSE-APACHE", "pyproject.toml", "uv.lock"],
   "excludedDistributions": {
-    "web-interface": ["aiofiles", "annotated-doc", "fastapi", "ffmpy", "gradio", "gradio-client", "gradio-i18n", "gradio-pdf", "groovy", "langcodes", "language-data", "marisa-trie", "pydub", "python-multipart", "safehttpx", "semantic-version", "shellingham", "sse-starlette", "starlette", "typer", "tzdata", "uvicorn", "websockets"],
-    "unused-provider-sdk": ["azure-ai-translation-text", "azure-core", "deepl", "isodate", "ollama", "opentelemetry-api", "tencentcloud-sdk-python-common", "tencentcloud-sdk-python-tmt", "xinference-client"],
-    "development-tool": ["pip", "ruff"]
+    "development-tool": ["pip"]
   },
-  "testDirectoryPackages": ["scipy", "pandas", "onnx", "numpy", "sklearn", "networkx", "joblib", "regex", "fsspec", "freetype", "certifi"],
+  "testDirectoryPackages": ["certifi"],
   "runtimeDevelopmentPaths": ["include", "share/man", "lib/pkgconfig", "lib/python3.12/ensurepip", "lib/python3.12/idlelib", "lib/python3.12/tkinter", "lib/python3.12/turtledemo", "lib/python3.12/turtle.py", "lib/python3.12/lib2to3", "lib/python3.12/test", "lib/python3.12/site-packages/_virtualenv.py", "lib/python3.12/site-packages/_virtualenv.pth"],
-  "runtimeDevelopmentGlobs": ["lib/python3.12/lib-dynload/_tkinter*.so", "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*", "lib/libtcl*", "lib/libtk*", "bin/idle*", "bin/pip*", "bin/ruff", "bin/2to3*", "bin/*-config"]
+  "runtimeDevelopmentGlobs": ["lib/python3.12/lib-dynload/_tkinter*.so", "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*", "lib/libtcl*", "lib/libtk*", "bin/idle*", "bin/pip*", "bin/2to3*", "bin/*-config"]
 }

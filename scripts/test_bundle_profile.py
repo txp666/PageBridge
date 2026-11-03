@@ -25,7 +25,7 @@ class BundleProfileTests(unittest.TestCase):
         )
         self.packages = self.runtime / "lib" / "python3.12" / "site-packages"
         self.packages.mkdir(parents=True)
-        self.versions = {"pdf2zh-next": "2.9.0", "babeldoc": "0.6.2"}
+        self.versions = {"PyMuPDF": "1.25.2", "httpx": "0.28.1"}
         self.profile = {
             "profile": "test-only-native-profile",
             "auditedEngineVersions": dict(self.versions),

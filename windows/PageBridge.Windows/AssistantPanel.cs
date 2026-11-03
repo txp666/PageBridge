@@ -13,11 +13,10 @@ namespace PageBridge.Windows;
 internal sealed class AssistantPanel : Grid, IDisposable
 {
     private readonly BackendClient backend;
-    private readonly Action<int, string> navigate;
+    private readonly Action<int> navigate;
     private readonly Func<int> currentPage;
     private readonly Func<int> selectionPage;
-    private readonly Func<string> currentVariant, selectedText;
-    private readonly Func<string> selectionVariant;
+    private readonly Func<string> selectedText;
     private readonly Func<string, Task> saveNote;
     private readonly Func<ContentDialog, Task<ContentDialogResult>> showDialog;
     private readonly TextBlock documentName = Text("", 11, .6);
@@ -47,13 +46,13 @@ internal sealed class AssistantPanel : Grid, IDisposable
     internal bool IsBusy => busy || pending is not null;
     internal bool HasDraft => !string.IsNullOrWhiteSpace(question.Text);
 
-    internal AssistantPanel(BackendClient backend, Action<int, string> navigate, Func<int> currentPage,
-        Func<string> currentVariant, Func<string> selectedText, Func<string, Task> saveNote,
-        Func<ContentDialog, Task<ContentDialogResult>> showDialog, Func<int> selectionPage, Func<string> selectionVariant)
+    internal AssistantPanel(BackendClient backend, Action<int> navigate, Func<int> currentPage,
+        Func<string> selectedText, Func<string, Task> saveNote,
+        Func<ContentDialog, Task<ContentDialogResult>> showDialog, Func<int> selectionPage)
     {
         this.backend = backend; this.navigate = navigate; this.currentPage = currentPage;
-        this.currentVariant = currentVariant; this.selectedText = selectedText; this.saveNote = saveNote;
-        this.selectionPage = selectionPage; this.selectionVariant = selectionVariant; this.showDialog = showDialog;
+        this.selectedText = selectedText; this.saveNote = saveNote;
+        this.selectionPage = selectionPage; this.showDialog = showDialog;
         HorizontalAlignment = HorizontalAlignment.Stretch; VerticalAlignment = VerticalAlignment.Stretch;
         RowDefinitions.Add(new() { Height = GridLength.Auto });
         RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -265,7 +264,7 @@ internal sealed class AssistantPanel : Grid, IDisposable
         var tokenSource = new CancellationTokenSource(); pending = tokenSource; busy = true; error.Visibility = Visibility.Collapsed;
         string selection = selectedText();
         var args = new JsonObject { ["document_id"] = id, ["service_id"] = capturedService, ["mode"] = Mode,
-            ["page"] = Mode == "selection" ? selectionPage() : currentPage(), ["variant"] = Mode == "selection" ? selectionVariant() : currentVariant(), ["selection"] = selection.Length > 6000 ? selection[..6000] : selection,
+            ["page"] = Mode == "selection" ? selectionPage() : currentPage(), ["selection"] = selection.Length > 6000 ? selection[..6000] : selection,
             ["selection_truncated"] = selection.Length > 6000, ["question"] = text };
         question.Text = ""; progress.Text = "正在选取文档片段并等待模型回答…";
         var pendingMessage = new JsonObject { ["role"] = "user", ["text"] = text };
@@ -346,9 +345,9 @@ internal sealed class AssistantPanel : Grid, IDisposable
             contents.Children.Add(heading); contents.Children.Add(Text(body, 12));
             foreach (var evidence in message["citations"]?.AsArray().OfType<JsonObject>() ?? [])
             {
-                int index = evidence["page"]!.GetValue<int>(); string variant = String(evidence, "variant");
-                var jump = new Button { Content = $"P{index + 1} · 跳到{(variant == "translated" ? "译文" : "原文")}", FontSize = 11, Padding = new Thickness(7, 3, 7, 3), HorizontalAlignment = HorizontalAlignment.Left, MinHeight = 24 };
-                jump.Click += (_, _) => navigate(index, variant); contents.Children.Add(jump);
+                int index = evidence["page"]!.GetValue<int>();
+                var jump = new Button { Content = $"P{index + 1} · 跳到原文", FontSize = 11, Padding = new Thickness(7, 3, 7, 3), HorizontalAlignment = HorizontalAlignment.Left, MinHeight = 24 };
+                jump.Click += (_, _) => navigate(index); contents.Children.Add(jump);
                 string fragment = String(evidence, "text") + (evidence["truncated"]?.GetValue<bool>() == true ? "\n\n发送时已截取，不是完整页面。" : "");
                 contents.Children.Add(new Expander { Header = String(evidence, "origin") == "selection" ? "核对选文片段" : "核对页面片段", Content = Text(fragment, 11, .7), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
             }

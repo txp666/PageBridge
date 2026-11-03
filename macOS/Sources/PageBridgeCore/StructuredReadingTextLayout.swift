@@ -79,7 +79,10 @@ public final class StructuredReadingTextLayout {
                            backgroundColor: [Double]? = nil, foregroundColor: [Double]? = nil, template: String? = nil,
                            inlineImages: [String: StructuredReadingInlineImage] = [:],
                            referenceFontSize: CGFloat? = nil, minimumFontSize: CGFloat = 8) -> StructuredReadingTextLayout {
-        let minimum = max(1, minimumFontSize)
+        // Small print (references, citations, footers) is often below the reader minimum, and
+        // Chinese runs wider per character: let it shrink to 85% of its original size. Body
+        // text of 9.4 pt or more keeps the reader minimum.
+        let minimum = max(5, min(minimumFontSize, preferredFontSize * 0.85))
         let maximum = max(minimum, preferredFontSize)
         let rgb = backgroundColor?.count == 3 ? backgroundColor! : [255, 255, 255]
         let brightness = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114

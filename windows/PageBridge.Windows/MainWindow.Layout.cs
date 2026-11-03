@@ -124,8 +124,10 @@ public sealed partial class MainWindow
         actions.Children.Add(Tool("search", null, "搜索文档", () => { ShowDocumentSearch(); return Task.CompletedTask; }));
         translateButton.Content = Row(ReaderIcons.Make("translate"), new TextBlock { Text = "翻译", FontSize = 12 }); translateButton.Height = 28; translateButton.MinHeight = 0; translateButton.Padding = new Thickness(8, 3, 8, 3); translateButton.MinWidth = 0; actions.Children.Add(translateButton);
         exportButton.Content = Row(new TextBlock { Text = "导出 PDF", FontSize = 12 }, ReaderIcons.Make("down", 12)); exportButton.Height = 28; exportButton.MinHeight = 0; exportButton.Padding = new Thickness(8, 3, 8, 3);
-        var exportMenu = new MenuFlyout(); foreach (var item in new[] { ("原文 PDF…", "original"), ("译文 PDF…", "translated"), ("双语 PDF…", "bilingual") }) { var kind = item.Item2; exportMenu.Items.Add(MenuItem(item.Item1, () => ExportAsync(kind))); }
-        exportMenu.Items.Add(new MenuFlyoutSeparator()); exportMenu.Items.Add(MenuItem("带批注的 PDF…", () => ExportReadingAsync("pdf", ActiveVariant, AnnotationHash(ActiveVariant)))); exportMenu.Items.Add(MenuItem("阅读笔记（Markdown）…", () => ExportReadingAsync("markdown", ActiveVariant, AnnotationHash(ActiveVariant)))); exportMenu.Items.Add(new MenuFlyoutSeparator()); exportMenu.Items.Add(MenuItem("在资源管理器中显示输出", RevealOutputAsync)); exportButton.Flyout = exportMenu; actions.Children.Add(exportButton);
+        var exportMenu = new MenuFlyout(); exportMenu.Items.Add(MenuItem("原文 PDF…", () => ExportAsync("original")));
+        var exportTranslated = MenuItem("导出译文 PDF", () => ExportTranslationAsync("translated")); var exportBilingual = MenuItem("导出双语 PDF", () => ExportTranslationAsync("bilingual"));
+        exportMenu.Items.Add(exportTranslated); exportMenu.Items.Add(exportBilingual); exportMenu.Opening += (_, _) => exportTranslated.IsEnabled = exportBilingual.IsEnabled = ReadingExportAvailable;
+        exportMenu.Items.Add(new MenuFlyoutSeparator()); exportMenu.Items.Add(MenuItem("带批注的 PDF…", () => ExportAnnotationsAsync("pdf", annotationHash))); exportMenu.Items.Add(MenuItem("阅读笔记（Markdown）…", () => ExportAnnotationsAsync("markdown", annotationHash))); exportButton.Flyout = exportMenu; actions.Children.Add(exportButton);
         Grid.SetColumn(actions, 1); header.Children.Add(actions); workspace.Children.Add(header); themedBars.Add(header);
         var toolsBar = new Grid { Padding = new Thickness(16, 3, 16, 5), BorderThickness = new Thickness(0, 0, 0, 1), BorderBrush = LineBrush }; toolsBar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); toolsBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         readingTools.Children.Add(Tool("sidebar", null, "页面导航", () => { TogglePageNavigation(); return Task.CompletedTask; })); readingTools.Children.Add(Divider());
@@ -133,22 +135,21 @@ public sealed partial class MainWindow
         readingTools.Children.Add(highlightTool); readingTools.Children.Add(underlineTool); readingTools.Children.Add(Tool("note", "笔记", "记录页面笔记", AddNoteAsync)); readingTools.Children.Add(Tool("bookmark", null, "当前页书签", ToggleBookmarkAsync));
         var copy = Tool("copy", null, "复制选文或页码");
         var copyMenu = new MenuFlyout();
-        var copyText = MenuItem("复制选中文字", () => { activePages.CopySelection(); return Task.CompletedTask; }); copyMenu.Items.Add(copyText);
-        copyMenu.Items.Add(MenuItem("复制文档与页码", () => { if (selected is not null) { var data = new DataPackage(); data.SetText($"{Text(selected, "name")} · {(ActiveVariant == "translated" ? "译文" : "原文")} · 第 {(int)page.Value} 页"); Clipboard.SetContent(data); } return Task.CompletedTask; }));
-        copyMenu.Opening += (_, _) => copyText.IsEnabled = activePages.Selection is not null;
+        var copyText = MenuItem("复制选中文字", () => { originalPages.CopySelection(); return Task.CompletedTask; }); copyMenu.Items.Add(copyText);
+        copyMenu.Items.Add(MenuItem("复制文档与页码", () => { if (selected is not null) { var data = new DataPackage(); data.SetText($"{Text(selected, "name")} · 第 {(int)page.Value} 页"); Clipboard.SetContent(data); } return Task.CompletedTask; }));
+        copyMenu.Opening += (_, _) => copyText.IsEnabled = originalPages.Selection is not null;
         copy.Flyout = copyMenu; readingTools.Children.Add(copy); toolsBar.Children.Add(readingTools);
         notesTool = Tool("notes", "阅读笔记", "阅读笔记", () => ToggleInspectorAsync("notes")); assistantTool = Tool("sparkles", "助手", "文档助手", () => ToggleInspectorAsync("assistant"));
         var inspectors = Row(selectionCaption, notesTool, assistantTool); Grid.SetColumn(inspectors, 1); toolsBar.Children.Add(inspectors); Grid.SetRow(toolsBar, 1); workspace.Children.Add(toolsBar); themedBars.Add(toolsBar);
-        originalPages = new ContinuousPdfPane(backend); translatedPages = new ContinuousPdfPane(backend); activePages = originalPages;
+        originalPages = new ContinuousPdfPane(backend);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(originalPages.Scroll, "OriginalPages");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(translatedPages.Scroll, "TranslatedPages");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(originalPages.Scroll, "原文连续阅读");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(translatedPages.Scroll, "译文连续阅读"); leftPane = MakePDFPane("原文", originalPages.Scroll, originalLanguage); rightPane = MakePDFPane("译文", translatedPages.Scroll, translatedLanguage); Grid.SetRow(emptyTranslation, 1); rightPane.Children.Add(emptyTranslation);
+        leftPane = MakePDFPane("原文", originalLanguage, originalPages.Scroll); rightPane = MakePDFPane("译文", translatedLanguage); Grid.SetRow(emptyTranslation, 1); rightPane.Children.Add(emptyTranslation);
         reader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); reader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); reader.Children.Add(leftPane); reader.Children.Add(rightPane); Grid.SetColumn(rightPane, 1);
         readerArea.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); readerArea.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); readerArea.Children.Add(pageNavigation); Grid.SetColumn(reader, 1); readerArea.Children.Add(reader); Grid.SetRow(readerArea, 3); workspace.Children.Add(readerArea);
         InitializeStructuredReading();
         InitializeReadingWorkspace();
-        var statusBar = new Grid { Padding = new Thickness(16, 6, 16, 6), ColumnSpacing = 8 }; statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.Children.Add(ReaderIcons.Make("info", 12)); status.FontSize = 11; status.Opacity = .65; Grid.SetColumn(status, 1); statusBar.Children.Add(status); Grid.SetColumn(progress, 2); statusBar.Children.Add(progress); Grid.SetRow(statusBar, 4); workspace.Children.Add(statusBar); themedBars.Add(statusBar);
+        var statusBar = new Grid { Padding = new Thickness(16, 6, 16, 6), ColumnSpacing = 8 }; statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); statusBar.Children.Add(ReaderIcons.Make("info", 12)); status.FontSize = 11; status.Opacity = .65; Grid.SetColumn(status, 1); statusBar.Children.Add(status); Grid.SetColumn(progress, 2); statusBar.Children.Add(progress); statusBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); exportCancel.Click += (_, _) => { exportCancellation?.Cancel(); status.Text = "正在取消导出…"; }; Grid.SetColumn(exportCancel, 3); statusBar.Children.Add(exportCancel); Grid.SetRow(statusBar, 4); workspace.Children.Add(statusBar); themedBars.Add(statusBar);
         var footer = new Grid { Padding = new Thickness(20, 8, 20, 8), BorderThickness = new Thickness(0, 1, 0, 0), BorderBrush = LineBrush };
         footer.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); footer.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); footer.Children.Add(documentStatus);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(page, "ReaderPageNumber");
@@ -177,7 +178,7 @@ public sealed partial class MainWindow
         foreach (var pane in new[] { leftPane, rightPane }) ((Panel)pane.Children[0]).Background = Dark ? Brush(49, 49, 49) : Brush(230, 230, 230);
         foreach (var element in themedBars) if (element is Panel panel) panel.Background = BarBrush;
         if (root.Children[0] is Grid sidebar) sidebar.Background = Dark ? Brush(38, 38, 38) : Brush(243, 243, 243);
-        originalPages.Scroll.Background = translatedPages.Scroll.Background = BarBrush;
+        originalPages.Scroll.Background = BarBrush;
         emptyLibrary.Background = BarBrush; search.Background = Dark ? Brush(46, 46, 46) : Brush(232, 232, 232);
         AppWindow.TitleBar.BackgroundColor = Dark ? global::Windows.UI.Color.FromArgb(255, 38, 38, 38) : global::Windows.UI.Color.FromArgb(255, 243, 243, 243);
         AppWindow.TitleBar.ForegroundColor = Dark ? Colors.White : Colors.Black; AppWindow.TitleBar.ButtonBackgroundColor = AppWindow.TitleBar.BackgroundColor; AppWindow.TitleBar.ButtonForegroundColor = AppWindow.TitleBar.ForegroundColor;
@@ -188,31 +189,30 @@ public sealed partial class MainWindow
         UpdateModeButtons(); RefreshNavigation();
         UpdateReadingTheme();
     }
-    private Grid MakePDFPane(string caption, ScrollViewer scroll, TextBlock language)
+    private Grid MakePDFPane(string caption, TextBlock language, ScrollViewer? scroll = null)
     {
         var panel = new Grid(); panel.RowDefinitions.Add(new() { Height = GridLength.Auto }); panel.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         var header = new Grid { Padding = new Thickness(16, 4, 16, 4) };
         header.Children.Add(new TextBlock { Text = caption, FontSize = 10.5, Opacity = .7 });
         language.FontSize = 10.5; language.Opacity = .4; language.HorizontalAlignment = HorizontalAlignment.Right;
-        header.Children.Add(language); panel.Children.Add(header); Grid.SetRow(scroll, 1); panel.Children.Add(scroll);
-        scroll.ViewChanged += (_, _) => UpdatePDFPaneLabels();
+        header.Children.Add(language); panel.Children.Add(header);
+        if (scroll is not null) { Grid.SetRow(scroll, 1); panel.Children.Add(scroll); scroll.ViewChanged += (_, _) => UpdatePDFPaneLabels(); }
         return panel;
     }
     private void UpdateModeButtons()
     {
-        for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || HasTranslation; }
+        for (int i = 0; i < modeButtons.Count; i++) { modeButtons[i].Background = i == mode.SelectedIndex ? Blue : Clear; modeButtons[i].Foreground = i == mode.SelectedIndex ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Dark ? Colors.White : Colors.Black); modeButtons[i].IsEnabled = i == 0 || HasReading; }
         leftPane.Children[0].Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-        rightPane.Children[0].Visibility = mode.SelectedIndex == 1 || (mode.SelectedIndex == 2 && ShowingReading) ? Visibility.Visible : Visibility.Collapsed;
+        rightPane.Children[0].Visibility = mode.SelectedIndex != 0 ? Visibility.Visible : Visibility.Collapsed;
         sync.IsEnabled = mode.SelectedIndex == 1;
     }
     private void UpdateDocumentState()
     {
         UpdatePDFPaneLabels();
         bool hasDoc = selected is not null; emptyLibrary.Visibility = !hasDoc && settingsOverlay is null ? Visibility.Visible : Visibility.Collapsed; workspace.Visibility = hasDoc && settingsOverlay is null ? Visibility.Visible : Visibility.Collapsed;
-        translateButton.IsEnabled = hasDoc; exportButton.IsEnabled = hasDoc; documentStatus.Text = hasDoc ? StatusName(Text(selected, "status")) : "";
-        if (hasDoc && !HasTranslation) mode.SelectedIndex = 0;
-        if (translationCancellation is null) translateButton.Content = Row(ReaderIcons.Make("translate"), new TextBlock { Text = !HasTranslation ? "翻译" : "重新翻译", FontSize = 12 });
-        if (exportButton.Flyout is MenuFlyout menu) { menu.Items[1].IsEnabled = Text(selected, "translated_path") != ""; menu.Items[2].IsEnabled = Text(selected, "bilingual_path") != ""; }
+        translateButton.IsEnabled = hasDoc && exportCancellation is null; exportButton.IsEnabled = hasDoc; documentStatus.Text = hasDoc ? StatusName(selected) : "";
+        if (hasDoc && !HasReading) mode.SelectedIndex = 0;
+        if (translationCancellation is null) translateButton.Content = Row(ReaderIcons.Make("translate"), new TextBlock { Text = !HasReading ? "翻译" : "重新翻译", FontSize = 12 });
         UpdateModeButtons();
     }
     private void BuildEmptyLibrary()
@@ -252,20 +252,20 @@ public sealed partial class MainWindow
     {
         var row = new Grid { ColumnSpacing = 9, Padding = new Thickness(3, 7, 3, 7) }; row.ColumnDefinitions.Add(new() { Width = new GridLength(38) }); row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         var image = new Image { Width = 38, Height = 52, Stretch = Stretch.Uniform }; row.Children.Add(image);
-        var details = new StackPanel { Spacing = 5, VerticalAlignment = VerticalAlignment.Center }; details.Children.Add(new TextBlock { Text = Text(doc, "name"), FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Medium, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis }); details.Children.Add(new TextBlock { Text = $"{doc["page_count"]} 页 · {StatusName(Text(doc, "status"))}" + (Flag(doc, "favorite") ? "  ★" : ""), FontSize = 10.5, Opacity = .6 }); Grid.SetColumn(details, 1); row.Children.Add(details);
+        var details = new StackPanel { Spacing = 5, VerticalAlignment = VerticalAlignment.Center }; details.Children.Add(new TextBlock { Text = Text(doc, "name"), FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Medium, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis }); details.Children.Add(new TextBlock { Text = $"{doc["page_count"]} 页 · {StatusName(doc)}" + (Flag(doc, "favorite") ? "  ★" : ""), FontSize = 10.5, Opacity = .6 }); Grid.SetColumn(details, 1); row.Children.Add(details);
         image.Loaded += async (_, _) => await LoadThumbnailAsync(image, doc, 0, 140); return row;
     }
-    private async Task LoadThumbnailAsync(Image image, JsonObject doc, int index, int width, string variant = "original")
+    private async Task LoadThumbnailAsync(Image image, JsonObject doc, int index, int width)
     {
         // Only one low-priority preview may enter the backend queue at a time.
         await thumbnailGate.WaitAsync();
         try
         {
             if (windowClosed || !image.IsLoaded) return;
-            var key = Text(doc, "id") + $"/{variant}/{index}/{width}/" + Text(doc, variant == "original" ? "input_path" : "translated_path");
+            var key = Text(doc, "id") + $"/{index}/{width}/" + Text(doc, "input_path");
             if (!thumbnailPaths.TryGetValue(key, out var path) || !File.Exists(path))
             {
-                var result = await backend.CallAsync("render", new JsonObject { ["document_id"] = Text(doc, "id"), ["variant"] = variant, ["page"] = index, ["width"] = width });
+                var result = await backend.CallAsync("render", new JsonObject { ["document_id"] = Text(doc, "id"), ["page"] = index, ["width"] = width });
                 path = Text(result, "path"); thumbnailPaths[key] = path;
             }
             if (!windowClosed && image.IsLoaded) image.Source = new BitmapImage(new Uri(path));
@@ -327,6 +327,6 @@ public sealed partial class MainWindow
         if (selected is not null && !Flag(selected, "trashed") && visible.Any(d => Text(d, "id") == Text(selected, "id"))) return;
         var first = visible.FirstOrDefault(d => !Flag(d, "trashed"));
         if (first is not null) await OpenAsync(first);
-        else { selected = null; selectionGeneration++; renderGeneration++; await UnbindDocumentAsync(); HideInspector(); pageThumbnails.Items.Clear(); outlineList.Items.Clear(); bookmarkList.Items.Clear(); bindingPages = false; originalPages.Clear(); translatedPages.Clear(); structuredReading.Clear(); ApplyStructuredVisibility(); if (!sidebarVisible) ToggleSidebar(); UpdateDocumentState(); }
+        else { selected = null; selectionGeneration++; renderGeneration++; await UnbindDocumentAsync(); HideInspector(); pageThumbnails.Items.Clear(); outlineList.Items.Clear(); bookmarkList.Items.Clear(); bindingPages = false; originalPages.Clear(); structuredReading.Clear(); ApplyStructuredVisibility(); if (!sidebarVisible) ToggleSidebar(); UpdateDocumentState(); }
     }
 }

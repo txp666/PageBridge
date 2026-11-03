@@ -44,7 +44,10 @@ internal sealed partial class StructuredReadingPane
         var color = (background.R * .299 + background.G * .587 + background.B * .114) < 128 ? Colors.White : Colors.Black;
         color = ReadColor(block["foregroundColor"], color);
         var foreground = new SolidColorBrush(color);
-        double minimum = Text(block, "sourceType") == "table_cell" ? 6.5 : 8;
+        // Small print (references, citations, footers) is often below the reader minimum, and
+        // Chinese runs wider per character: let it shrink to 85% of its original size. Body
+        // text of 9.4 pt or more keeps the reader minimum.
+        double minimum = Math.Max(5, Math.Min(Text(block, "sourceType") == "table_cell" ? 6.5 : 8, reference * 0.85));
         double initial = Math.Max(minimum, reference);
         var weight = heading ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
         if (block["inlineMath"] is not JsonArray { Count: > 0 } spans || Text(block, "translatedTemplate") is not { Length: > 0 } template)

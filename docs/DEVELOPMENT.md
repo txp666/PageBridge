@@ -9,8 +9,8 @@
 | `windows/PageBridge.Windows` | WinUI 3 窗口、阅读器、文字与批注层、设置、在线文献、助手、更新 |
 | `windows/PageBridge.GeometryChecks` | Windows 连续滚动页面几何检查 |
 | `desktop/` | Windows 端 Python 服务：文档库、系统凭据、阅读／批注／助手、文献、更新和 worker 管理 |
-| `engine/` | 两端共享的翻译引擎（重排 PDF 与 MinerU 阅读稿）及其测试，见 [engine/README.md](../engine/README.md) |
-| `scripts/` | 构建、裁剪、打包、发布校验、真实翻译与 PDF 检查 |
+| `engine/` | 两端共享的翻译引擎（MinerU 阅读稿及其 PDF 导出）和测试，见 [engine/README.md](../engine/README.md) |
+| `scripts/` | 构建、裁剪、打包和发布校验 |
 | `assets/` · `demos/` | 图标原图与生成说明；公开许可的示例 PDF、来源与哈希 |
 
 `.gitignore` 排除虚拟环境、构建产物（`dist/`）、本地验证目录（`validation/`）、密钥文件和原型。用户 PDF、配置、钥匙串数据和译文不要加入 Git。
@@ -18,9 +18,8 @@
 ## Mac 开发环境
 
 - Apple Silicon Mac，Xcode Command Line Tools / Swift 6（CI 使用 Xcode 16.4），部署目标 macOS 14。
-- 引擎依赖由 `engine/setup.sh` 按 `engine/uv.lock` 安装：没有 uv 时在 `engine/.tools` 安装 uv 0.9.17，再创建 CPython 3.12.12 虚拟环境。`bash engine/setup.sh --assets` 额外预下载上游字体和版面资源。
+- 引擎依赖由 `engine/setup.sh` 按 `engine/uv.lock` 安装：没有 uv 时在 `engine/.tools` 安装 uv 0.9.17，再创建 CPython 3.12.12 虚拟环境。
 - 真实翻译需要另装 Ollama 和模型，或使用 API。
-- PDF 页面复核优先使用 Poppler 的 `pdftoppm`；没有时检查器可用 `--renderer auto`。
 
 ```sh
 bash engine/setup.sh
@@ -40,7 +39,7 @@ swift test --package-path macOS --cache-path /tmp/pagebridge-spm-cache --disable
 
 这些测试使用固定响应，不需要真实 API Key 或模型；与 CI 运行的命令相同。Windows 测试命令见 [WINDOWS.md](WINDOWS.md#构建与测试)。
 
-界面相关改动需在原生应用中复核，例如：文件夹与搜索后的选择、重命名、收藏、回收与恢复、缩略图与目录跳转、原文／译文批注隔离、重启后笔记与书签恢复、阅读稿同步滚动与单段重试。导出要通过系统保存对话框实际保存，再检查 PDF 注释、页数和 Markdown 内容。助手需检查发送范围、引用跳转、未提供页码的提示、取消，以及切换文档后回答归属。
+界面相关改动需在原生应用中复核，例如：文件夹与搜索后的选择、重命名、收藏、回收与恢复、缩略图与目录跳转、重启后笔记与书签恢复、阅读稿同步滚动与单段重试。导出要通过系统保存对话框实际保存，再检查译文 PDF 与双语 PDF 的页数、可选择和搜索的译文、图表，以及批注 PDF 和 Markdown 内容。助手需检查发送范围、引用跳转、未提供页码的提示、取消，以及切换文档后回答归属。
 
 ## MinerU 阅读稿
 
@@ -55,32 +54,15 @@ printf '{"protocolVersion":1,"jobId":"dev","attemptId":"prepare","action":"prepa
 
 worker 在 stdout 输出 NDJSON 进度，最后一行为 `result` 或 `error`。之后运行真实 worker 请求时设置同一个 `PAGEBRIDGE_MINERU_RUNTIME` 即可复用该环境；不设置时使用应用的默认位置。`PAGEBRIDGE_UV` 可省略，worker 会依次查找 `engine/.tools/bin/uv` 和 PATH 中的 uv。
 
-验证阅读稿时检查真实文档的页／块来源、表格和公式区域、部分失败与单段重试、取消，以及重新生成后的页范围。下文的重排 PDF 检查命令不适用于阅读稿。
+验证阅读稿时检查真实文档的页／块来源、表格和公式区域、部分失败与单段重试、取消，以及重新生成后的页范围。
 
-## 重排 PDF：真实翻译与检查
-
-`retranslate-pdfs.py` 用开发引擎（`--source-engine`）或应用包（`--app`）翻译单个 PDF，并记录输入与引擎模块哈希；运行期间模块变化会使该次结果无效。
+真实检查 `engine/verify_real.py` 用本机 Ollama 翻译示例 PDF 的一页，再从这份阅读稿导出译文 PDF 和双语 PDF，检查页数、译文页上可提取的中文和原文件未变：
 
 ```sh
-engine/.venv/bin/python -B scripts/retranslate-pdfs.py \
-  --source-engine --input demos/pdfs/avalanches.pdf \
-  --output validation/my-avalanches-run
+engine/.venv/bin/python -B engine/verify_real.py --page 1 --output validation/my-real-reading
 ```
 
-输出目录必须是仓库内尚不存在的目录。默认使用 `127.0.0.1:11434` 上的 `qwen3.5:35b-a3b-int4`，可用 `--model` 换成其他已安装模型；默认英译中，其他语言用 `--source-language`／`--target-language` 指定，`--pages` 限定翻译页（输出仍保留全部页）。真实翻译请串行运行，避免争用本机模型。`run.json` 记录原文件、模型、页数、耗时和质量检查结果，`events.ndjson` 记录进度；诊断材料可能包含文档片段，不要提交。
-
-按 `run.json` 中的路径检查输出：
-
-```sh
-engine/.venv/bin/python -B scripts/check-pdf-quality.py \
-  --original ORIGINAL.pdf --translated TRANSLATED.pdf --dual BILINGUAL.pdf \
-  --output-dir validation/my-review --renderer poppler \
-  --focus-pages all --fail-on-markers
-```
-
-检查器通过只代表结构检查通过。`--focus-pages` 为所列页生成高分辨率复核图（长文档可列具体页码）；数字、公式、列表、图表和链接目标仍需人工查看。
-
-引擎改动后，受影响的文档应完整重译并复核；只有能证明改动不影响某文档的请求和排版时，才保留其原有结论。
+需要已准备的 MinerU 运行环境（`PAGEBRIDGE_MINERU_RUNTIME` 或应用默认位置）。默认使用 `demos/pdfs/avalanches.pdf` 和 `127.0.0.1:11434` 上的 `qwen3.5:35b-a3b-int4`，可用 `--pdf`、`--model`、`--base-url` 更换；输出目录保存两份 PDF、页面预览图和报告，可能包含文档文字，不要提交。真实翻译请串行运行，避免争用本机模型。数字、公式、图表和排版仍需打开导出的 PDF 人工查看。
 
 ## 构建 Mac 应用
 
@@ -90,7 +72,7 @@ python3 scripts/verify-bundle.py
 python3 scripts/package-release.py
 ```
 
-`build-app.sh` 生成 `dist/PageBridge.app`：生成 ICNS，复制原生可执行文件、Sparkle framework、示例 PDF 和私有 Python，按 `scripts/bundle-profile.json` 复制引擎文件（`engineFiles`）并裁掉未用的 Web UI／SDK／开发资源，最后从内向外 ad-hoc 签名。修改包内任何文件后都要重新构建签名。
+`build-app.sh` 生成 `dist/PageBridge.app`：生成 ICNS，复制原生可执行文件、Sparkle framework、示例 PDF 和私有 Python，按 `scripts/bundle-profile.json` 复制引擎文件（`engineFiles`）并裁掉 pip、包内测试和开发资源，最后从内向外 ad-hoc 签名。修改包内任何文件后都要重新构建签名。
 
 `verify-bundle.py` 检查版本与 `VERSION.json` 一致、许可证、更新源与公钥、Sparkle 签名、私有运行时与依赖版本、引擎文件、阅读模式集成文件和 uv、图标及示例清单；它不调用模型，也不安装 MinerU 环境。可用 `--app 路径 --output 报告.json` 检查解压后的应用。
 
@@ -98,12 +80,11 @@ python3 scripts/package-release.py
 
 示例库由 `assemble-app.py` 从 `demos/` 复制到 `PageBridge.app/Contents/Resources/demos/`；直接 `swift run` 不会组装这些资源。新增示例时同步更新 `demos/catalog.json` 的页数、作者、来源、许可和 SHA-256。
 
-引擎、依赖或调用链改动后，用最终应用包做一次真实翻译：
+引擎、依赖或调用链改动后，用应用包内的 Python 运行同一真实检查（包内引擎文件与源码一致，由 `verify-bundle.py` 核对）：
 
 ```sh
-engine/.venv/bin/python -B scripts/retranslate-pdfs.py \
-  --app dist/PageBridge.app --input demos/pdfs/reproducible-research.pdf \
-  --output validation/final-bundle-demo
+dist/PageBridge.app/Contents/Resources/engine/runtime/bin/python3 -B engine/verify_real.py \
+  --output validation/final-bundle-reading
 ```
 
 ## 版本与发布

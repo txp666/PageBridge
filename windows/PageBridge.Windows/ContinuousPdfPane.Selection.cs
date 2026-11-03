@@ -17,7 +17,6 @@ internal sealed partial class ContinuousPdfPane
     private int selectingPage = -1, selectionEpoch;
     private Point selectionStart, selectionEnd;
     private bool selectionDragged;
-    internal string Variant => variant;
     internal PdfSelection? Selection { get; private set; }
     internal event Action<ContinuousPdfPane>? SelectionChanged;
     internal event Action<ContinuousPdfPane, string>? AnnotationInvoked;
@@ -119,7 +118,7 @@ internal sealed partial class ContinuousPdfPane
         {
             try
             {
-                var data = await backend.CallAsync("page_text", new JsonObject { ["document_id"] = documentId, ["variant"] = variant, ["page"] = index });
+                var data = await backend.CallAsync("page_text", new JsonObject { ["document_id"] = documentId, ["page"] = index });
                 if (generation != current) return;
                 view.SourceHash = data?["source_sha256"]?.GetValue<string>() ?? "";
                 view.Links = data?["links"]?.DeepClone() as JsonArray ?? [];
@@ -163,7 +162,7 @@ internal sealed partial class ContinuousPdfPane
             else rects[^1] = rects[^1].Union(token.Rect);
             text.Append(token.Text);
         }
-        Selection = string.IsNullOrWhiteSpace(text.ToString()) ? null : new(index, variant, view.SourceHash, text.ToString().Trim(), rects);
+        Selection = string.IsNullOrWhiteSpace(text.ToString()) ? null : new(index, view.SourceHash, text.ToString().Trim(), rects);
         for (int i = 0; i < views.Count; i++) DrawSelection(i);
         SelectionChanged?.Invoke(this);
     }

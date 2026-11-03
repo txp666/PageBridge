@@ -28,15 +28,17 @@ public struct WorkerRequest: Codable, Sendable {
     public var targetLanguage: String?
     public var pages: String?
     public var service: EngineService?
-    public var outputMode: String?
     public var readingPath: String?
     public var retryBlockIds: [String]?
-    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, outputMode: String? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil) {
+    public var outputPath: String?
+    public var kind: String?
+    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil, outputPath: String? = nil, kind: String? = nil) {
         self.jobId = jobID.uuidString; self.attemptId = attemptID.uuidString; self.action = action
         self.inputPath = inputPath; self.outputDirectory = outputDirectory
         self.sourceLanguage = sourceLanguage; self.targetLanguage = targetLanguage
         self.pages = pages; self.service = service
-        self.outputMode = outputMode; self.readingPath = readingPath; self.retryBlockIds = retryBlockIds
+        self.readingPath = readingPath; self.retryBlockIds = retryBlockIds
+        self.outputPath = outputPath; self.kind = kind
     }
 }
 
@@ -49,12 +51,12 @@ public struct WorkerEvent: Codable, Sendable {
     public var stage: String?
     public var progress: Double?
     public var message: String?
-    public var translatedPath: String?
-    public var bilingualPath: String?
     public var engineVersion: String?
     public var artifactType: String?
     public var readingPath: String?
     public var readingSHA256: String?
+    public var outputPath: String?
+    public var pageCount: Int?
 }
 
 public struct EngineLocation: Sendable {
@@ -218,9 +220,9 @@ public final class EngineRunner: @unchecked Sendable {
         lock.lock(); let wasCancelled = cancelled; lock.unlock()
         if wasCancelled { signal(child, SIGKILL); throw BridgeError.cancelled }
         guard buffer.isEmpty else { throw BridgeError.message("引擎消息未完整结束。") }
-        if let terminal, terminal.type == "error" { throw BridgeError.message(terminal.message ?? "翻译引擎返回错误。") }
+        if let terminal, terminal.type == "error" { throw BridgeError.message(terminal.message ?? "引擎返回错误。") }
         guard child.terminationStatus == 0, let terminal, terminal.type == "result" else {
-            throw BridgeError.message("翻译引擎意外退出（\(child.terminationStatus)），未提交结果。")
+            throw BridgeError.message("引擎意外退出（\(child.terminationStatus)），未提交结果。")
         }
         return terminal
     }

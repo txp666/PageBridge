@@ -22,7 +22,7 @@ public sealed class BackendClient : IDisposable
     };
     private readonly SemaphoreSlim rpcGate = new(1, 1);
     private readonly SemaphoreSlim localRpcGate = new(1, 1);
-    private readonly SemaphoreSlim translationGate = new(1, 1);
+    private readonly SemaphoreSlim jobGate = new(1, 1);
     private readonly CancellationTokenSource shutdown = new();
     private LocalSession? localSession;
     private int disposed;
@@ -229,24 +229,49 @@ public sealed class BackendClient : IDisposable
 
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Action<JsonObject> onEvent,
-        CancellationToken cancellationToken = default, string outputMode = "pdf", IReadOnlyList<string>? retryBlockIds = null)
+        CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null)
+    {
+        // Only the profile ID crosses this interface. The bridge resolves
+        // its saved credential privately through Windows Credential Manager.
+        var request = new JsonObject
+        {
+            ["action"] = "translate", ["dataRoot"] = DataRoot,
+            ["document_id"] = documentId, ["service_id"] = serviceId,
+            ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
+            ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
+            ["retryBlockIds"] = retryBlockIds is null ? null : new JsonArray(retryBlockIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray())
+        };
+        JsonObject result = await RunJobAsync(request, "翻译", onEvent, cancellationToken).ConfigureAwait(false);
+        if (result["document"] is not JsonObject document
+            || StringValue(document["id"]) != documentId || StringValue(document["status"]) is not ("completed" or "partial"))
+            throw new BackendException("翻译结果身份或保存状态无效。");
+        return (JsonObject)document.DeepClone();
+    }
+
+    /// <summary>Writes the document's reading draft as a translated or bilingual PDF at an absolute path chosen by the user.</summary>
+    public async Task<JsonObject> ExportReadingAsync(string documentId, string kind, string destination,
+        Action<JsonObject> onEvent, CancellationToken cancellationToken = default)
+    {
+        var request = new JsonObject
+        {
+            ["action"] = "export_reading", ["dataRoot"] = DataRoot,
+            ["document_id"] = documentId, ["kind"] = kind, ["destination"] = destination
+        };
+        JsonObject result = await RunJobAsync(request, "导出", onEvent, cancellationToken).ConfigureAwait(false);
+        if (StringValue(result["outputPath"]) is not { Length: > 0 })
+            throw new BackendException("导出结果无效，请检查保存位置后重试。");
+        return result;
+    }
+
+    // One translation or export at a time; each runs in its own bridge process.
+    private async Task<JsonObject> RunJobAsync(JsonObject request, string label, Action<JsonObject> onEvent,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
-        if (!await translationGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
-            throw new BackendException("已有翻译正在进行，请完成或取消后再试。");
+        if (!await jobGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            throw new BackendException("已有翻译或导出正在进行，请完成或取消后再试。");
         try
         {
-            // Only the profile ID crosses this interface. The bridge resolves
-            // its saved credential privately through Windows Credential Manager.
-            var request = new JsonObject
-            {
-                ["action"] = "translate", ["dataRoot"] = DataRoot,
-                ["document_id"] = documentId, ["service_id"] = serviceId,
-                ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
-                ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
-                ["outputMode"] = outputMode,
-                ["retryBlockIds"] = retryBlockIds is null ? null : new JsonArray(retryBlockIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray())
-            };
             byte[] payload = EncodeRequest(request);
             cancellationToken.ThrowIfCancellationRequested();
             using Process process = StartBridge();
@@ -257,7 +282,7 @@ public sealed class BackendClient : IDisposable
             {
                 await process.StandardInput.BaseStream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                 await process.StandardInput.BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                readTask = ReadTranslationAsync(process, documentId, onEvent, lifetime.Token);
+                readTask = ReadJobAsync(process, label, onEvent, lifetime.Token);
                 var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 using CancellationTokenRegistration registration = cancellationToken.Register(() => cancelled.TrySetResult());
                 await Task.WhenAny(readTask, cancelled.Task).ConfigureAwait(false);
@@ -280,13 +305,13 @@ public sealed class BackendClient : IDisposable
                     }
                     throw new OperationCanceledException(cancellationToken);
                 }
-                JsonObject document = await readTask.ConfigureAwait(false);
+                JsonObject result = await readTask.ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                return document;
+                return result;
             }
             catch (Exception error) when (error is IOException or JsonException or DecoderFallbackException)
             {
-                throw new BackendException("无法读取翻译进度，请刷新文档状态后检查结果。");
+                throw new BackendException($"无法读取{label}进度，请检查结果后重试。");
             }
             finally
             {
@@ -303,11 +328,11 @@ public sealed class BackendClient : IDisposable
         }
         finally
         {
-            translationGate.Release();
+            jobGate.Release();
         }
     }
 
-    private static async Task<JsonObject> ReadTranslationAsync(Process process, string documentId,
+    private static async Task<JsonObject> ReadJobAsync(Process process, string label,
         Action<JsonObject> onEvent, CancellationToken cancellationToken)
     {
         var reader = new BoundedLines(process.StandardOutput.BaseStream);
@@ -327,11 +352,11 @@ public sealed class BackendClient : IDisposable
                 || kind is not ("ready" or "stage" or "progress" or "result" or "error")
                 || (job is null && kind is not ("ready" or "error"))
                 || terminal is not null)
-                throw new BackendException("翻译消息身份、顺序或格式无效，结果未被确认。");
+                throw new BackendException($"{label}消息身份、顺序或格式无效，结果未被确认。");
             if (message["progress"] is JsonNode progress
                 && (!(progress is JsonValue value && value.TryGetValue<double>(out double fraction))
                     || !double.IsFinite(fraction) || fraction < 0 || fraction > 1))
-                throw new BackendException("翻译进度值无效。");
+                throw new BackendException($"{label}进度值无效。");
             job ??= messageJob;
             attempt ??= messageAttempt;
             lastSequence = sequence;
@@ -340,13 +365,12 @@ public sealed class BackendClient : IDisposable
         }
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         if (terminal is null)
-            throw new BackendException("翻译进程已结束，但没有返回完整结果。");
+            throw new BackendException($"{label}进程已结束，但没有返回完整结果。");
         if (StringValue(terminal["type"]) == "error")
             throw new BackendException(ErrorMessage(terminal["message"]));
-        if (process.ExitCode != 0 || terminal["document"] is not JsonObject document
-            || StringValue(document["id"]) != documentId || StringValue(document["status"]) is not ("completed" or "partial"))
-            throw new BackendException("翻译结果身份或保存状态无效。");
-        return (JsonObject)document.DeepClone();
+        if (process.ExitCode != 0)
+            throw new BackendException($"{label}进程意外退出，结果未被确认。");
+        return (JsonObject)terminal.DeepClone();
     }
 
     private static string SerializeRequest(JsonObject request)

@@ -95,7 +95,7 @@ base = Path(info["standaloneBase"])
 shutil.copytree(base, runtime, symlinks=True, ignore=ignore)
 packages = runtime / "lib/python3.12/site-packages"
 shutil.copytree(Path(info["sitePackages"]), packages, dirs_exist_ok=True, symlinks=True, ignore=ignore)
-print("Pruning unused web UI, provider SDKs and development resources…", flush=True)
+print("Pruning pip, package tests and development resources…", flush=True)
 profile_report = prune_runtime(runtime, profile, info["versions"])
 (engine / "bundle-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
 (ROOT / "validation").mkdir(parents=True, exist_ok=True)

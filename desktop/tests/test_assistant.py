@@ -1,4 +1,3 @@
-import copy
 import io
 import json
 from pathlib import Path
@@ -51,7 +50,7 @@ class AssistantTests(unittest.TestCase):
         self.profile = new_profile("ollama")
         self.services.save(self.profile)
         self.request = dict(document_id=self.doc["id"], service_id=self.profile["id"],
-                            mode="paper", page=1, variant="original", question="What is the pressure limit?")
+                            mode="paper", page=1, question="What is the pressure limit?")
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -71,30 +70,18 @@ class AssistantTests(unittest.TestCase):
         return result, opener.open.call_args.args[0]
 
     def test_document_evidence_records_physical_page_and_original_variant(self):
-        context = assistant.build_context(self.documents, self.request | {"variant": "translated"})
+        context = assistant.build_context(self.documents, self.request)
         self.assertEqual(context["scanned_pages"], [0, 1, 2])
         self.assertEqual(context["evidence"][0]["page"], 1)
         self.assertEqual({e["page"] for e in context["evidence"]}, {0, 1, 2})
         self.assertTrue(all(e["variant"] == "original" for e in context["evidence"]))
         self.assertIn("模型未通读全文", context["scope"])
 
-    def test_current_page_uses_translated_text_not_original(self):
-        translated = pdf_file(Path(self.doc["input_path"]).parent / "translated.pdf", ["Translated A", "Translated pressure four bar", "Translated C"])
-        state = copy.deepcopy(self.documents._state)
-        state["documents"][0]["translated_path"] = str(translated)
-        self.documents._write(state)
-        context = assistant.build_context(self.documents, self.request | {"mode": "currentPage", "variant": "translated"})
-        self.assertEqual(context["scanned_pages"], [1])
-        self.assertEqual(len(context["evidence"]), 1)
-        self.assertIn("Translated pressure", context["evidence"][0]["text"])
-        self.assertEqual(context["evidence"][0]["variant"], "translated")
-
     def test_selection_is_bounded_without_extracting_pdf(self):
         with patch("pagebridge.assistant.pymupdf.open", side_effect=AssertionError("Selection must not extract PDF")):
-            context = assistant.build_context(self.documents, self.request | {"mode": "selection", "selection": "x" * 7000, "variant": "translated"})
+            context = assistant.build_context(self.documents, self.request | {"mode": "selection", "selection": "x" * 7000})
         self.assertEqual(len(context["evidence"][0]["text"]), 6000)
         self.assertTrue(context["evidence"][0]["truncated"])
-        self.assertEqual(context["evidence"][0]["variant"], "translated")
         with self.assertRaisesRegex(AppError, "选择文字"):
             assistant.build_context(self.documents, self.request | {"mode": "selection", "selection": " "})
 
@@ -123,12 +110,10 @@ class AssistantTests(unittest.TestCase):
         self.assertTrue(all(len(e["text"]) <= 2400 for e in context["evidence"]))
         self.assertTrue(context["extraction_limited"])
 
-    def test_scope_validation_and_missing_translation(self):
-        for change in ({"mode": "bad"}, {"mode": []}, {"page": True}, {"page": -1}, {"page": 3}, {"variant": {}}):
+    def test_scope_validation(self):
+        for change in ({"mode": "bad"}, {"mode": []}, {"page": True}, {"page": -1}, {"page": 3}):
             with self.subTest(change=change), self.assertRaises(AppError):
                 assistant.build_context(self.documents, self.request | change)
-        with self.assertRaisesRegex(AppError, "译文"):
-            assistant.build_context(self.documents, self.request | {"mode": "currentPage", "variant": "translated"})
 
     def test_prepare_persists_user_and_keeps_key_out_of_history_and_active_choice(self):
         cloud = new_profile("custom")

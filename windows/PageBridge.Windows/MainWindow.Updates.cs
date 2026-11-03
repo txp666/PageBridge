@@ -14,7 +14,7 @@ public sealed partial class MainWindow
 
     // The updater itself is one Attempt; another active operation could still
     // be importing, saving or displaying a native picker behind this dialog.
-    private bool UpdateInstallBusy => translationCancellation is not null || translationPreparing
+    private bool UpdateInstallBusy => translationCancellation is not null || translationPreparing || exportCancellation is not null
         || assistantPanel.IsBusy || annotationsPanel.IsBusy || loading || bindingPages
         || settingsOpening || literatureOpening || activeUiOperations > 1
         || settingsOverlay is { IsBusy: true };

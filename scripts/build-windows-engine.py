@@ -94,8 +94,6 @@ def prune(runtime, profile, versions):
             path.unlink()
 
     excluded = {canonical(name): reason for reason, names in profile["excludedDistributions"].items() for name in names}
-    # Windows does not have the Unix system IANA timezone database.
-    excluded.pop("tzdata", None)
     receipts = []
     for dist in metadata.distributions(path=[str(packages)]):
         name = canonical(dist.metadata["Name"])

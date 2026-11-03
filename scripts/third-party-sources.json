@@ -1,38 +1,10 @@
 {
   "schema": 1,
   "notes": [
-    "The three PyPI sdists must also match engine/uv.lock.",
+    "The PyMuPDF sdist must also match engine/uv.lock.",
     "The MuPDF pin was computed from the official HTTPS archive; it is not an independent upstream signed checksum."
   ],
   "packages": [
-    {
-      "name": "pdf2zh-next",
-      "version": "2.9.0",
-      "url": "https://files.pythonhosted.org/packages/87/5e/d971946ec7ad3e0b0aeada46e323485e7b2fb29ed5285b0d854e285b9d8d/pdf2zh_next-2.9.0.tar.gz",
-      "filename": "pdf2zh_next-2.9.0.tar.gz",
-      "bytes": 7759383,
-      "sha256": "cadd8380eb8b3c06427f04e4c4a3a3bafc56a2a6b5e2293f9b5ad07c3c3011dd",
-      "license": "AGPL-3.0",
-      "license_file": "pdf2zh_next-2.9.0/LICENSE",
-      "license_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
-      "build_materials": [
-        "pdf2zh_next-2.9.0/pyproject.toml"
-      ]
-    },
-    {
-      "name": "babeldoc",
-      "version": "0.6.2",
-      "url": "https://files.pythonhosted.org/packages/5e/2b/e0f23e7fde25a7d9b90ff219ca60c220105552ec96f290a5dfaadabe4590/babeldoc-0.6.2.tar.gz",
-      "filename": "babeldoc-0.6.2.tar.gz",
-      "bytes": 16391367,
-      "sha256": "b2b2769aa9f8372b35071b46788da531ebb58bc3cf31ab4dbb5deb06e9424026",
-      "license": "AGPL-3.0",
-      "license_file": "babeldoc-0.6.2/LICENSE",
-      "license_sha256": "afca41723b45e26069f68d485bf906a202f892f90c801d3052f8e6296bb41454",
-      "build_materials": [
-        "babeldoc-0.6.2/pyproject.toml"
-      ]
-    },
     {
       "name": "pymupdf",
       "version": "1.25.2",

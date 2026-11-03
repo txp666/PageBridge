@@ -29,7 +29,8 @@ struct PageBridgeApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("添加 PDF…") { model.importPDFs() }.keyboardShortcut("o")
-                Button("导出译文…") { model.exportSelected(.translated) }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.selectedDocument?.translatedURL == nil)
+                Button("导出译文 PDF") { model.exportSelected(.translated) }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(!model.canExport(.translated))
+                Button("导出双语 PDF") { model.exportSelected(.bilingual) }.disabled(!model.canExport(.bilingual))
             }
             CommandGroup(replacing: .appSettings) {
                 Button("翻译服务…") { model.settingsPresented = true }.keyboardShortcut(",")
@@ -47,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var updater: UpdateController?
     private var termination: AnyCancellable?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A local export loses nothing; stop it so its worker does not outlive the app.
+        model?.cancelExport()
         guard let model, model.isTranslating else { return .terminateNow }
         // A translation may start after Sparkle's earlier idle check. In that
         // race, cancel the update termination rather than offer to cancel work.

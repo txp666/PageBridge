@@ -46,8 +46,9 @@ def verify(engine):
                 raise ValueError("A .pth path escapes the private runtime.")
     if subprocess.check_output([str(engine / "tools/uv.exe"), "--version"], text=True).split()[:2] != ["uv", "0.9.17"]:
         raise ValueError("Missing or mismatched optional reading bootstrap.")
+    profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text())
     source = {}
-    for name in json.loads((ROOT / "scripts/bundle-profile.json").read_text())["engineFiles"]:
+    for name in profile["engineFiles"]:
         actual = hashlib.sha256((engine / name).read_bytes()).hexdigest()
         expected = hashlib.sha256((ROOT / "engine" / name).read_bytes()).hexdigest()
         if actual != expected:
@@ -59,7 +60,7 @@ def verify(engine):
         environment.update(HOME=temporary, USERPROFILE=temporary, APPDATA=temporary, LOCALAPPDATA=temporary,
                            PYTHONHOME=str(runtime), PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1")
         probe = """import json, pathlib, sys, site, sysconfig, struct, platform, importlib.metadata
-import pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx, cryptography
+import pymupdf, httpx, psutil, cryptography
 import cryptography.hazmat.bindings._rust as crypto_native
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import hashes
@@ -76,14 +77,15 @@ else:
 sha = hashes.Hash(hashes.SHA256()); sha.update(b'abc')
 if sha.finalize().hex() != 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad':
  raise RuntimeError('SHA256 known-answer check failed')
-modules = [pymupdf, pdf2zh_next, babeldoc, onnxruntime, bitstring, httpx, cryptography, crypto_native]
+modules = [pymupdf, httpx, psutil, cryptography, crypto_native]
 print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable, 'userSiteEnabled': site.ENABLE_USER_SITE,
  'pythonPlatform': sysconfig.get_platform(), 'processBits': struct.calcsize('P')*8, 'nativeOSArchitecture': platform.machine(),
  'updateCrypto': {'ed25519': 'passed', 'sha256': 'passed'},
  'paths': {m.__name__: str(pathlib.Path(m.__file__).resolve()) for m in modules},
- 'versions': {n:importlib.metadata.version(n) for n in ['pdf2zh-next','babeldoc','PyMuPDF','bitstring']}}))
+ 'versions': {n:importlib.metadata.version(n) for n in json.loads(sys.argv[1])}}))
 """
-        result = subprocess.run([str(python), "-B", "-c", probe], cwd=home, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=90)
+        expected_versions = profile["auditedEngineVersions"]
+        result = subprocess.run([str(python), "-B", "-c", probe, json.dumps(list(expected_versions))], cwd=home, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=90)
         if result.returncode:
             raise ValueError("Private runtime import probe failed: " + result.stderr[-5000:])
         imports = json.loads(result.stdout)
@@ -93,7 +95,6 @@ print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable, 'userSiteE
             raise ValueError("Python isolation check failed.")
         if any(not Path(path).is_relative_to(runtime) for path in imports["paths"].values()):
             raise ValueError("A runtime import came from outside the bundle.")
-        expected_versions = {"pdf2zh-next": "2.9.0", "babeldoc": "0.6.2", "PyMuPDF": "1.25.2", "bitstring": "4.3.0"}
         if imports["versions"] != expected_versions:
             raise ValueError("Private engine versions differ from the audited lock.")
         request = {"protocolVersion": 1, "jobId": "windows-package-check", "attemptId": "windows-package-check", "action": "health"}

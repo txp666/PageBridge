@@ -18,5 +18,5 @@ print(json.dumps({
     "nativeOSArchitecture": platform.machine(),
     "pythonPlatform": sysconfig.get_platform(),
     "processBits": struct.calcsize("P") * 8,
-    "versions": {name: importlib.metadata.version(name) for name in ("pdf2zh-next", "babeldoc", "PyMuPDF", "onnxruntime")},
+    "versions": {name: importlib.metadata.version(name) for name in ("PyMuPDF", "httpx", "psutil", "cryptography")},
 }, indent=2))

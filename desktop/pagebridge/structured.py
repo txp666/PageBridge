@@ -130,7 +130,7 @@ def commit_reading(store, document_id, attempt_id, event):
     return store.publish_result(document_id, attempt_id, manifest, {"reading.json": (reading, digest)},
                                 lambda destination: dict(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
                                                          reading_sha256=digest, reading_source_language=source_language,
-                                                         reading_target_language=target_language, preferred_artifact="reading",
+                                                         reading_target_language=target_language,
                                                          reading_pages=artifact["selectedPages"],
                                                          reading_failed_blocks=sum(b["status"] == "source_fallback" for b in blocks),
                                                          source_language=source_language, target_language=target_language))
@@ -166,19 +166,32 @@ def page_result(store, request):
                 source_sha256=doc["input_sha256"], artifact_sha256=doc["reading_sha256"])
 
 
+def estimated_font_size(block):
+    """Font size from the region's area and character count, for text without a text layer
+    (scans); within ±25% of the real size on the demo pages."""
+    text = (block.get("sourceText") or "").strip()
+    bbox = block.get("bbox")
+    if block.get("kind") not in {"text", "heading", "list"} or len(text) < 3 or not bbox or len(bbox) != 4:
+        return None
+    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if width <= 0 or height <= 0:
+        return None
+    return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
+
+
 def _add_source_font_sizes(page, blocks):
     """Match the Mac reader's character-weighted median source font per region.
 
     This is display metadata derived from the owned original PDF, never a
-    change to the immutable reading artifact. Scans and rotated pages retain
-    the reader's existing fallback sizes when native fonts are unavailable.
+    change to the immutable reading artifact. Regions without native fonts
+    (scans, rotated pages) use an estimate from their area and character count.
     """
     for block in blocks:
         block.pop("sourceFontSize", None)
     positioned = [b for b in blocks if b.get("kind") in {"text", "heading", "list"} and b.get("bbox")]
-    if not positioned or page.rotation % 360:
+    if not positioned:
         return
-    raw = page.get_text("rawdict", flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
+    raw = {} if page.rotation % 360 else page.get_text("rawdict", flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
     glyphs = []
     for native in raw.get("blocks", []):
         for line in native.get("lines", []):
@@ -196,6 +209,8 @@ def _add_source_font_sizes(page, blocks):
         sizes = sorted(size for point, size in glyphs if bounds.contains(point))
         if sizes:
             block["sourceFontSize"] = sizes[len(sizes) // 2]
+        elif estimate := estimated_font_size(block):
+            block["sourceFontSize"] = estimate
 
 
 def _cached_preview(store, name):

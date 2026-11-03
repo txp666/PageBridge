@@ -88,15 +88,6 @@ def _result_staging_directory(parent):
     raise AppError("无法创建独立的翻译提交目录。")
 
 
-def variant_path(document, variant):
-    if not isinstance(variant, str) or variant not in {"original", "translated"}:
-        raise AppError("不支持的 PDF 变体。")
-    path = document["input_path" if variant == "original" else "translated_path"]
-    if not path:
-        raise AppError("尚未生成译文。")
-    return path
-
-
 def _name(value, limit, message):
     name = value.strip() if isinstance(value, str) else ""
     if not name or len(name) > limit or any(ord(c) < 32 for c in name):
@@ -142,7 +133,7 @@ class DocumentStore:
                         or any(c not in "0123456789abcdef" for c in d["input_sha256"])
                         or not isinstance(d.get("input_path"), str) or not d["input_path"]):
                     raise ValueError()
-                for field in ("input_path", "translated_path", "bilingual_path", "reading_path"):
+                for field in ("input_path", "reading_path"):
                     if d.get(field) and not _inside(d[field], self.root / "documents"):
                         raise ValueError()
             folder_ids = set()
@@ -168,13 +159,13 @@ class DocumentStore:
     def get(self, document_id):
         return copy.deepcopy(self._find(self._state, document_id))
 
-    def page_info(self, document_id, variant="original"):
+    def page_info(self, document_id):
         """Return displayed page geometry without text extraction or rasterizing.
 
         Page.rect includes crop and rotation, matching the raster preview. The
         reader can allocate every page's space before rendering visible pages.
         """
-        source = variant_path(self.get(document_id), variant)
+        source = self.get(document_id)["input_path"]
         try:
             with pymupdf.open(source) as pdf:
                 if not pdf.is_pdf or pdf.needs_pass or pdf.is_encrypted or pdf.page_count < 1:
@@ -227,7 +218,7 @@ class DocumentStore:
             if sha256(target) != digest:
                 raise AppError("导入期间原文件发生变化，请重试。")
             document = dict(id=identifier, name=source.name, page_count=pages, input_path=str(target), input_sha256=digest,
-                            status="ready", translated_path=None, bilingual_path=None, folder_id=None, favorite=False,
+                            status="ready", folder_id=None, favorite=False,
                             trashed=False, current_page=1, imported_at=time.time(), last_opened=time.time(), last_error=None,
                             source_language="en", target_language="zh", attempt_id=None)
             state = copy.deepcopy(self._state)
@@ -305,55 +296,12 @@ class DocumentStore:
         return attempt, directory
 
     def finish_failure(self, document_id, message, cancelled=False):
-        doc = self.get(document_id)
-        previous = bool(doc.get("translated_path") and Path(doc["translated_path"]).is_file())
         message = str(message or "翻译未完成。")[:2000]
-        if "完整性校验" in message:
-            message = "译文未通过完整性校验，本次未提交译文。" + ("上次成功结果仍可使用。" if previous else "原文仍可阅读，尚未生成可用译文。")
         return self._change(document_id, lambda d: d.update(status="cancelled" if cancelled else "failed", last_error="翻译已取消。" if cancelled else message), allow_busy=True)
 
     def commit_result(self, document_id, attempt_id, event):
-        if event.get("artifactType") == "structured-reading":
-            from .structured import commit_reading
-            return commit_reading(self, document_id, attempt_id, event)
-        doc = self.get(document_id)
-        if (doc.get("attempt_id") != attempt_id or doc["status"] != "running" or event.get("attemptId") != attempt_id
-                or event.get("type") != "result" or not isinstance(event.get("jobId"), str) or not event["jobId"]):
-            raise AppError("翻译结果与当前任务不匹配，未提交。")
-        staging = self.root / "documents" / document_id / "attempts" / attempt_id
-        if not _unredirected(staging):
-            raise AppError("翻译任务目录被重定向。")
-        mono = Path(event.get("translatedPath", "")).resolve()
-        dual = Path(event.get("bilingualPath", "")).resolve()
-        if mono == dual or not all(_inside(p, staging) and p.is_file() for p in (mono, dual)):
-            raise AppError("翻译输出路径超出任务目录。")
-        if sha256(doc["input_path"]) != doc["input_sha256"]:
-            raise AppError("原文副本发生变化，未提交译文。")
-        if checked_pdf(mono) != doc["page_count"] or checked_pdf(dual) != doc["page_count"] * 2:
-            raise AppError("输出页数与原文不一致，未提交译文。")
-        manifest_path = mono.parent / "manifest.json"
-        try:
-            if not _unredirected(manifest_path) or manifest_path.stat().st_size > 8 * 1024 * 1024:
-                raise ValueError()
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            quality = manifest["qualityGuard"]
-            if (manifest.get("protocolVersion") != 1 or manifest.get("attemptId") != attempt_id or manifest.get("jobId") != event["jobId"]
-                    or manifest.get("sourceSHA256") != doc["input_sha256"] or manifest.get("sourcePages") != doc["page_count"]
-                    or manifest.get("translatedSHA256") != sha256(mono) or manifest.get("bilingualSHA256") != sha256(dual)
-                    or quality.get("guardInstalled") is not True or quality.get("layoutGuard", {}).get("guardInstalled") is not True
-                    or type(quality.get("unresolvedCount")) is not int or quality["unresolvedCount"] != 0
-                    or type(quality.get("validatedParagraphs")) is not int or type(quality.get("preparedParagraphs")) is not int
-                    or quality["preparedParagraphs"] < 0 or quality["preparedParagraphs"] != quality.get("validatedParagraphs")):
-                raise ValueError()
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            raise AppError("翻译校验清单无效，未提交译文。") from None
-        return self.publish_result(document_id, attempt_id, manifest,
-                                   {"translated.pdf": (mono, manifest["translatedSHA256"]), "bilingual.pdf": (dual, manifest["bilingualSHA256"])},
-                                   lambda destination: dict(status="completed", last_error=None, preferred_artifact="pdf",
-                                                            translated_path=str(destination / "translated.pdf"),
-                                                            bilingual_path=str(destination / "bilingual.pdf"),
-                                                            source_language=manifest.get("sourceLanguage", "en"),
-                                                            target_language=manifest.get("targetLanguage", "zh")))
+        from .structured import commit_reading
+        return commit_reading(self, document_id, attempt_id, event)
 
     def publish_result(self, document_id, attempt_id, manifest, files, fields):
         """Copy verified outputs into results/<attempt>, then record fields(destination).
@@ -393,15 +341,11 @@ class DocumentStore:
             shutil.rmtree(temporary, ignore_errors=True)
 
     def export_pdf(self, document_id, kind, destination):
-        fields = {"original": "input_path", "translated": "translated_path", "bilingual": "bilingual_path"}
-        if kind not in fields:
+        if kind != "original":
             raise AppError("不支持的导出类型。")
-        doc = self.get(document_id)
-        if not doc.get(fields[kind]):
-            raise AppError("尚未生成可导出的译文。")
-        source = Path(doc[fields[kind]]).resolve()
+        source = Path(self.get(document_id)["input_path"]).resolve()
         target = Path(destination).expanduser().resolve()
-        if _inside(target, self.root) or source == target or target == Path(doc["input_path"]).resolve():
+        if _inside(target, self.root) or source == target:
             raise AppError("请选择工作目录之外的保存位置，不能覆盖原文或应用工作文件。")
         checked_pdf(source)
         if not target.parent.is_dir():

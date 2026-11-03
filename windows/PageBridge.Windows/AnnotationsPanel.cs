@@ -12,34 +12,32 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
 {
     private readonly BackendClient backend;
     private readonly Func<ContentDialog, Task<ContentDialogResult>> showDialog;
-    private readonly Action<string, int> navigate;
+    private readonly Action<int> navigate;
     private readonly Func<string, Task> createMarkup;
     private readonly Func<Task> addNote, toggleBookmark;
-    private readonly Func<string, string, string, Task> export;
+    private readonly Func<string, string, Task> export;
     private readonly ListView list = new() { SelectionMode = ListViewSelectionMode.None, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent) };
     private readonly Grid content = new();
     private readonly StackPanel empty = new() { Spacing = 9, Margin = new Thickness(22), VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock emptyTitle = new() { Text = "还没有批注", FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextAlignment = TextAlignment.Center };
     private readonly TextBlock emptyDescription = new() { Text = "在 PDF 中选择文字以高亮或划线，也可以为当前页写笔记、添加书签。", FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center };
     private readonly TextBlock status = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
-    private readonly Button originalButton, translatedButton, newNoteButton, highlightButton, underlineButton, bookmarkButton, pdfButton, notesButton;
+    private readonly Button newNoteButton, highlightButton, underlineButton, bookmarkButton, pdfButton, notesButton;
     private readonly SolidColorBrush lineBrush = new(Colors.Gray);
-    private readonly SolidColorBrush selectionBrush = new(Colors.Gray);
     private readonly List<Button> rowActions = [];
     private JsonArray annotations = [];
-    private string documentId = "", variant = "original", sourceSHA = "";
+    private string documentId = "", sourceSHA = "";
     private int currentPage, generation;
-    private bool translatedAvailable, selectionAvailable, disposed, busy, editing;
+    private bool selectionAvailable, disposed, busy, editing;
 
     internal bool IsBusy => busy || editing;
-    internal event Action<string>? VariantChanged;
-    internal event Action<string, string, JsonArray>? AnnotationsChanged;
+    internal event Action<string, JsonArray>? AnnotationsChanged;
 
     internal AnnotationsPanel(BackendClient backend,
         Func<ContentDialog, Task<ContentDialogResult>> showDialog,
-        Action<string, int> navigate, Func<string, Task> createMarkup,
+        Action<int> navigate, Func<string, Task> createMarkup,
         Func<Task> addNote, Func<Task> toggleBookmark,
-        Func<string, string, string, Task> export)
+        Func<string, string, Task> export)
     {
         this.backend = backend; this.showDialog = showDialog; this.navigate = navigate;
         this.createMarkup = createMarkup; this.addNote = addNote;
@@ -56,16 +54,6 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
         titleRow.Children.Add(new TextBlock { Text = "批注与笔记", FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         newNoteButton = IconButton("note", "在选区或当前页添加笔记", "AnnotationAddNote", () => this.addNote());
         Grid.SetColumn(newNoteButton, 1); titleRow.Children.Add(newNoteButton); header.Children.Add(titleRow);
-
-        var sourceRow = new Grid { ColumnSpacing = 8 };
-        sourceRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); sourceRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        sourceRow.Children.Add(new TextBlock { Text = "批注来源", FontSize = 12, Opacity = .7, VerticalAlignment = VerticalAlignment.Center });
-        var sourceChoices = new Grid { ColumnSpacing = 2, Padding = new Thickness(2), Background = selectionBrush, CornerRadius = new CornerRadius(5) };
-        sourceChoices.ColumnDefinitions.Add(new()); sourceChoices.ColumnDefinitions.Add(new());
-        originalButton = SourceButton("原文", "AnnotationSourceOriginal", "original");
-        translatedButton = SourceButton("译文", "AnnotationSourceTranslated", "translated");
-        sourceChoices.Children.Add(originalButton); Grid.SetColumn(translatedButton, 1); sourceChoices.Children.Add(translatedButton);
-        Grid.SetColumn(sourceChoices, 1); sourceRow.Children.Add(sourceChoices); header.Children.Add(sourceRow);
 
         var tools = new Grid(); tools.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); tools.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var marks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -95,24 +83,14 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
         ApplyTheme(); UpdateEnabled();
     }
 
-    internal async Task BindAsync(string documentId, bool hasTranslated, string variant = "original", int page = 0)
+    internal async Task BindAsync(string documentId, int page = 0)
     {
         if (disposed) return;
         generation++;
-        this.documentId = documentId; translatedAvailable = hasTranslated;
-        this.variant = variant == "translated" && hasTranslated ? "translated" : "original";
+        this.documentId = documentId;
         currentPage = Math.Max(0, page); selectionAvailable = false; sourceSHA = ""; annotations = [];
         SetStatus(""); Render();
         if (documentId.Length > 0) await RefreshAsync();
-    }
-
-    internal async Task SetVariantAsync(string value)
-    {
-        value = value == "translated" && translatedAvailable ? "translated" : "original";
-        if (disposed || variant == value) return;
-        generation++; variant = value; sourceSHA = ""; selectionAvailable = false; annotations = [];
-        SetStatus(""); Render(); VariantChanged?.Invoke(variant);
-        await RefreshAsync();
     }
 
     internal void SetCurrentPage(int page) { currentPage = Math.Max(0, page); UpdateEnabled(); }
@@ -121,19 +99,16 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     internal async Task RefreshAsync()
     {
         if (disposed || documentId.Length == 0) return;
-        int version = generation; string id = documentId, sourceVariant = variant;
-        var result = await backend.CallAsync("annotations", new JsonObject { ["document_id"] = id, ["variant"] = sourceVariant });
-        if (!Current(version, id, sourceVariant)) return;
+        int version = generation; string id = documentId;
+        var result = await backend.CallAsync("annotations", new JsonObject { ["document_id"] = id });
+        if (!Current(version, id)) return;
         ApplyEnvelope(result);
     }
 
     /// <summary>Root supplies the captured page, regions and quote before the editor takes focus.</summary>
-    internal async Task CreateNoteAsync(JsonObject draft, string sourceVariant)
+    internal async Task CreateNoteAsync(JsonObject draft)
     {
-        if (disposed || editing || documentId.Length == 0) return;
-        string id = documentId;
-        if (sourceVariant != variant) await SetVariantAsync(sourceVariant);
-        if (documentId != id || sourceSHA.Length == 0) return;
+        if (disposed || editing || documentId.Length == 0 || sourceSHA.Length == 0) return;
         await EditAsync(draft, true);
     }
 
@@ -147,7 +122,7 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     {
         if (disposed || editing || sourceSHA.Length == 0 || XamlRoot is null) return;
         editing = true;
-        int version = generation; string id = documentId, sourceVariant = variant, hash = sourceSHA;
+        int version = generation; string id = documentId, hash = sourceSHA;
         try
         {
             var editor = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 170, MaxHeight = 260, MaxLength = 8000, HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "记录想法、问题或阅读要点…" };
@@ -166,7 +141,7 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
             body.Children.Add(new TextBlock { Text = "保存在本机，可随批注 PDF 或 Markdown 笔记导出。", FontSize = 11, Opacity = .6, TextWrapping = TextWrapping.Wrap });
             var editorError = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Foreground = new SolidColorBrush(Colors.IndianRed) };
             AutomationProperties.SetAutomationId(editorError, "AnnotationEditorError"); body.Children.Add(editorError);
-            var dialog = new ContentDialog { XamlRoot = XamlRoot, RequestedTheme = ActualTheme, Title = $"第 {Page(annotation) + 1} 页 · {(sourceVariant == "original" ? "原文" : "译文")} · {KindTitle(Text(annotation, "kind"))}", Content = body, PrimaryButtonText = "保存", CloseButtonText = "取消", DefaultButton = ContentDialogButton.None };
+            var dialog = new ContentDialog { XamlRoot = XamlRoot, RequestedTheme = ActualTheme, Title = $"第 {Page(annotation) + 1} 页 · {KindTitle(Text(annotation, "kind"))}", Content = body, PrimaryButtonText = "保存", CloseButtonText = "取消", DefaultButton = ContentDialogButton.None };
             AutomationProperties.SetAutomationId(dialog, "AnnotationEditorDialog");
             dialog.IsPrimaryButtonEnabled = !isNew || !string.IsNullOrWhiteSpace(editor.Text);
             editor.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !isNew || !string.IsNullOrWhiteSpace(editor.Text);
@@ -177,12 +152,12 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
                 var deferral = args.GetDeferral();
                 try
                 {
-                    if (!Current(version, id, sourceVariant) || sourceSHA != hash)
+                    if (!Current(version, id) || sourceSHA != hash)
                         throw new InvalidOperationException("文档已切换或重新翻译，请复制笔记内容后关闭并重新打开编辑器。");
                     string value = editor.Text.Trim();
                     if (isNew && value.Length == 0) { args.Cancel = true; return; }
                     var update = (JsonObject)annotation.DeepClone(); update["note"] = value;
-                    saved = await backend.CallAsync("save_annotation", new JsonObject { ["document_id"] = id, ["variant"] = sourceVariant, ["source_sha256"] = hash, ["annotation"] = update });
+                    saved = await backend.CallAsync("save_annotation", new JsonObject { ["document_id"] = id, ["source_sha256"] = hash, ["annotation"] = update });
                 }
                 catch (Exception error)
                 {
@@ -191,7 +166,7 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
                 }
                 finally { deferral.Complete(); }
             };
-            if (await showDialog(dialog) == ContentDialogResult.Primary && saved is not null && Current(version, id, sourceVariant))
+            if (await showDialog(dialog) == ContentDialogResult.Primary && saved is not null && Current(version, id))
             {
                 ApplyEnvelope(saved); SetStatus("笔记已保存");
             }
@@ -201,19 +176,19 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
 
     private async Task DeleteAsync(JsonObject annotation)
     {
-        int version = generation; string id = documentId, sourceVariant = variant;
-        var result = await backend.CallAsync("delete_annotation", new JsonObject { ["document_id"] = id, ["variant"] = sourceVariant, ["source_sha256"] = sourceSHA, ["annotation_id"] = Text(annotation, "id") });
-        if (Current(version, id, sourceVariant)) { ApplyEnvelope(result); SetStatus("批注已删除"); }
+        int version = generation; string id = documentId;
+        var result = await backend.CallAsync("delete_annotation", new JsonObject { ["document_id"] = id, ["source_sha256"] = sourceSHA, ["annotation_id"] = Text(annotation, "id") });
+        if (Current(version, id)) { ApplyEnvelope(result); SetStatus("批注已删除"); }
     }
 
-    private Task ExportAsync(string kind) => sourceSHA.Length > 0 ? export(kind, variant, sourceSHA) : Task.CompletedTask;
-    private bool Current(int version, string id, string sourceVariant) => !disposed && version == generation && documentId == id && variant == sourceVariant;
+    private Task ExportAsync(string kind) => sourceSHA.Length > 0 ? export(kind, sourceSHA) : Task.CompletedTask;
+    private bool Current(int version, string id) => !disposed && version == generation && documentId == id;
 
     private void ApplyEnvelope(JsonNode? result)
     {
         sourceSHA = Text(result, "source_sha256");
         annotations = result?["annotations"]?.DeepClone() as JsonArray ?? [];
-        Render(); AnnotationsChanged?.Invoke(variant, sourceSHA, (JsonArray)annotations.DeepClone());
+        Render(); AnnotationsChanged?.Invoke(sourceSHA, (JsonArray)annotations.DeepClone());
     }
 
     private void Render()
@@ -222,14 +197,14 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
         foreach (var item in annotations.OfType<JsonObject>().OrderBy(Page).ThenBy(item => Number(item, "created_at")))
         {
             var annotation = (JsonObject)item.DeepClone(); string id = Text(annotation, "id"), kind = Text(annotation, "kind");
-            int rowVersion = generation; string rowDocument = documentId, rowVariant = variant, rowHash = sourceSHA;
-            bool SameBinding() => Current(rowVersion, rowDocument, rowVariant) && sourceSHA == rowHash;
+            int rowVersion = generation; string rowDocument = documentId, rowHash = sourceSHA;
+            bool SameBinding() => Current(rowVersion, rowDocument) && sourceSHA == rowHash;
             var card = new StackPanel { Spacing = 7, Margin = new Thickness(12, 8, 12, 8), HorizontalAlignment = HorizontalAlignment.Stretch };
             var heading = new Grid { ColumnSpacing = 4 };
             heading.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             var location = new Button { Content = $"第 {Page(annotation) + 1} 页 · {KindTitle(kind)}", FontSize = 12, Padding = new Thickness(0), MinHeight = 24, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent), Foreground = new SolidColorBrush(Colors.DodgerBlue), HorizontalContentAlignment = HorizontalAlignment.Left, HorizontalAlignment = HorizontalAlignment.Stretch };
             AutomationProperties.SetAutomationId(location, "AnnotationNavigate_" + id);
-            location.Click += (_, _) => { if (SameBinding()) navigate(rowVariant, Page(annotation)); }; heading.Children.Add(location); rowActions.Add(location);
+            location.Click += (_, _) => { if (SameBinding()) navigate(Page(annotation)); }; heading.Children.Add(location); rowActions.Add(location);
             var edit = IconButton("note", "编辑笔记", "AnnotationEdit_" + id, () => SameBinding() ? EditAsync((JsonObject)annotation.DeepClone(), false) : Task.CompletedTask);
             var delete = IconButton("trash", "删除批注", "AnnotationDelete_" + id, () => SameBinding() ? DeleteAsync(annotation) : Task.CompletedTask);
             Grid.SetColumn(edit, 1); Grid.SetColumn(delete, 2); heading.Children.Add(edit); heading.Children.Add(delete); rowActions.Add(edit); rowActions.Add(delete); card.Children.Add(heading);
@@ -249,8 +224,6 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     private void UpdateEnabled()
     {
         bool active = !disposed && documentId.Length > 0 && sourceSHA.Length > 0 && !busy && !editing;
-        originalButton.IsEnabled = !disposed && documentId.Length > 0 && !busy && !editing;
-        translatedButton.IsEnabled = originalButton.IsEnabled && translatedAvailable;
         newNoteButton.IsEnabled = bookmarkButton.IsEnabled = pdfButton.IsEnabled = notesButton.IsEnabled = active;
         highlightButton.IsEnabled = underlineButton.IsEnabled = active && selectionAvailable;
         foreach (var action in rowActions) action.IsEnabled = active;
@@ -264,15 +237,6 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     {
         bool dark = ActualTheme == ElementTheme.Dark;
         lineBrush.Color = dark ? global::Windows.UI.Color.FromArgb(255, 60, 60, 60) : global::Windows.UI.Color.FromArgb(255, 220, 220, 220);
-        selectionBrush.Color = dark ? global::Windows.UI.Color.FromArgb(255, 38, 38, 38) : global::Windows.UI.Color.FromArgb(255, 232, 232, 232);
-        originalButton.Background = variant == "original" ? new SolidColorBrush(dark ? global::Windows.UI.Color.FromArgb(255, 79, 79, 79) : Colors.White) : new SolidColorBrush(Colors.Transparent);
-        translatedButton.Background = variant == "translated" ? new SolidColorBrush(dark ? global::Windows.UI.Color.FromArgb(255, 79, 79, 79) : Colors.White) : new SolidColorBrush(Colors.Transparent);
-    }
-
-    private Button SourceButton(string title, string id, string sourceVariant)
-    {
-        var button = new Button { Content = title, FontSize = 12, Height = 25, MinHeight = 0, Padding = new Thickness(6, 0, 6, 0), BorderThickness = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(4) };
-        AutomationProperties.SetAutomationId(button, id); button.Click += async (_, _) => await RunAsync(() => SetVariantAsync(sourceVariant)); return button;
     }
 
     private Button IconButton(string icon, string help, string id, Func<Task> action)

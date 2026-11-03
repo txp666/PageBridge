@@ -14,17 +14,14 @@ public sealed partial class MainWindow
     private readonly TextBlock navigationEmpty = new() { TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, FontSize = 12, Opacity = .65, Margin = new Thickness(14), VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock selectionCaption = new() { FontSize = 10, Opacity = .65, VerticalAlignment = VerticalAlignment.Center };
     private readonly List<Button> navigationTabs = [], inspectorTabs = [];
-    private readonly Dictionary<string, string> annotationHashes = [];
-    private readonly Dictionary<string, JsonArray> annotationsByVariant = [];
     private Button highlightTool = null!, underlineTool = null!, notesTool = null!, assistantTool = null!;
     private AnnotationsPanel annotationsPanel = null!;
     private AssistantPanel assistantPanel = null!;
-    private bool showsPageNavigation = true, updatingNavigation, switchingVariant;
+    private bool showsPageNavigation = true, updatingNavigation;
     private int navigationTab, navigationGeneration;
     private string? inspectorKind;
-    private string navigationIdentity = "";
-    private string ActiveVariant => ReferenceEquals(activePages, translatedPages) ? "translated" : "original";
-    private string AnnotationHash(string variant) => annotationHashes.GetValueOrDefault(variant, "");
+    private string navigationIdentity = "", annotationHash = "";
+    private JsonArray savedAnnotations = [];
 
     private void InitializeReadingWorkspace()
     {
@@ -43,7 +40,7 @@ public sealed partial class MainWindow
         {
             list.Background = Clear; list.BorderThickness = new Thickness(0); list.Padding = new Thickness(0, 6, 0, 10);
             ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled); Grid.SetRow(list, 1); pageNavigation.Children.Add(list);
-            list.SelectionChanged += (_, _) => { if (!updatingNavigation && list.SelectedItem is ListViewItem { Tag: int number }) NavigateReading(ActiveVariant, number); };
+            list.SelectionChanged += (_, _) => { if (!updatingNavigation && list.SelectedItem is ListViewItem { Tag: int number }) NavigateReading(number); };
         }
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(pageThumbnails, "PageThumbnails");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(outlineList, "DocumentOutline");
@@ -62,18 +59,14 @@ public sealed partial class MainWindow
         inspectorHeader.Children.Add(segments);
         var close = Tool("close", null, "关闭阅读侧栏", () => { HideInspector(); return Task.CompletedTask; }); Grid.SetColumn(close, 1); inspectorHeader.Children.Add(close); readingInspector.Children.Add(inspectorHeader);
         Grid.SetRow(inspectorContent, 1); readingInspector.Children.Add(inspectorContent);
-        annotationsPanel = new AnnotationsPanel(backend, ShowDialogAsync, NavigateReading, AddMarkupAsync, AddNoteAsync, ToggleBookmarkAsync, ExportReadingAsync);
+        annotationsPanel = new AnnotationsPanel(backend, ShowDialogAsync, NavigateReading, AddMarkupAsync, AddNoteAsync, ToggleBookmarkAsync, ExportAnnotationsAsync);
         annotationsPanel.AnnotationsChanged += AcceptAnnotations;
-        annotationsPanel.VariantChanged += value => { if (!switchingVariant) ActivateVariant(value); };
-        assistantPanel = new AssistantPanel(backend, (number, variant) => NavigateReading(variant, number), () => Math.Max(0, (int)page.Value - 1), () => ActiveVariant, () => activePages.Selection?.Text ?? "", SaveNoteAsync, ShowDialogAsync, () => activePages.Selection?.Page ?? Math.Max(0, (int)page.Value - 1), () => activePages.Selection?.Variant ?? ActiveVariant);
+        assistantPanel = new AssistantPanel(backend, NavigateReading, () => Math.Max(0, (int)page.Value - 1), () => originalPages.Selection?.Text ?? "", SaveNoteAsync, ShowDialogAsync, () => originalPages.Selection?.Page ?? Math.Max(0, (int)page.Value - 1));
         inspectorContent.Children.Add(assistantPanel); inspectorContent.Children.Add(annotationsPanel);
         readerArea.SizeChanged += (_, _) => UpdateReadingVisibility();
-        foreach (var pane in new[] { originalPages, translatedPages })
-        {
-            pane.SelectionChanged += ReaderSelectionChanged;
-            pane.SelectionAction += async (source, action) => await Attempt(async () => { ActivateVariant(source.Variant); if (action == "assistant") { await ShowInspectorAsync("assistant"); assistantPanel.UseSelectionContext(); } else if (action == "note") await AddNoteAsync(); else await AddMarkupAsync(action); });
-            pane.AnnotationInvoked += async (source, id) => await Attempt(async () => { ActivateVariant(source.Variant); await ShowInspectorAsync("notes"); await annotationsPanel.SetVariantAsync(source.Variant); await annotationsPanel.EditAnnotationAsync(id); });
-        }
+        originalPages.SelectionChanged += _ => { UpdateSelectionTools(); assistantPanel.RefreshContext(); };
+        originalPages.SelectionAction += async (_, action) => await Attempt(async () => { ActivateOriginal(); if (action == "assistant") { await ShowInspectorAsync("assistant"); assistantPanel.UseSelectionContext(); } else if (action == "note") await AddNoteAsync(); else await AddMarkupAsync(action); });
+        originalPages.AnnotationInvoked += async (_, id) => await Attempt(async () => { ActivateOriginal(); await ShowInspectorAsync("notes"); await annotationsPanel.EditAnnotationAsync(id); });
         UpdateReadingTheme(); UpdateReadingVisibility(); UpdateSelectionTools();
     }
 
@@ -96,7 +89,7 @@ public sealed partial class MainWindow
         inspectorKind = kind; assistantPanel.Visibility = kind == "assistant" ? Visibility.Visible : Visibility.Collapsed; annotationsPanel.Visibility = kind == "notes" ? Visibility.Visible : Visibility.Collapsed;
         UpdateReadingVisibility(); UpdateReadingTheme();
         if (kind == "assistant") await assistantPanel.BindAsync(Text(selected, "id"), Text(selected, "name"));
-        else await annotationsPanel.BindAsync(Text(selected, "id"), Text(selected, "translated_path") != "", ActiveVariant, (int)page.Value - 1);
+        else await annotationsPanel.BindAsync(Text(selected, "id"), (int)page.Value - 1);
         UpdateSelectionTools();
     }
     private void UpdateReadingTheme()
@@ -122,8 +115,8 @@ public sealed partial class MainWindow
     private async Task BuildPageNavigationAsync()
     {
         if (selected is null) return;
-        var doc = selected; string id = Text(doc, "id"), variant = ActiveVariant;
-        string key = id + "/" + variant + "/" + Text(doc, variant == "original" ? "input_path" : "translated_path");
+        var doc = selected; string id = Text(doc, "id");
+        string key = id + "/" + Text(doc, "input_path");
         if (navigationIdentity == key) { UpdateNavigationPage(); return; }
         navigationIdentity = key; int token = ++navigationGeneration;
         updatingNavigation = true;
@@ -135,7 +128,7 @@ public sealed partial class MainWindow
             {
                 int index = i; var image = new Image { Width = 112, Height = 145, Stretch = Stretch.Uniform };
                 image.ImageOpened += (_, _) => { if (image.Source is BitmapImage bitmap && bitmap.PixelWidth > 0) image.Height = 112d * bitmap.PixelHeight / bitmap.PixelWidth; };
-                image.Loaded += async (_, _) => await LoadThumbnailAsync(image, doc, index, 240, variant);
+                image.Loaded += async (_, _) => await LoadThumbnailAsync(image, doc, index, 240);
                 var border = new Border { Child = image, BorderThickness = new Thickness(3), CornerRadius = new CornerRadius(4), BorderBrush = Clear };
                 var stack = new StackPanel { Spacing = 5 }; stack.Children.Add(border); stack.Children.Add(new TextBlock { Text = (i + 1).ToString(), FontSize = 11, HorizontalAlignment = HorizontalAlignment.Center });
                 var item = new ListViewItem { Content = stack, Tag = i, Padding = new Thickness(4), Margin = new Thickness(0, 5, 0, 5), HorizontalContentAlignment = HorizontalAlignment.Center };
@@ -145,7 +138,7 @@ public sealed partial class MainWindow
         }
         finally { updatingNavigation = false; }
         UpdateNavigationDisplay();
-        var data = await backend.CallAsync("document_navigation", new JsonObject { ["document_id"] = id, ["variant"] = variant });
+        var data = await backend.CallAsync("document_navigation", new JsonObject { ["document_id"] = id });
         if (token != navigationGeneration || navigationIdentity != key) return;
         foreach (var entry in data?["entries"]?.AsArray() ?? [])
         {
@@ -184,7 +177,7 @@ public sealed partial class MainWindow
         try
         {
             bookmarkList.Items.Clear();
-            foreach (var item in (annotationsByVariant.GetValueOrDefault(ActiveVariant) ?? []).Where(i => Text(i, "kind") == "bookmark").OrderBy(i => i?["page"]?.GetValue<int>() ?? 0))
+            foreach (var item in savedAnnotations.Where(i => Text(i, "kind") == "bookmark").OrderBy(i => i?["page"]?.GetValue<int>() ?? 0))
             {
                 int number = item?["page"]?.GetValue<int>() ?? 0;
                 bookmarkList.Items.Add(new ListViewItem { Content = Row(ReaderIcons.Make("bookmark", 14), new TextBlock { Text = "第 " + (number + 1) + " 页", FontSize = 12 }), Tag = number, Padding = new Thickness(11) });
@@ -195,111 +188,92 @@ public sealed partial class MainWindow
     }
     private async Task UnbindDocumentAsync()
     {
-        ResetDocumentSearch(); annotationHashes.Clear(); annotationsByVariant.Clear(); navigationIdentity = ""; navigationGeneration++;
-        await annotationsPanel.BindAsync("", false); await assistantPanel.BindAsync("", "");
+        ResetDocumentSearch(); annotationHash = ""; savedAnnotations = []; navigationIdentity = ""; navigationGeneration++;
+        await annotationsPanel.BindAsync(""); await assistantPanel.BindAsync("", "");
     }
-    private void AcceptAnnotations(string variant, string hash, JsonArray items)
+    private void AcceptAnnotations(string hash, JsonArray items)
     {
-        annotationHashes[variant] = hash; annotationsByVariant[variant] = (JsonArray)items.DeepClone();
-        (variant == "original" ? originalPages : translatedPages).SetAnnotations(items); RefreshBookmarks();
+        annotationHash = hash; savedAnnotations = (JsonArray)items.DeepClone();
+        originalPages.SetAnnotations(items); RefreshBookmarks();
     }
     private async Task LoadReadingAsync()
     {
         if (selected is null) return;
         string id = Text(selected, "id"); int generation = selectionGeneration;
-        foreach (var variant in Text(selected, "translated_path") == "" ? new[] { "original" } : new[] { "original", "translated" })
-        {
-            var result = await backend.CallAsync("annotations", new JsonObject { ["document_id"] = id, ["variant"] = variant });
-            if (generation != selectionGeneration || id != Text(selected, "id")) return;
-            AcceptAnnotations(variant, Text(result, "source_sha256"), result?["annotations"]?.AsArray() ?? []);
-        }
-        await annotationsPanel.BindAsync(id, Text(selected, "translated_path") != "", ActiveVariant, (int)page.Value - 1);
+        var result = await backend.CallAsync("annotations", new JsonObject { ["document_id"] = id });
+        if (generation != selectionGeneration || id != Text(selected, "id")) return;
+        AcceptAnnotations(Text(result, "source_sha256"), result?["annotations"]?.AsArray() ?? []);
+        await annotationsPanel.BindAsync(id, (int)page.Value - 1);
         if (generation != selectionGeneration) return;
         await BuildPageNavigationAsync();
         if (generation != selectionGeneration) return;
         if (inspectorKind == "assistant") await assistantPanel.BindAsync(id, Text(selected, "name"));
         UpdateSelectionTools();
     }
-    private void ReaderSelectionChanged(ContinuousPdfPane pane)
-    {
-        if (!ReferenceEquals(pane, activePages)) return;
-        UpdateSelectionTools(); assistantPanel.RefreshContext();
-    }
     private void UpdateSelectionTools()
     {
-        bool selectedText = activePages.Selection is { Text.Length: > 0 };
+        bool selectedText = originalPages.Selection is { Text.Length: > 0 };
         highlightTool.IsEnabled = selectedText; underlineTool.IsEnabled = selectedText;
-        selectionCaption.Text = selectedText ? "已选 " + activePages.Selection!.Text.Length + " 字" : "";
+        selectionCaption.Text = selectedText ? "已选 " + originalPages.Selection!.Text.Length + " 字" : "";
         annotationsPanel.SetSelectionAvailable(selectedText);
     }
-    private void ActivateVariant(string variant)
+    private void ActivateOriginal()
     {
         bool wasStructured = structuredActive;
         structuredActive = false;
-        if (ShowingReading && variant == "translated") variant = "original";
-        if (variant is not ("original" or "translated") || (variant == "translated" && Text(selected, "translated_path") == "")) return;
-        var next = variant == "original" ? originalPages : translatedPages;
-        if (wasStructured || !ReferenceEquals(activePages, next))
+        // With scroll sync off each pane keeps its own page. Switching focus
+        // must change the annotation target without scrolling it.
+        if (wasStructured && !bindingPages && selected is not null)
         {
-            activePages = next; OtherPane(next).ClearSelection();
-            // With scroll sync off each pane keeps its own page. Switching
-            // focus must change the annotation target without scrolling it.
-            if (!bindingPages && selected is not null)
-            {
-                bool wasLoading = loading; loading = true;
-                page.Value = Math.Clamp(next.CurrentPage, 1, page.Maximum); loading = wasLoading;
-                RememberReading(Text(selected, "id"), (int)page.Value);
-            }
+            bool wasLoading = loading; loading = true;
+            page.Value = Math.Clamp(originalPages.CurrentPage, 1, page.Maximum); loading = wasLoading;
+            RememberReading(Text(selected, "id"), (int)page.Value);
         }
-        if (mode.SelectedIndex == 0 && variant == "translated") mode.SelectedIndex = 2;
-        else if (mode.SelectedIndex == 2 && variant == "original" && !ShowingReading) mode.SelectedIndex = 0;
-        if (!bindingPages && selected is not null) _ = Attempt(async () => { switchingVariant = true; try { await annotationsPanel.SetVariantAsync(variant); } finally { switchingVariant = false; } await BuildPageNavigationAsync(); });
         UpdateSelectionTools(); UpdateNavigationPage();
     }
-    private void NavigateReading(string variant, int number)
+    private void NavigateReading(int number)
     {
-        ActivateVariant(variant); page.Value = Math.Clamp(number + 1, 1, page.Maximum); JumpToPage((int)page.Value); UpdateNavigationPage();
+        ActivateOriginal(); page.Value = Math.Clamp(number + 1, 1, page.Maximum); JumpToPage((int)page.Value); UpdateNavigationPage();
     }
     private Task AddNoteAsync() => SaveNoteAsync(null);
     private async Task SaveNoteAsync(string? note)
     {
         if (selected is null) return;
-        var selection = activePages.Selection;
+        var selection = originalPages.Selection;
         var draft = new JsonObject { ["kind"] = "note", ["page"] = selection?.Page ?? Math.Max(0, (int)page.Value - 1), ["regions"] = selection?.Regions ?? [], ["selected_text"] = selection?.Text ?? "", ["note"] = note ?? "" };
-        string variant = ActiveVariant, id = Text(selected, "id"); int generation = selectionGeneration;
+        string id = Text(selected, "id"); int generation = selectionGeneration;
         await ShowInspectorAsync("notes");
-        if (generation == selectionGeneration && id == Text(selected, "id")) await annotationsPanel.CreateNoteAsync(draft, variant);
+        if (generation == selectionGeneration && id == Text(selected, "id")) await annotationsPanel.CreateNoteAsync(draft);
     }
     private async Task AddMarkupAsync(string kind)
     {
-        if (selected is null || activePages.Selection is not { } selection) { status.Text = "请先在 PDF 中拖动选择文字，再添加高亮或下划线。"; return; }
+        if (selected is null || originalPages.Selection is not { } selection) { status.Text = "请先在 PDF 中拖动选择文字，再添加高亮或下划线。"; return; }
         string id = Text(selected, "id"); int generation = selectionGeneration;
-        var response = await backend.CallAsync("save_annotation", new JsonObject { ["document_id"] = id, ["variant"] = selection.Variant, ["source_sha256"] = selection.SourceHash, ["annotation"] = new JsonObject { ["kind"] = kind, ["page"] = selection.Page, ["regions"] = selection.Regions, ["selected_text"] = selection.Text, ["note"] = "" } });
+        var response = await backend.CallAsync("save_annotation", new JsonObject { ["document_id"] = id, ["source_sha256"] = selection.SourceHash, ["annotation"] = new JsonObject { ["kind"] = kind, ["page"] = selection.Page, ["regions"] = selection.Regions, ["selected_text"] = selection.Text, ["note"] = "" } });
         if (generation != selectionGeneration || id != Text(selected, "id")) return;
-        AcceptAnnotations(selection.Variant, Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []);
-        var sourcePane = selection.Variant == "original" ? originalPages : translatedPages;
-        if (ReferenceEquals(sourcePane.Selection, selection)) sourcePane.ClearSelection();
+        AcceptAnnotations(Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []);
+        if (ReferenceEquals(originalPages.Selection, selection)) originalPages.ClearSelection();
         await annotationsPanel.RefreshAsync();
         status.Text = kind == "highlight" ? "已添加高亮" : "已添加下划线";
     }
     private async Task ToggleBookmarkAsync()
     {
         if (selected is null) return;
-        string id = Text(selected, "id"), variant = ActiveVariant; int number = Math.Max(0, (int)page.Value - 1), generation = selectionGeneration;
-        var existing = (annotationsByVariant.GetValueOrDefault(variant) ?? []).FirstOrDefault(a => Text(a, "kind") == "bookmark" && a?["page"]?.GetValue<int>() == number);
-        var args = new JsonObject { ["document_id"] = id, ["variant"] = variant, ["source_sha256"] = AnnotationHash(variant) };
+        string id = Text(selected, "id"); int number = Math.Max(0, (int)page.Value - 1), generation = selectionGeneration;
+        var existing = savedAnnotations.FirstOrDefault(a => Text(a, "kind") == "bookmark" && a?["page"]?.GetValue<int>() == number);
+        var args = new JsonObject { ["document_id"] = id, ["source_sha256"] = annotationHash };
         if (existing is not null) args["annotation_id"] = Text(existing, "id"); else args["annotation"] = new JsonObject { ["kind"] = "bookmark", ["page"] = number, ["regions"] = new JsonArray(), ["note"] = "", ["selected_text"] = "" };
         var response = await backend.CallAsync(existing is null ? "save_annotation" : "delete_annotation", args);
         if (generation != selectionGeneration || id != Text(selected, "id")) return;
-        AcceptAnnotations(variant, Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []); await annotationsPanel.RefreshAsync();
+        AcceptAnnotations(Text(response, "source_sha256"), response?["annotations"]?.AsArray() ?? []); await annotationsPanel.RefreshAsync();
         status.Text = existing is null ? "已添加当前页书签" : "已移除当前页书签";
     }
-    private async Task ExportReadingAsync(string kind, string variant, string hash)
+    private async Task ExportAnnotationsAsync(string kind, string hash)
     {
         if (selected is null) return;
         string id = Text(selected, "id"), name = Path.GetFileNameWithoutExtension(Text(selected, "name"));
         var path = kind == "pdf" ? await PickSavePathAsync(name + "-批注", "PDF 文档", ".pdf") : await PickSavePathAsync(name + "-阅读笔记", "Markdown 笔记", ".md");
         if (path is null) return;
-        await backend.CallAsync(kind == "pdf" ? "export_annotations" : "export_notes", new JsonObject { ["document_id"] = id, ["variant"] = variant, ["source_sha256"] = hash, ["destination"] = path }); status.Text = "已导出：" + path;
+        await backend.CallAsync(kind == "pdf" ? "export_annotations" : "export_notes", new JsonObject { ["document_id"] = id, ["source_sha256"] = hash, ["destination"] = path }); status.Text = "已导出：" + path;
     }
 }

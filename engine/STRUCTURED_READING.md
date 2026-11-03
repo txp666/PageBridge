@@ -1,6 +1,6 @@
 # Structured reading engine
 
-`worker.py` accepts `action: "translate", outputMode: "reading"` with the usual document, output-directory, language, selected-page and service fields. It leaves the original PDF unchanged and publishes `reading.json` plus an identity/hash-bound `manifest.json` in a new attempt directory. The result event carries `artifactType: "structured-reading"`, `readingPath`, `readingSHA256`, `manifestPath`, page counts and completion counters. `pageCount` is the source PDF's total; `selectedPages` and `pages` list only the selected physical pages. The machine-readable contract is [`structured-reading.schema.json`](structured-reading.schema.json).
+`worker.py` `action: "translate"` takes the usual document, output-directory, language, selected-page and service fields. It leaves the original PDF unchanged and publishes `reading.json` plus an identity/hash-bound `manifest.json` in a new attempt directory. The result event carries `artifactType: "structured-reading"`, `readingPath`, `readingSHA256`, `manifestPath`, page counts and completion counters. `pageCount` is the source PDF's total; `selectedPages` and `pages` list only the selected physical pages. The machine-readable contract is [`structured-reading.schema.json`](structured-reading.schema.json). A committed draft is exported to a translated or bilingual PDF with `export_reading` ([protocol](README.md#reading-export)).
 
 ## Parsing
 

@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import pymupdf
 
-from .core import AppError, atomic_file, atomic_json, sha256, variant_path
+from .core import AppError, atomic_file, atomic_json, sha256
 
 READING_ACTIONS = frozenset({"document_navigation", "page_text", "annotations", "save_annotation",
                             "delete_annotation", "export_annotations", "export_notes", "search_document"})
@@ -74,9 +74,8 @@ def _display_rect(value, page):
 
 @contextmanager
 def _source(store, request, require_revision=False):
-    variant = request.get("variant", "original")
     record = store.get(request.get("document_id"))
-    source = Path(variant_path(record, variant)).resolve()
+    source = Path(record["input_path"]).resolve()
     if not source.is_relative_to(store.root / "documents"):
         raise AppError("PDF 存储路径无效。")
     try:
@@ -91,7 +90,8 @@ def _source(store, request, require_revision=False):
     try:
         if not pdf.is_pdf or pdf.is_encrypted or pdf.needs_pass or pdf.page_count < 1:
             raise AppError("无法读取加密或无页面的 PDF。")
-        yield record, source, pdf, {"document_id": record["id"], "variant": variant, "source_sha256": digest}
+        # Annotations belong to the original PDF; "variant" is part of their stored binding.
+        yield record, source, pdf, {"document_id": record["id"], "variant": "original", "source_sha256": digest}
     finally:
         pdf.close()
 
@@ -167,7 +167,7 @@ def _load(store, binding, pdf):
 
 
 def _envelope(binding, pdf, items):
-    return {"source_sha256": binding["source_sha256"], "variant": binding["variant"],
+    return {"source_sha256": binding["source_sha256"],
             "page_count": pdf.page_count, "annotations": copy.deepcopy(items),
             "bookmarks": sorted({item["page"] for item in items if item["kind"] == "bookmark"})}
 
@@ -306,21 +306,20 @@ def _destination(store, source, value, suffix):
         raise AppError("请选择本地的绝对保存路径。")
     target = Path(value).expanduser().resolve()
     if target.is_relative_to(store.root) or target == source or target.suffix.lower() != suffix:
-        raise AppError("请另存到应用工作目录之外，不能覆盖原文或译文，并使用正确文件扩展名。")
+        raise AppError("请另存到应用工作目录之外，不能覆盖原文，并使用正确文件扩展名。")
     if not target.parent.is_dir() or target.is_dir():
         raise AppError("导出目录不存在或保存位置无效。")
-    # An external hard link to an input/translated PDF is protected as well.
+    # An external hard link to an original PDF is protected as well.
     if target.exists():
         for record in store.documents():
-            for key in ("input_path", "translated_path", "bilingual_path"):
-                if record.get(key) and Path(record[key]).exists() and os.path.samefile(target, record[key]):
-                    raise AppError("不能覆盖原文或译文，请选择新的保存文件。")
+            if Path(record["input_path"]).exists() and os.path.samefile(target, record["input_path"]):
+                raise AppError("不能覆盖原文，请选择新的保存文件。")
     return target
 
 
 def _markdown(record, binding, items):
     title = record["name"].replace("\r", " ").replace("\n", " ")
-    lines = ["# " + title, "", "来源：" + ("原文" if binding["variant"] == "original" else "译文"),
+    lines = ["# " + title, "", "来源：原文",
              "", "PDF SHA-256：`" + binding["source_sha256"] + "`", ""]
     names = {"highlight": "高亮", "underline": "下划线", "note": "笔记", "bookmark": "书签"}
     for item in sorted(items, key=lambda item: (item["page"], item["created_at"])):

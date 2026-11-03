@@ -21,7 +21,6 @@ struct PDFReaderView: NSViewRepresentable {
     var searchQuery: String
     var workspace: ReaderWorkspace? = nil
     var documentID: UUID? = nil
-    var variant: PDFDocumentVariant = .original
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -103,7 +102,7 @@ struct PDFReaderView: NSViewRepresentable {
             selectionObserver = NotificationCenter.default.addObserver(forName: .PDFViewSelectionChanged, object: pdf, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
-                    self.parent.workspace?.receiveSelection(from: view, documentID: id, variant: self.parent.variant)
+                    self.parent.workspace?.receiveSelection(from: view, documentID: id)
                 }
             }
             pdf.onActivate = { [weak self] in
@@ -111,19 +110,17 @@ struct PDFReaderView: NSViewRepresentable {
                 self.cancelInitialPosition()
                 self.cancelSettledScroll()
                 if let id = self.parent.documentID {
-                    self.parent.workspace?.activate(view, documentID: id, variant: self.parent.variant)
+                    self.parent.workspace?.activate(view, documentID: id)
                 }
             }
             pdf.onScrollFocus = { [weak self] in
                 guard let self else { return }
                 self.cancelInitialPosition()
                 self.cancelSettledScroll()
-                guard let workspace = self.parent.workspace, workspace.document?.id == self.parent.documentID else { return }
-                if workspace.selectedVariant != self.parent.variant { workspace.selectedVariant = self.parent.variant }
             }
             pdf.onOpenAnnotation = { [weak self] annotation in
                 guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
-                self.parent.workspace?.edit(annotation, in: view, documentID: id, variant: self.parent.variant)
+                self.parent.workspace?.edit(annotation, in: view, documentID: id)
             }
         }
 
@@ -173,7 +170,7 @@ struct PDFReaderView: NSViewRepresentable {
                 annotationWorkspace = parent.workspace
             }
             if let id = parent.documentID {
-                parent.workspace?.register(pdf, documentID: id, variant: parent.variant, url: parent.url)
+                parent.workspace?.register(pdf, documentID: id, url: parent.url)
             }
             layoutReader()
             if lastNavigation != parent.navigation.id {
@@ -441,7 +438,7 @@ struct PDFReaderView: NSViewRepresentable {
                 guard let latest = self.pendingPage else { return }
                 self.pendingPage = nil
                 if self.parent.page != latest { self.parent.page = latest }
-                self.parent.workspace?.reportPage(latest, variant: self.parent.variant)
+                self.parent.workspace?.reportPage(latest)
             }
         }
 

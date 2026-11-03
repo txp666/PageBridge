@@ -151,15 +151,18 @@ def verify_public_asset(url, expected):
 
 
 def verify_latest(url, expected, check, limit=4 * 1024 * 1024):
-    for attempt in range(4):
+    attempts = 12
+    for attempt in range(attempts):
         data = fetch(url, limit=limit, retry_missing=True)
-        # A stale, correctly signed previous feed may be visible at the latest
-        # redirect briefly. A bad signature is never excused as CDN propagation.
+        # The previous, correctly signed feed stays at the latest redirect for a
+        # few minutes after publishing (0.5.0 and 0.5.1 both outlasted a 7 s
+        # window), so wait up to about 6 minutes. A bad signature is never
+        # excused as CDN propagation.
         check(data)
         if data == expected:
             return
-        if attempt < 3:
-            time.sleep(2 ** attempt)
+        if attempt < attempts - 1:
+            time.sleep(min(2 ** attempt, 60))
     raise ValueError("Latest download differs from this release after bounded CDN retries: " + url)
 
 

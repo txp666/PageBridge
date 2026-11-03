@@ -66,7 +66,7 @@ struct StructuredReadingView: View {
                             ForEach(unlocated) { block in
                                 StructuredReadingBlockDetails(model: model, block: block, pageNumber: pageNumber,
                                     source: sourcePages.page(pageNumber, metadata: readingPage),
-                                    preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? 12) {
+                                    preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? 12) {
                                         showsUnlocated = false; onLocate(pageNumber, block.bbox)
                                     }
                                 Divider()
@@ -101,7 +101,7 @@ private struct StructuredReadingPageContent: View {
         let placements = (metadata?.blocks ?? []).compactMap { block -> ReadingCanvasPlacement? in
             guard let rect = StructuredReadingPageGeometry.rect(block.bbox, pageSize: source.size) else { return nil }
             return ReadingCanvasPlacement(block: block, rect: rect,
-                preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? (block.kind == "heading" ? 18 : 12))
+                preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? (block.kind == "heading" ? 18 : 12))
         }
         return ZStack(alignment: .topLeading) {
             ReadingPageCanvas(image: source.image, pageSize: source.size, placements: placements,
@@ -151,7 +151,7 @@ private struct StructuredReadingBlockDetails: View {
                 Spacer()
                 Button("定位原文", action: onLocate).buttonStyle(.link)
                 if block.status == "source_fallback" {
-                    Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isTranslating)
+                    Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isWorkerBusy)
                 }
             }
             if let error = block.error {
