@@ -4,37 +4,55 @@
 
 **Mac 与 Windows 原生 PDF 阅读、翻译工作区。** 整理文档、保留排版翻译、原译文对照、批注和 AI 问答，也能搜索文献并打开全文。
 
-适用于手册、报告、教材、合同和论文等 PDF。Mac 使用 SwiftUI / AppKit / PDFKit，Windows 使用 WinUI 3；默认由 [MinerU](https://github.com/opendatalab/MinerU) 在本机解析并生成原页版式阅读稿，也保留 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 重排 PDF 模式。翻译支持本机 Ollama 和 OpenAI 兼容 API。
+适用于手册、报告、教材、合同和论文等 PDF。Mac 使用 SwiftUI / AppKit / PDFKit，Windows 使用 WinUI 3。默认由 [MinerU](https://github.com/opendatalab/MinerU) 在本机解析并生成原页版式阅读稿，另有基于 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) / [BabelDOC](https://github.com/funstory-ai/BabelDOC) 的“重排 PDF”模式。翻译使用本机 Ollama 或 OpenAI 兼容 API。
 
-**0.5.0 / build 14** · [使用指南](docs/USER_GUIDE.md) · [版本记录](CHANGELOG.md) · [构建状态](https://github.com/txp666/PageBridge/actions)
+[使用指南](docs/USER_GUIDE.md) · [Windows 说明](docs/WINDOWS.md) · [版本记录](CHANGELOG.md) · [Releases](https://github.com/txp666/PageBridge/releases)
 
-v0.5.0 加入 MinerU 原页版式对照阅读。公开发行与下载以 [Releases](https://github.com/txp666/PageBridge/releases) 为准；功能与实测范围见[对照阅读模式](#原页版式对照阅读)及[验证记录](docs/VERIFICATION.md)。
+## 下载
 
-## 下载与安装
-
-v0.5.0 下载入口如下；也可在 [Releases](https://github.com/txp666/PageBridge/releases) 中查看已公开版本。
+当前版本 **0.5.1 / build 15**：
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
-| Apple Silicon Mac · macOS 14+ | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-macOS-arm64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
-| Windows 11 · x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64-setup.exe.sha256) | 按安装向导选择目录和快捷方式，默认安装到当前用户目录 |
-| Windows 11 · x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip) · [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe`，保留所有子目录 |
+| Mac（Apple Silicon） | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-macOS-arm64.zip)（约 230 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
+| Windows x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-windows-x64-setup.exe)（约 200 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
+| Windows x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-windows-x64.zip)（约 300 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.5.1/PageBridge-0.5.1-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-同一发行还提供[项目源码](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-source.zip)和[第三方对应源码](https://github.com/txp666/PageBridge/releases/download/v0.5.0/PageBridge-0.5.0-third-party-sources.zip)，各附 SHA-256。最终大小、哈希与发布状态以 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.5.0)为准。
+同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.5.1)还提供项目源码和第三方对应源码。
 
-Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证**；Windows 安装器及程序 **尚无 Authenticode 签名**。请核对来源和 SHA-256，按系统提示确认。尚无 Intel Mac 或原生 Windows ARM64 包；Windows ARM 虚拟机的 x64 兼容运行不等同于原生 ARM64 支持。
+Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Windows 安装器和程序 **没有 Authenticode 签名**。首次打开时系统可能提示风险，请核对下载来源和 SHA-256 后再确认。
 
-应用自带 Python 和翻译依赖，无需另外安装 Python；**不包含语言模型**。Ollama 和模型需单独安装，首次翻译可能下载字体和版面资源。Windows 应用内网页验证使用系统 WebView2 Runtime。
+应用自带 Python 和翻译依赖，Windows 另自带 .NET 与 WinUI 运行库；**不包含语言模型**，使用 Ollama 需另行安装 Ollama 和模型。
 
-## v0.5.0 主要功能
+## 电脑配置
+
+| | Mac | Windows |
+|---|---|---|
+| 系统 | macOS 14 或更高 | Windows 11（未在 Windows 10 上测试） |
+| 处理器 | Apple Silicon（M 系列），不支持 Intel Mac | x64；Windows 11 ARM 通过系统 x64 仿真运行，没有原生 ARM64 版本 |
+| 内存 | 至少 8 GB，建议 16 GB | 至少 8 GB，建议 16 GB |
+| 应用大小 | ZIP 约 230 MB，安装后约 670 MB | 安装器约 200 MB，便携 ZIP 约 300 MB |
+| 其他 | — | 应用内网站验证使用系统 WebView2 Runtime |
+
+- **不需要独立显卡。** MinerU 在 CPU 上运行（ONNX）。
+- **磁盘：** 原页版式阅读模式首次使用会安装本地识别组件，实际约 3.2 GB（Python 环境约 1.1 GB、模型约 0.8 GB、安装缓存约 1.3 GB），**请预留约 4 GB**，另加文档和译文所需空间。
+- **本机模型：** Ollama 模型的内存需求另算。例如 `qwen3.5:35b-a3b-int4` 约 20 GB，需要 32 GB 或更大内存的 Mac；只用云端 API 时不需要这部分内存。
+- **网络：** 首次使用阅读模式会下载 MinerU 运行环境（Python 3.12 来自 GitHub，依赖包来自 PyPI）和 818 MB 模型（ModelScope 或 Hugging Face）；“重排 PDF”模式首次使用可能下载字体和版面资源。之后解析可离线进行；翻译只有使用云端 API 时才需要联网。
+- **解析速度与内存（阅读模式逐页解析）：**
+  - Mac 实测（Apple M5 Pro）：普通页约 4 秒，公式密集页约 23 秒；单页解析峰值内存 0.8–1.2 GB。
+  - Windows 实测（Apple Silicon 上的 Windows 11 ARM 虚拟机，x64 仿真，7 GB 内存）：普通页约 16 秒，公式密集页约 33 秒；单页解析峰值内存 0.8–1.5 GB。
+
+## 主要功能
 
 - **文档库：** 文件夹、名称搜索、排序、收藏、最近阅读、回收站和首页预览。
-- **原页版式阅读：** 整篇或指定页生成阅读稿，保留页数、分栏、照片、色块、细边框和表格数字；正文与表格文字标签在原位置显示译文，已识别行内公式随正文排列。
-- **对照与重试：** 原文／对照／译文、双向连续同步滚动、统一缩放、逐段展开及失败段落重试；PDF 阅读保留搜索、缩略图、目录和书签。
-- **批注：** 文字高亮、下划线、页笔记，编辑、删除，导出批注 PDF 和 Markdown。
-- **文档助手：** 独立选择已配置模型；文档问答、当前页、选文或自由提问，引用片段核对、复制回答和保存笔记。两端均采用顶部文件名、中央对话、底部操作的紧凑布局。
-- **文献获取：** OpenAlex 搜索，Sci-Hub／公开 PDF 全文来源，DOI 直接打开、下载校验与去重导入。
-- **导出：** 原文 PDF，以及“重排 PDF”模式生成的译文和交替页双语 PDF。原页版式阅读稿暂不支持 PDF 导出。Windows 功能与已知差异见 [Windows 说明](docs/WINDOWS.md)。
+- **原页版式阅读：** 整篇或指定页生成阅读稿，保持原页数、分栏、照片、色块、细边框和表格数字；正文与表格标签在原位置显示译文，行内公式随正文排列，放不下的段落点击查看全文。扫描页由 MinerU 本机识别。
+- **对照与重试：** 原文／对照／译文三种视图，左右页双向连续同步滚动、统一缩放；失败段落保留原文，可单独重试。
+- **重排 PDF：** 生成可导出的译文 PDF 和交替页双语 PDF。
+- **PDF 阅读与批注：** 搜索、缩略图、目录、书签；高亮、下划线、页笔记，导出批注 PDF 和 Markdown。
+- **文档助手：** 独立选择已配置的模型，按文档、当前页、选文或自由提问；回答附可核对的页码引用，可保存为笔记。
+- **文献获取：** OpenAlex 搜索，Sci-Hub 或公开 PDF 全文来源，DOI 直接打开，下载校验并去重导入。
+
+阅读稿目前不能导出为 PDF，也没有自身的全文搜索和批注；需要译文 PDF 时使用“重排 PDF”。Windows 与 Mac 的差异见 [Windows 说明](docs/WINDOWS.md)。
 
 ## 界面预览
 
@@ -44,52 +62,41 @@ Mac 包目前采用 ad-hoc 签名，**尚无 Developer ID 签名或 Apple 公证
 
 ![在线文献搜索](docs/images/literature-search.jpg)
 
-以上是 Mac 0.4.0 的真实界面截图，展示公开文献。作者、许可及截图范围见[图片说明](docs/images/README.md)。
+Mac 界面截图，对照图为“重排 PDF”模式，展示公开文献；来源与许可见[图片说明](docs/images/README.md)。
 
-## v0.5.0 快速开始
+## 快速开始
 
-1. 点击 `+` 导入 PDF；阅读和批注无需模型。也可从“搜索在线文献”按标题或 DOI 获取全文。
-2. 打开侧栏设置，选择厂商、模型并填写 API Key；本机 Ollama 点击“获取模型”。可选预设厂商，也可填写自定义 OpenAI 兼容 Base URL 和模型 ID。
-3. 点击“翻译”，选择语言和页码，例如 `1-5, 8`。默认生成原页版式阅读稿，首次需下载本地识别组件；需要译文 PDF 时改选“重排 PDF”。
-4. 切换“对照”阅读，两侧同步滚动；点击译文区域查看完整内容，失败段落可单独重试。原 PDF 可选字批注，也可打开助手提问。
-5. “重排 PDF”的结果可通过“导出 PDF”保存；原页版式阅读稿保存在文档库中，暂不提供对应 PDF 导出。
+1. 点击 `+` 导入 PDF，或从“搜索在线文献”按标题或 DOI 获取全文。阅读和批注不需要模型。
+2. 在侧栏底部打开翻译服务设置，选择厂商和模型并填写 API Key；本机 Ollama 点击“获取模型”。
+3. 点击“翻译”，选择语言和页码（例如 `1-5, 8`）。默认生成原页版式阅读稿；需要译文 PDF 时选择“重排 PDF”。
+4. 切换到“对照”阅读；点击译文区域查看完整内容，失败段落可单独重试。
+5. “重排 PDF”的结果可通过“导出 PDF”保存。
 
-内置五份公开示例共 49 页，作者、来源与许可见[示例说明](demos/README.md)。更完整的配置、快捷键和排错见[使用指南](docs/USER_GUIDE.md)。
+应用内置五份公开示例 PDF（共 49 页，来源见[示例说明](demos/README.md)）。配置、快捷键和排错见[使用指南](docs/USER_GUIDE.md)。
 
-## 原页版式对照阅读
+## 数据、隐私与更新
 
-默认使用 MinerU 4.0.12 Basic 在本机解析 PDF，按完整段落调用已配置的翻译服务。译文在原页坐标内显示，保持页数、分栏与图表位置；文字按区域大小适配，放不下时可点击查看全文。照片、色块、水印和细线使用去除原文字形后的原页背景，避免整块纯色覆盖。原生文字表格保留数字、行列与格线，只在原位翻译文字标签；扫描表格仍可点击查看辅助译文。图片、公式和代码保持原位；已识别的行内公式使用原页图像随正文排列。左右页统一顶部和缩放比例，右侧不再显示固定提示行。对照阅读支持双向连续同步滚动，可关闭后分别滚动；缩放后仍按同一页内位置对齐。原文件始终不改写。阅读稿不增加语义或数字正则门控，某段失败会保留原文并可单独重试，其他段落仍可阅读。
-
-黑底白字与黑字被合并成同一标题时，页面保留原标题配色，点击可读完整译文。当前组件不支持没有阿语文本层的阿拉伯语扫描页，会保留原页并显示原因。
-
-首次使用会下载本地识别组件，**请预留约 4 GB 磁盘空间**。组件使用独立运行环境，后续本地解析无需远程解析服务；翻译仍由你选择的 Ollama 或 API 完成。重新生成阅读稿会替换当前阅读稿及其所选页范围，不会把新选页合并到旧稿；单段重试保留其余内容。
-
-现有“重排 PDF”模式继续单独提供译文／双语 PDF 导出。**阅读稿本身尚不能导出为译文或双语 PDF，也尚未接入全文搜索和批注**；原 PDF 的阅读、搜索和批注继续可用。Windows 原生 GUI、模型运行和安装升级的实际完成范围以[验证记录](docs/VERIFICATION.md)为准。
-
-## 数据与更新
-
-| 平台 | 本机数据 | API 密钥 | 更新 |
+| 平台 | 本机数据 | API Key | 更新 |
 |---|---|---|---|
-| Mac | `~/Library/Application Support/PageBridge/` | macOS 钥匙串 | Sparkle 检查更新，校验更新签名；由用户确认安装 |
-| Windows | `%LOCALAPPDATA%\PageBridge` | Windows 凭据管理器 | “检查更新”校验签名与文件后，由用户下载并启动安装向导 |
+| Mac | `~/Library/Application Support/PageBridge/` | macOS 钥匙串 | Sparkle 检查并校验更新签名，由你确认安装 |
+| Windows | `%LOCALAPPDATA%\PageBridge` | Windows 凭据管理器 | 手动“检查更新”，校验签名与文件后由你启动安装向导 |
 
-Windows 安装器默认目录为 `%LOCALAPPDATA%\Programs\PageBridge`，卸载只移除程序与快捷方式，保留文档、译文、配置和系统凭据。替换程序保留独立用户数据。两端文档库格式不同，暂不支持直接互拷数据目录或自动跨平台同步。两端更新签名均不替代 Apple 公证或 Windows Authenticode。Windows 使用独立更新清单；便携版也可检查更新，但 OTA 会运行安装器，不会就地替换便携目录。
+PDF 解析、排版、批注和助手片段提取都在本机完成。使用云端模型时，待翻译文本，或助手的问题、所选片段与近期对话，会发送给你选择的服务；OpenAlex 会收到检索词，所选全文来源会收到 DOI 或下载请求。应用不附带任何云服务额度。
 
-文档解析与排版在本机执行。使用云模型时，翻译文本或助手选取的片段、问题与有限近期对话会发送给所选服务；OpenAlex 接收检索词，所选全文来源接收 DOI 或下载请求。应用不携带云服务额度。
+机器翻译和 AI 回答可能出错，公式、数字和关键条款请对照原文。助手每次只看到有限片段，并未通读全文。
 
-“重排 PDF”模式不提供通用 OCR；原页版式阅读模式由 MinerU 在本机识别扫描内容，不会给原 PDF 写入新文字层。机器翻译和 AI 回答可能出错，公式、数字和关键条款需核对原文；助手每次仅使用有限片段，不代表通读全文。全文可用性取决于来源网站；遇到网站验证需自行完成，应用不自动解答验证码。
-
-## 开发与贡献
+## 开发
 
 ```sh
 git clone https://github.com/txp666/PageBridge.git
 cd PageBridge
-# Mac
-bash engine/setup.sh
-bash scripts/build-app.sh
+bash engine/setup.sh        # Mac 引擎环境
+bash scripts/build-app.sh   # 生成 dist/PageBridge.app
 # Windows PowerShell：./scripts/build-windows.ps1
 ```
 
-详见[开发指南](docs/DEVELOPMENT.md)、[Windows 构建说明](docs/WINDOWS.md)、[验证记录](docs/VERIFICATION.md)、[贡献指南](CONTRIBUTING.md)和[安全说明](SECURITY.md)。本地检查与历史 CI 记录分别保留；本版发行状态和 CI 结果以对应 Release／Actions 记录为准。
+见[开发指南](docs/DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[Windows 构建](docs/WINDOWS.md#构建与测试)、[贡献指南](CONTRIBUTING.md)和[安全说明](SECURITY.md)。
 
-原创代码采用 [AGPL-3.0-only](LICENSE)。第三方组件和示例保留各自许可及归属，见[第三方说明](THIRD_PARTY_NOTICES.md)。反馈问题请附版本、系统和脱敏复现，不要公开密钥、Cookie 或私有文档。
+## 许可
+
+原创代码采用 [AGPL-3.0-only](LICENSE)。第三方组件和示例保留各自许可，见[第三方说明](THIRD_PARTY_NOTICES.md)。反馈问题请附版本、系统和脱敏复现，不要公开密钥、Cookie 或私有文档。
