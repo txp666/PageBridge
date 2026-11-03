@@ -2,19 +2,39 @@
 
 ## 0.6.0 / build 16 — 只保留原页版式阅读，阅读稿可导出 PDF
 
-**不兼容变更：** 移除“重排 PDF”模式，翻译只生成原页版式阅读稿。0.5.x 以“重排 PDF”生成的译文不再显示，文件仍保留在磁盘上，直到删除该文档；请用阅读模式重新翻译。译文 PDF 上的批注也不再显示，批注只加在原 PDF 上。
+本版把翻译统一为原页版式阅读稿一种方式，并让阅读稿可以导出为 PDF。
 
-- 阅读稿可从“导出 PDF”菜单导出为译文 PDF（页数与原文相同，未翻译的页不变）或双语 PDF（每个已翻译的页紧跟在原页之后）。译文是可选择、可搜索的文字，放不下时缩小字号，不截断；导出在本机完成，不需要翻译服务。
-- 参考文献、脚注、页脚等原文小字的译文最多缩到原字号的 85%，扫描页按区域估算原字号，“放不下”的蓝色标记大幅减少（实测 224 段中由 58 段降到 7 段）。
-- 应用大幅变小：Mac ZIP 从约 230 MB 减到约 60 MB，安装后从约 670 MB 减到约 150 MB；Windows 安装器从约 200 MB 减到约 90 MB，安装后从约 830 MB 减到约 330 MB。两端都不再附带 PDFMathTranslate-next、BabelDOC 和 ONNX Runtime。
+**优点**
+
+- 阅读稿可导出译文 PDF（页数与原文相同，未翻译的页不变）和双语 PDF（每个已翻译的页紧跟在原页之后）。译文是可选择、可搜索的文字，放不下时缩小字号，不截断；导出在本机完成，不需要翻译服务。
+- 应用大幅变小：Mac ZIP 约 230 MB → 60 MB，安装后约 670 MB → 150 MB；Windows 安装器约 200 MB → 90 MB，安装后约 830 MB → 330 MB。
+- 参考文献、脚注、页脚等小字的译文最多缩到原字号的 85%，“放不下”的蓝色标记明显减少（实测 224 段中由 58 段降到 7 段）。
+- 扫描页和文字页使用同一套解析与翻译流程，表格、公式和图片的处理更一致。
+
+**缺点（不兼容变更）**
+
+- 移除“重排 PDF”模式。0.5.x 用该模式生成的译文不再显示（文件保留到删除该文档），需要用阅读模式重新翻译。
+- 译文一侧不能高亮、下划线或加批注，批注只能加在原文 PDF 上；0.5.x 加在译文 PDF 上的批注不再显示。
+- 有文字层的 PDF 也要先下载约 4 GB 的本地识别组件才能翻译。
+- 导出的 PDF 按 PageBridge 自己的排字规则生成，与屏幕上的阅读稿相近，但不逐像素一致。
 
 **English**
 
-**Breaking change:** The Reflowed PDF (重排 PDF) mode is removed; translating always produces an original-layout reading draft. Translations made in Reflowed PDF mode by 0.5.x are no longer shown; their files stay on disk until the document is deleted, so translate again in reading mode. Annotations on translated PDFs are no longer shown; annotations go on the original PDF only.
+Translation now has a single mode, the original-layout reading draft, and reading drafts can be exported as PDF.
 
-- Reading drafts export from the "导出 PDF" menu to a translated PDF (same page count as the original, untranslated pages unchanged) or a bilingual PDF (each translated page right after its original). The translation is real, selectable and searchable text, shrunk to fit rather than truncated; export runs locally and needs no translation service.
-- Translations of small print (references, footnotes, footers) may shrink to 85% of the original size, with the size estimated on scanned pages, so far fewer blocks show the blue "doesn't fit" marker (58 of 224 measured blocks down to 7).
-- Much smaller apps: the Mac ZIP drops from about 230 MB to about 60 MB and the installed app from about 670 MB to about 150 MB; the Windows installer from about 200 MB to about 90 MB and the installed app from about 830 MB to about 330 MB. Neither platform ships PDFMathTranslate-next, BabelDOC or ONNX Runtime any more.
+**Advantages**
+
+- Export reading drafts to a translated PDF (same page count, untranslated pages unchanged) or a bilingual PDF (each translated page right after its original). The translation is real, selectable, searchable text, shrunk to fit rather than truncated; export runs locally without a translation service.
+- Much smaller apps: Mac ZIP about 230 → 60 MB, installed about 670 → 150 MB; Windows installer about 200 → 90 MB, installed about 830 → 330 MB.
+- Small print (references, footnotes, footers) may shrink to 85% of its original size, so far fewer blocks show the blue "doesn't fit" marker (58 of 224 measured blocks down to 7).
+- Scanned and text pages go through the same parsing and translation path, so tables, formulas and images are handled consistently.
+
+**Disadvantages (breaking changes)**
+
+- The Reflowed PDF (重排 PDF) mode is removed. Translations made in that mode by 0.5.x are no longer shown (their files stay until the document is deleted); translate again in reading mode.
+- The translation side cannot be highlighted, underlined or annotated; annotations go on the original PDF only, and 0.5.x annotations on translated PDFs are no longer shown.
+- PDFs with a text layer also need the roughly 4 GB local recognition component before translating.
+- Exported PDFs use PageBridge's own typesetting: close to the on-screen reading draft, but not pixel-identical.
 
 ## 0.5.1 / build 15 — MinerU 模型下载修复
 
