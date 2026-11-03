@@ -1,11 +1,8 @@
 using System.Text.Json.Nodes;
-using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using global::Windows.Storage.Pickers;
-using WinRT.Interop;
 
 namespace PageBridge.Windows;
 
@@ -68,7 +65,7 @@ public sealed partial class MainWindow
         annotationsPanel = new AnnotationsPanel(backend, ShowDialogAsync, NavigateReading, AddMarkupAsync, AddNoteAsync, ToggleBookmarkAsync, ExportReadingAsync);
         annotationsPanel.AnnotationsChanged += AcceptAnnotations;
         annotationsPanel.VariantChanged += value => { if (!switchingVariant) ActivateVariant(value); };
-        assistantPanel = new AssistantPanel(backend, (number, variant) => NavigateReading(variant, number), () => Math.Max(0, (int)page.Value - 1), () => ActiveVariant, () => activePages.Selection?.Text ?? "", SaveAssistantNoteAsync, ShowDialogAsync, () => activePages.Selection?.Page ?? Math.Max(0, (int)page.Value - 1), () => activePages.Selection?.Variant ?? ActiveVariant);
+        assistantPanel = new AssistantPanel(backend, (number, variant) => NavigateReading(variant, number), () => Math.Max(0, (int)page.Value - 1), () => ActiveVariant, () => activePages.Selection?.Text ?? "", SaveNoteAsync, ShowDialogAsync, () => activePages.Selection?.Page ?? Math.Max(0, (int)page.Value - 1), () => activePages.Selection?.Variant ?? ActiveVariant);
         inspectorContent.Children.Add(assistantPanel); inspectorContent.Children.Add(annotationsPanel);
         readerArea.SizeChanged += (_, _) => UpdateReadingVisibility();
         foreach (var pane in new[] { originalPages, translatedPages })
@@ -106,11 +103,11 @@ public sealed partial class MainWindow
     {
         pageNavigation.Background = Dark ? Brush(38, 38, 38) : Brush(243, 243, 243); pageNavigation.BorderBrush = LineBrush;
         readingInspector.Background = BarBrush; readingInspector.BorderBrush = LineBrush;
-        if (readingInspector.Children.Count > 0 && readingInspector.Children[0] is Grid header) header.BorderBrush = LineBrush;
+        ((Grid)readingInspector.Children[0]).BorderBrush = LineBrush;
         for (int i = 0; i < navigationTabs.Count; i++) navigationTabs[i].Background = i == navigationTab ? (Dark ? Brush(67, 67, 67) : Brush(255, 255, 255)) : Clear;
         for (int i = 0; i < inspectorTabs.Count; i++) inspectorTabs[i].Background = inspectorKind == (i == 0 ? "assistant" : "notes") ? (Dark ? Brush(67, 67, 67) : Brush(232, 232, 232)) : Clear;
-        if (notesTool is not null) notesTool.Background = inspectorKind == "notes" ? new SolidColorBrush(global::Windows.UI.Color.FromArgb(35, 10, 132, 255)) : Clear;
-        if (assistantTool is not null) assistantTool.Background = inspectorKind == "assistant" ? new SolidColorBrush(global::Windows.UI.Color.FromArgb(35, 10, 132, 255)) : Clear;
+        notesTool.Background = inspectorKind == "notes" ? new SolidColorBrush(global::Windows.UI.Color.FromArgb(35, 10, 132, 255)) : Clear;
+        assistantTool.Background = inspectorKind == "assistant" ? new SolidColorBrush(global::Windows.UI.Color.FromArgb(35, 10, 132, 255)) : Clear;
     }
     private void UpdateNavigationDisplay()
     {
@@ -178,7 +175,7 @@ public sealed partial class MainWindow
             bookmarkList.SelectedItem = bookmarkList.Items.OfType<ListViewItem>().FirstOrDefault(i => (int)i.Tag == current);
         }
         finally { updatingNavigation = false; }
-        annotationsPanel?.SetCurrentPage(Math.Max(0, (int)page.Value - 1)); assistantPanel?.RefreshContext();
+        annotationsPanel.SetCurrentPage(Math.Max(0, (int)page.Value - 1)); assistantPanel.RefreshContext();
     }
 
     private void RefreshBookmarks()
@@ -195,6 +192,11 @@ public sealed partial class MainWindow
         }
         finally { updatingNavigation = false; }
         UpdateNavigationDisplay();
+    }
+    private async Task UnbindDocumentAsync()
+    {
+        ResetDocumentSearch(); annotationHashes.Clear(); annotationsByVariant.Clear(); navigationIdentity = ""; navigationGeneration++;
+        await annotationsPanel.BindAsync("", false); await assistantPanel.BindAsync("", "");
     }
     private void AcceptAnnotations(string variant, string hash, JsonArray items)
     {
@@ -221,15 +223,14 @@ public sealed partial class MainWindow
     private void ReaderSelectionChanged(ContinuousPdfPane pane)
     {
         if (!ReferenceEquals(pane, activePages)) return;
-        UpdateSelectionTools(); assistantPanel?.RefreshContext();
+        UpdateSelectionTools(); assistantPanel.RefreshContext();
     }
     private void UpdateSelectionTools()
     {
-        if (highlightTool is null) return;
-        bool selectedText = activePages?.Selection is { Text.Length: > 0 };
+        bool selectedText = activePages.Selection is { Text.Length: > 0 };
         highlightTool.IsEnabled = selectedText; underlineTool.IsEnabled = selectedText;
-        selectionCaption.Text = selectedText ? "已选 " + activePages!.Selection!.Text.Length + " 字" : "";
-        annotationsPanel?.SetSelectionAvailable(selectedText);
+        selectionCaption.Text = selectedText ? "已选 " + activePages.Selection!.Text.Length + " 字" : "";
+        annotationsPanel.SetSelectionAvailable(selectedText);
     }
     private void ActivateVariant(string variant)
     {
@@ -259,22 +260,13 @@ public sealed partial class MainWindow
     {
         ActivateVariant(variant); page.Value = Math.Clamp(number + 1, 1, page.Maximum); JumpToPage((int)page.Value); UpdateNavigationPage();
     }
-    private JsonObject NoteDraft(string? note = null)
+    private Task AddNoteAsync() => SaveNoteAsync(null);
+    private async Task SaveNoteAsync(string? note)
     {
+        if (selected is null) return;
         var selection = activePages.Selection;
-        return new JsonObject { ["kind"] = "note", ["page"] = selection?.Page ?? Math.Max(0, (int)page.Value - 1), ["regions"] = selection?.Regions ?? [], ["selected_text"] = selection?.Text ?? "", ["note"] = note ?? "" };
-    }
-    private async Task AddNoteAsync()
-    {
-        if (selected is null) return;
-        var draft = NoteDraft(); string variant = ActiveVariant; int generation = selectionGeneration;
-        await ShowInspectorAsync("notes"); if (generation == selectionGeneration) await annotationsPanel.CreateNoteAsync(draft, variant);
-    }
-    private async Task SaveAssistantNoteAsync(string text)
-    {
-        if (selected is null) return;
+        var draft = new JsonObject { ["kind"] = "note", ["page"] = selection?.Page ?? Math.Max(0, (int)page.Value - 1), ["regions"] = selection?.Regions ?? [], ["selected_text"] = selection?.Text ?? "", ["note"] = note ?? "" };
         string variant = ActiveVariant, id = Text(selected, "id"); int generation = selectionGeneration;
-        var draft = NoteDraft(text);
         await ShowInspectorAsync("notes");
         if (generation == selectionGeneration && id == Text(selected, "id")) await annotationsPanel.CreateNoteAsync(draft, variant);
     }
@@ -305,10 +297,9 @@ public sealed partial class MainWindow
     private async Task ExportReadingAsync(string kind, string variant, string hash)
     {
         if (selected is null) return;
-        string id = Text(selected, "id");
-        var picker = new FileSavePicker { SuggestedFileName = Path.GetFileNameWithoutExtension(Text(selected, "name")) + (kind == "pdf" ? "-批注" : "-阅读笔记") };
-        picker.FileTypeChoices.Add(kind == "pdf" ? "PDF 文档" : "Markdown 笔记", new List<string> { kind == "pdf" ? ".pdf" : ".md" }); InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-        var file = await picker.PickSaveFileAsync(); if (file is null) return;
-        await backend.CallAsync(kind == "pdf" ? "export_annotations" : "export_notes", new JsonObject { ["document_id"] = id, ["variant"] = variant, ["source_sha256"] = hash, ["destination"] = file.Path }); status.Text = "已导出：" + file.Path;
+        string id = Text(selected, "id"), name = Path.GetFileNameWithoutExtension(Text(selected, "name"));
+        var path = kind == "pdf" ? await PickSavePathAsync(name + "-批注", "PDF 文档", ".pdf") : await PickSavePathAsync(name + "-阅读笔记", "Markdown 笔记", ".md");
+        if (path is null) return;
+        await backend.CallAsync(kind == "pdf" ? "export_annotations" : "export_notes", new JsonObject { ["document_id"] = id, ["variant"] = variant, ["source_sha256"] = hash, ["destination"] = path }); status.Text = "已导出：" + path;
     }
 }

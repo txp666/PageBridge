@@ -42,10 +42,9 @@ public partial class App : Application
         string instanceName = "Local\\PageBridge.Windows.Preview" + (readerValidation ? ".ReaderValidation" : "");
         singleInstance = new Mutex(true, instanceName, out bool first);
         if (!first) { Exit(); return; }
-        bool validation = arguments.Contains("--validation-data", StringComparer.Ordinal);
-        bool uiValidation = arguments.Contains("--ui-validation", StringComparer.Ordinal);
-        string? isolatedRoot = readerValidation || validation || uiValidation
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), readerValidation ? "PageBridge-WindowsReaderValidation" : uiValidation ? "PageBridge-WindowsUIValidation" : "PageBridge-WindowsValidation") : null;
+        string? isolatedFolder = readerValidation ? "PageBridge-WindowsReaderValidation"
+            : arguments.Contains("--ui-validation", StringComparer.Ordinal) ? "PageBridge-WindowsUIValidation" : null;
+        string? isolatedRoot = isolatedFolder is null ? null : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), isolatedFolder);
         if (readerValidation)
         {
             Directory.CreateDirectory(isolatedRoot!);

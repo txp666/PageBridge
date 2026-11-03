@@ -14,7 +14,6 @@ internal sealed class LiteratureSearchPanel : Grid, IDisposable
 {
     private readonly BackendClient backend;
     private readonly Func<string, Task> imported;
-    private readonly Action close;
     private readonly Grid searchContent = new();
     private readonly Grid browserHost = new() { Visibility = Visibility.Collapsed };
     private readonly TextBox query = new() { PlaceholderText = "标题、关键词或 DOI / doi.org 链接", MaxLength = 1000, FontSize = 13 };
@@ -55,7 +54,7 @@ internal sealed class LiteratureSearchPanel : Grid, IDisposable
 
     internal LiteratureSearchPanel(BackendClient backend, Func<string, Task> imported, Action close)
     {
-        this.backend = backend; this.imported = imported; this.close = close;
+        this.backend = backend; this.imported = imported;
         HorizontalAlignment = HorizontalAlignment.Stretch; VerticalAlignment = VerticalAlignment.Stretch;
         Children.Add(searchContent); Children.Add(browserHost);
         searchContent.RowDefinitions.Add(new() { Height = GridLength.Auto });

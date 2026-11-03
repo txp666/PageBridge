@@ -1,7 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Automation;
 using global::Windows.System;
 
@@ -17,11 +16,10 @@ public sealed partial class MainWindow
     private readonly Flyout searchResultsFlyout = new();
     private CancellationTokenSource? documentSearchCancellation;
     private int documentSearchGeneration;
+    private bool SearchesTranslation => mode.SelectedIndex == 2 && !ShowingReading;
 
     private void InitializeDocumentSearch()
     {
-        foreach (var child in workspace.Children.OfType<FrameworkElement>()) if (Grid.GetRow(child) >= 2) Grid.SetRow(child, Grid.GetRow(child) + 1);
-        workspace.RowDefinitions.Insert(2, new() { Height = GridLength.Auto });
         foreach (var width in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) documentSearchBar.ColumnDefinitions.Add(new() { Width = width });
         AutomationProperties.SetAutomationId(documentQuery, "DocumentSearchQuery");
         AutomationProperties.SetName(documentQuery, "文内搜索词"); documentSearchBar.Children.Add(documentQuery);
@@ -31,9 +29,9 @@ public sealed partial class MainWindow
         searchResultsButton.Flyout = searchResultsFlyout; Grid.SetColumn(searchResultsButton, 2); documentSearchBar.Children.Add(searchResultsButton);
         AutomationProperties.SetAutomationId(searchResultsButton, "DocumentSearchResults");
         Grid.SetColumn(searchProgress, 3); documentSearchBar.Children.Add(searchProgress);
-        var close = Tool("close", null, "关闭搜索", () => { ResetDocumentSearch(); documentSearchBar.Visibility = Visibility.Collapsed; return Task.CompletedTask; }); Grid.SetColumn(close, 4); documentSearchBar.Children.Add(close);
+        var close = Tool("close", null, "关闭搜索", () => { HideDocumentSearch(); return Task.CompletedTask; }); Grid.SetColumn(close, 4); documentSearchBar.Children.Add(close);
         Grid.SetRow(documentSearchBar, 2); workspace.Children.Add(documentSearchBar); themedBars.Add(documentSearchBar);
-        documentQuery.KeyDown += async (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; await Attempt(SearchDocumentAsync); } else if (e.Key == VirtualKey.Escape) { ResetDocumentSearch(); documentSearchBar.Visibility = Visibility.Collapsed; e.Handled = true; } };
+        documentQuery.KeyDown += async (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; await Attempt(SearchDocumentAsync); } else if (e.Key == VirtualKey.Escape) { HideDocumentSearch(); e.Handled = true; } };
         documentQuery.TextChanged += (_, _) => ResetDocumentSearch();
         foreach (var pane in new[] { originalPages, translatedPages }) pane.LinkInvoked += async (source, link) => await Attempt(async () =>
         {
@@ -48,22 +46,24 @@ public sealed partial class MainWindow
     {
         if (selected is null) return;
         documentSearchBar.Visibility = Visibility.Visible;
-        documentQuery.PlaceholderText = mode.SelectedIndex == 2 && !ShowingReading ? "搜索译文中的文字" : "搜索原文中的文字";
+        documentQuery.PlaceholderText = SearchesTranslation ? "搜索译文中的文字" : "搜索原文中的文字";
         documentQuery.Focus(FocusState.Programmatic); documentQuery.SelectAll();
     }
+
+    private void HideDocumentSearch() { ResetDocumentSearch(); documentSearchBar.Visibility = Visibility.Collapsed; }
 
     private void ResetDocumentSearch()
     {
         documentSearchGeneration++; documentSearchCancellation?.Cancel(); documentSearchCancellation = null;
         searchResultsFlyout.Hide(); searchResultItems.Children.Clear(); searchResultsButton.Content = "结果 0"; searchResultsButton.IsEnabled = false; searchProgress.Text = "";
-        originalPages?.SetSearchHits([]); translatedPages?.SetSearchHits([]);
-        documentQuery.PlaceholderText = mode.SelectedIndex == 2 && !ShowingReading ? "搜索译文中的文字" : "搜索原文中的文字";
+        originalPages.SetSearchHits([]); translatedPages.SetSearchHits([]);
+        documentQuery.PlaceholderText = SearchesTranslation ? "搜索译文中的文字" : "搜索原文中的文字";
     }
 
     private async Task SearchDocumentAsync()
     {
         ResetDocumentSearch();
-        string query = documentQuery.Text.Trim(), id = Text(selected, "id"), variant = mode.SelectedIndex == 2 && !ShowingReading ? "translated" : "original";
+        string query = documentQuery.Text.Trim(), id = Text(selected, "id"), variant = SearchesTranslation ? "translated" : "original";
         if (id == "" || query == "") return;
         int generation = documentSearchGeneration, scanned = 0;
         using var cancellation = new CancellationTokenSource(); documentSearchCancellation = cancellation;

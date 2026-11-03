@@ -18,7 +18,6 @@ internal sealed partial class StructuredReadingPane
     private string identity = "", documentId = "";
     private int generation;
     internal Grid View { get; } = new();
-    internal ScrollViewer Scroll => pages.Scroll;
     internal ContinuousPdfPane.Anchor Position => pages.Position;
     internal int CurrentPage => pages.CurrentPage;
     internal event Action? PositionChanged;
@@ -34,9 +33,9 @@ internal sealed partial class StructuredReadingPane
         pages = new ContinuousPdfPane(backend, allowSelection: false);
         // Use exactly the same viewport and padding as the original pane.
         // Normal reading has no translation-only toolbar above the page.
-        View.Children.Add(Scroll);
-        AutomationProperties.SetName(Scroll, "保持原页版式的译文");
-        AutomationProperties.SetAutomationId(Scroll, "StructuredReading");
+        View.Children.Add(pages.Scroll);
+        AutomationProperties.SetName(pages.Scroll, "保持原页版式的译文");
+        AutomationProperties.SetAutomationId(pages.Scroll, "StructuredReading");
         pages.PageOverlayRequested = BuildOverlayAsync;
         pages.PositionChanged += _ => PositionChanged?.Invoke();
         pages.Activated += _ => Activated?.Invoke();
@@ -172,7 +171,7 @@ internal sealed partial class StructuredReadingPane
         }
         if (kind is "text" or "heading" or "list" && status == "translated" && !string.IsNullOrWhiteSpace(translated) && positioned)
         {
-            var color = BackgroundColor(block);
+            var color = ReadColor(block["backgroundColor"], Colors.White);
             if (!hasBackground) area.Background = new SolidColorBrush(color);
             var translatedContent = TranslatedContent(block, width, height, pageWidth, pageHeight, source, color);
             overflow = translatedContent.Overflow;
@@ -194,10 +193,7 @@ internal sealed partial class StructuredReadingPane
         Canvas.SetLeft(target, x); Canvas.SetTop(target, y); overlay.Children.Add(target);
     }
 
-    private static bool FitText(TextBlock text, double width, double height, double initial, double minimum = 8)
-        => FitContent(text, width, height, initial, size => { text.FontSize = size; text.LineHeight = size * 1.15; }, minimum);
-
-    private static bool FitContent(FrameworkElement text, double width, double height, double initial, Action<double> setSize, double minimum = 8)
+    private static bool FitContent(FrameworkElement text, double width, double height, double initial, Action<double> setSize, double minimum)
     {
         bool Fits(double size)
         {
@@ -211,9 +207,6 @@ internal sealed partial class StructuredReadingPane
         for (int i = 0; i < 6; i++) { double middle = (low + high) / 2; if (Fits(middle)) low = middle; else high = middle; }
         Fits(low); return true;
     }
-
-    private static global::Windows.UI.Color BackgroundColor(JsonNode block)
-        => ReadColor(block["backgroundColor"], Colors.White);
 
     private static global::Windows.UI.Color ReadColor(JsonNode? node, global::Windows.UI.Color fallback)
     {

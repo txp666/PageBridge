@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml.Input;
 using global::Windows.System;
 
@@ -8,12 +7,10 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
-    private bool shortcutsInitialized, updatingReaderZoom;
+    private bool updatingReaderZoom;
 
     private void InitializeShortcuts()
     {
-        if (shortcutsInitialized) return;
-        shortcutsInitialized = true;
         root.KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden;
         AddShortcut(VirtualKey.O, VirtualKeyModifiers.Control, ImportAsync,
             () => translationCancellation is null && !translationPreparing);
@@ -69,8 +66,6 @@ public sealed partial class MainWindow
         finally { updatingReaderZoom = false; }
     }
 
-    private Task RevealDocumentAsync() => RevealDocumentAsync(selected);
-    private Task RevealDocumentAsync(JsonObject? document) => RevealPDFAsync(Text(document, "input_path"));
     private Task RevealOutputAsync()
     {
         string path = Text(selected, "translated_path");
