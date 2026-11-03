@@ -122,6 +122,10 @@ struct PDFReaderView: NSViewRepresentable {
                 guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
                 self.parent.workspace?.edit(annotation, in: view, documentID: id)
             }
+            pdf.onDeleteAnnotation = { [weak self] annotation in
+                guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
+                self.parent.workspace?.delete(annotation, in: view, documentID: id)
+            }
         }
 
         func detach() {
@@ -138,6 +142,7 @@ struct PDFReaderView: NSViewRepresentable {
             container?.pdfView.onActivate = nil
             container?.pdfView.onScrollFocus = nil
             container?.pdfView.onOpenAnnotation = nil
+            container?.pdfView.onDeleteAnnotation = nil
             invalidatePageReport()
             parent.synchronizer.unregister(self)
             container?.onLayout = nil
@@ -469,6 +474,7 @@ final class AnnotationPDFView: PDFView {
     var onActivate: (() -> Void)?
     var onScrollFocus: (() -> Void)?
     var onOpenAnnotation: ((PDFAnnotation) -> Void)?
+    var onDeleteAnnotation: ((PDFAnnotation) -> Void)?
 
     private func managedAnnotation(at point: NSPoint, notesOnly: Bool = true) -> PDFAnnotation? {
         guard onOpenAnnotation != nil, let document,
@@ -504,11 +510,13 @@ final class AnnotationPDFView: PDFView {
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let annotation = managedAnnotation(at: convert(event.locationInWindow, from: nil), notesOnly: false) else { return super.menu(for: event) }
         // PDFKit's Remove Highlight/Add Note actions bypass our persistence and
-        // can reopen the broken native popup. Offer only the managed operation.
+        // can reopen the broken native popup. Offer only the managed operations.
         let result = NSMenu()
-        let item = NSMenuItem(title: "编辑批注笔记…", action: #selector(editManagedAnnotation(_:)), keyEquivalent: "")
-        item.target = self; item.representedObject = annotation
-        result.insertItem(item, at: 0)
+        for (title, action) in [("编辑批注笔记…", #selector(editManagedAnnotation(_:))), ("删除批注", #selector(deleteManagedAnnotation(_:)))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; item.representedObject = annotation
+            result.addItem(item)
+        }
         return result
     }
 
@@ -516,6 +524,10 @@ final class AnnotationPDFView: PDFView {
         guard let annotation = sender.representedObject as? PDFAnnotation else { return }
         onActivate?()
         onOpenAnnotation?(annotation)
+    }
+    @objc private func deleteManagedAnnotation(_ sender: NSMenuItem) {
+        guard let annotation = sender.representedObject as? PDFAnnotation else { return }
+        onDeleteAnnotation?(annotation)
     }
     override func scrollWheel(with event: NSEvent) {
         onScrollFocus?()
