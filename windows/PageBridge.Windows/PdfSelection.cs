@@ -13,7 +13,7 @@ internal readonly record struct PdfRect(double X, double Y, double Width, double
     internal PdfRect Union(PdfRect other) => new(Math.Min(X, other.X), Math.Min(Y, other.Y), Math.Max(X + Width, other.X + other.Width) - Math.Min(X, other.X), Math.Max(Y + Height, other.Y + other.Height) - Math.Min(Y, other.Y));
 }
 
-internal sealed record PdfSelection(int Page, string Variant, string SourceHash, string Text, IReadOnlyList<PdfRect> Rects)
+internal sealed record PdfSelection(int Page, string SourceHash, string Text, IReadOnlyList<PdfRect> Rects)
 {
     internal JsonArray Regions => new(Rects.Select(r => (JsonNode)new JsonObject { ["page"] = Page, ["rect"] = r.ToJson() }).ToArray());
 }

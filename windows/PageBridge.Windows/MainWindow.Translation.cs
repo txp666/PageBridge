@@ -6,7 +6,10 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
-    private sealed record TranslationChoice(string Source, string Target, string? Pages, string Mode);
+    private sealed record TranslationChoice(string Source, string Target, string? Pages);
+    private readonly Button exportCancel = new() { Content = "取消导出", FontSize = 11, MinHeight = 0, Height = 24, Padding = new Thickness(8, 1, 8, 1), Visibility = Visibility.Collapsed };
+    private CancellationTokenSource? exportCancellation;
+    private bool ReadingExportAvailable => selected is not null && HasReading && translationCancellation is null && !translationPreparing && exportCancellation is null;
 
     private async Task<TranslationChoice?> TranslationDialogAsync(string name, JsonNode? services)
     {
@@ -22,15 +25,13 @@ public sealed partial class MainWindow
         var range = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
         range.Items.Add("全部页面"); range.Items.Add("指定页面"); range.SelectedIndex = 0;
         var pages = new TextBox { PlaceholderText = "例如 1-5, 8, 12-16", Width = 235 };
-        var output = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
-        output.Items.Add("原文 + 中文阅读稿"); output.Items.Add("重排 PDF 导出"); output.SelectedIndex = 0;
         var panel = new StackPanel { Spacing = 18, Width = 440 };
         panel.Children.Add(new TextBlock { Text = name, FontSize = 13, Opacity = .65, TextTrimming = TextTrimming.CharacterEllipsis });
         Grid Field(string caption, FrameworkElement control)
         {
             var row = new Grid(); row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); row.Children.Add(new TextBlock { Text = caption, FontSize = 13, VerticalAlignment = VerticalAlignment.Center }); Grid.SetColumn(control, 1); row.Children.Add(control); return row;
         }
-        panel.Children.Add(Field("阅读方式", output)); panel.Children.Add(Field("源语言", source)); panel.Children.Add(Field("目标语言", target)); panel.Children.Add(Field("翻译范围", range));
+        panel.Children.Add(Field("源语言", source)); panel.Children.Add(Field("目标语言", target)); panel.Children.Add(Field("翻译范围", range));
         var pageRow = Field("页码", pages); pageRow.Visibility = Visibility.Collapsed; panel.Children.Add(pageRow);
         range.SelectionChanged += (_, _) => pageRow.Visibility = range.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         var profile = services?["profiles"]?.AsArray().FirstOrDefault(p => Text(p, "id") == Text(services, "active_id"));
@@ -41,7 +42,7 @@ public sealed partial class MainWindow
         service.Children.Add(new TextBlock { Text = "PDF 在本机处理。使用在线 API 时，待翻译文本会发送至所选服务；本机服务需在本机运行。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(new Border { Child = service, Padding = new Thickness(14), CornerRadius = new CornerRadius(10), Background = Dark ? Brush(45, 45, 45) : Brush(238, 238, 238) });
         var error = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed) }; panel.Children.Add(error);
-        panel.Children.Add(new TextBlock { Text = "阅读稿保留原 PDF，表格和公式可回看原文。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间；未译段落可单独重试。PDF 导出仍可单独选择。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "阅读稿保留原 PDF，表格和公式可回看原文。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间；未译段落可单独重试，完成后可导出译文 PDF 或双语 PDF。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "翻译 PDF", Content = panel, PrimaryButtonText = "开始翻译", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
         dialog.Resources["ContentDialogMaxWidth"] = 520d;
         dialog.PrimaryButtonClick += (_, args) =>
@@ -59,6 +60,34 @@ public sealed partial class MainWindow
             args.Cancel = error.Text != "";
         };
         if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary) return null;
-        return new TranslationChoice((string)((ComboBoxItem)source.SelectedItem).Tag, (string)((ComboBoxItem)target.SelectedItem).Tag, range.SelectedIndex == 1 ? pages.Text.Trim() : null, output.SelectedIndex == 0 ? "reading" : "pdf");
+        return new TranslationChoice((string)((ComboBoxItem)source.SelectedItem).Tag, (string)((ComboBoxItem)target.SelectedItem).Tag, range.SelectedIndex == 1 ? pages.Text.Trim() : null);
+    }
+
+    // The engine rebuilds the PDF from the current reading draft; the save dialog comes first.
+    private async Task ExportTranslationAsync(string kind)
+    {
+        if (!ReadingExportAvailable) return;
+        string id = Text(selected, "id"), name = Path.GetFileNameWithoutExtension(Text(selected, "name")) + (kind == "bilingual" ? "-双语" : "-译文");
+        if (await PickSavePathAsync(name, "PDF 文档", ".pdf") is not { } path || !ReadingExportAvailable) return;
+        using var cancellation = new CancellationTokenSource();
+        exportCancellation = cancellation; UpdateDocumentState();
+        exportCancel.Visibility = Visibility.Visible; progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
+        status.Text = "正在准备导出…";
+        try
+        {
+            await backend.ExportReadingAsync(id, kind, path, evt => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!ReferenceEquals(exportCancellation, cancellation) || cancellation.IsCancellationRequested) return;
+                if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
+                var message = Text(evt, "message"); if (message != "") status.Text = message;
+            }), cancellation.Token);
+            status.Text = (kind == "bilingual" ? "双语" : "译文") + " PDF 已导出：" + path;
+        }
+        catch (OperationCanceledException) { status.Text = "导出已取消。"; }
+        finally
+        {
+            exportCancellation = null; exportCancel.Visibility = Visibility.Collapsed; progress.Visibility = Visibility.Collapsed;
+            UpdateDocumentState();
+        }
     }
 }

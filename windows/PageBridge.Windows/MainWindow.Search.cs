@@ -16,7 +16,6 @@ public sealed partial class MainWindow
     private readonly Flyout searchResultsFlyout = new();
     private CancellationTokenSource? documentSearchCancellation;
     private int documentSearchGeneration;
-    private bool SearchesTranslation => mode.SelectedIndex == 2 && !ShowingReading;
 
     private void InitializeDocumentSearch()
     {
@@ -32,11 +31,12 @@ public sealed partial class MainWindow
         var close = Tool("close", null, "关闭搜索", () => { HideDocumentSearch(); return Task.CompletedTask; }); Grid.SetColumn(close, 4); documentSearchBar.Children.Add(close);
         Grid.SetRow(documentSearchBar, 2); workspace.Children.Add(documentSearchBar); themedBars.Add(documentSearchBar);
         documentQuery.KeyDown += async (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; await Attempt(SearchDocumentAsync); } else if (e.Key == VirtualKey.Escape) { HideDocumentSearch(); e.Handled = true; } };
+        documentQuery.PlaceholderText = "搜索原文中的文字";
         documentQuery.TextChanged += (_, _) => ResetDocumentSearch();
-        foreach (var pane in new[] { originalPages, translatedPages }) pane.LinkInvoked += async (source, link) => await Attempt(async () =>
+        originalPages.LinkInvoked += async (_, link) => await Attempt(async () =>
         {
-            ActivateVariant(source.Variant);
-            if (Text(link, "kind") == "page") { NavigateReading(source.Variant, link["page"]!.GetValue<int>()); return; }
+            ActivateOriginal();
+            if (Text(link, "kind") == "page") { NavigateReading(link["page"]!.GetValue<int>()); return; }
             if (!Uri.TryCreate(Text(link, "url"), UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http" or "mailto") || uri.UserInfo.Length > 0) return;
             if (!await Launcher.LaunchUriAsync(uri)) throw new InvalidOperationException("无法打开此链接，请检查默认浏览器。");
         });
@@ -46,7 +46,6 @@ public sealed partial class MainWindow
     {
         if (selected is null) return;
         documentSearchBar.Visibility = Visibility.Visible;
-        documentQuery.PlaceholderText = SearchesTranslation ? "搜索译文中的文字" : "搜索原文中的文字";
         documentQuery.Focus(FocusState.Programmatic); documentQuery.SelectAll();
     }
 
@@ -56,25 +55,24 @@ public sealed partial class MainWindow
     {
         documentSearchGeneration++; documentSearchCancellation?.Cancel(); documentSearchCancellation = null;
         searchResultsFlyout.Hide(); searchResultItems.Children.Clear(); searchResultsButton.Content = "结果 0"; searchResultsButton.IsEnabled = false; searchProgress.Text = "";
-        originalPages.SetSearchHits([]); translatedPages.SetSearchHits([]);
-        documentQuery.PlaceholderText = SearchesTranslation ? "搜索译文中的文字" : "搜索原文中的文字";
+        originalPages.SetSearchHits([]);
     }
 
     private async Task SearchDocumentAsync()
     {
         ResetDocumentSearch();
-        string query = documentQuery.Text.Trim(), id = Text(selected, "id"), variant = SearchesTranslation ? "translated" : "original";
+        string query = documentQuery.Text.Trim(), id = Text(selected, "id");
         if (id == "" || query == "") return;
         int generation = documentSearchGeneration, scanned = 0;
         using var cancellation = new CancellationTokenSource(); documentSearchCancellation = cancellation;
-        var hits = new JsonArray(); var pane = variant == "translated" ? translatedPages : originalPages;
+        var hits = new JsonArray(); var pane = originalPages;
         string hash = ""; bool limited = false; int rectangleCount = 0;
         try
         {
             while (true)
             {
                 searchProgress.Text = "正在搜索 · 已检查 " + scanned + " 页";
-                var data = await backend.CallAsync("search_document", new JsonObject { ["document_id"] = id, ["variant"] = variant, ["query"] = query, ["start_page"] = scanned }, cancellation.Token);
+                var data = await backend.CallAsync("search_document", new JsonObject { ["document_id"] = id, ["query"] = query, ["start_page"] = scanned }, cancellation.Token);
                 if (generation != documentSearchGeneration) return;
                 var nextHash = Text(data, "source_sha256");
                 if (hash != "" && hash != nextHash) throw new InvalidOperationException("PDF 内容已变化，请重新搜索。"); hash = nextHash;
@@ -98,7 +96,7 @@ public sealed partial class MainWindow
                 content.Children.Add(new TextBlock { Text = Text(hit, "text"), FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 3 });
                 var button = new Button { Content = content, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(12), Background = Clear, BorderThickness = new Thickness(0) };
                 AutomationProperties.SetName(button, "搜索结果第 " + (hit["page"]!.GetValue<int>() + 1) + " 页");
-                button.Click += (_, _) => { NavigateReading(variant, hit["page"]!.GetValue<int>()); pane.RevealSearchHit(hit); searchResultsFlyout.Hide(); };
+                button.Click += (_, _) => { NavigateReading(hit["page"]!.GetValue<int>()); pane.RevealSearchHit(hit); searchResultsFlyout.Hide(); };
                 searchResultItems.Children.Add(button);
             }
             searchResultsButton.Content = "结果 " + hits.Count; searchResultsButton.IsEnabled = hits.Count > 0;

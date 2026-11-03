@@ -24,7 +24,7 @@ public sealed partial class MainWindow : Window
     private readonly PageNumberInput page = new();
     private readonly TextBlock pageCount = new() { Text = "/ 0 页", VerticalAlignment = VerticalAlignment.Center };
     private readonly ToggleSwitch sync = new() { IsOn = true, OnContent = "", OffContent = "", MinWidth = 0 };
-    private ContinuousPdfPane originalPages = null!, translatedPages = null!, activePages = null!;
+    private ContinuousPdfPane originalPages = null!;
     private readonly Dictionary<string, int> pendingReading = [];
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? readingTimer;
     private bool bindingPages, savingReading, closingAfterReading, allowClose;
@@ -61,19 +61,17 @@ public sealed partial class MainWindow : Window
         zoom.SelectionChanged += (_, _) => { var text = zoom.SelectedItem?.ToString() ?? ""; if (double.TryParse(text.TrimEnd('%'), out var percent)) SetReaderZoom(percent / 100); else if (text == "适合宽度") SetReaderZoom(1); };
         page.ValueChanged += (_, _) => { if (!loading && selected is not null && !double.IsNaN(page.Value)) JumpToPage((int)page.Value); };
         translateButton.Click += async (_, _) => await Attempt(() => RunTranslationAsync(null));
-        foreach (var pane in new[] { originalPages, translatedPages })
-        {
-            pane.Activated += value => ActivateVariant(value.Variant);
-            pane.PositionChanged += ReaderPositionChanged;
-            pane.PreviewError += message => status.Text = "预览加载失败：" + message;
-        }
+        originalPages.Activated += _ => ActivateOriginal();
+        originalPages.PositionChanged += ReaderPositionChanged;
+        originalPages.PreviewError += message => status.Text = "预览加载失败：" + message;
         sync.Toggled += (_, _) => { SynchronizeReaders(); UpdatePDFPaneLabels(); };
-        Closed += (_, _) => { windowClosed = true; updatesPolling?.Cancel(); documentSearchCancellation?.Cancel(); readingTimer?.Stop(); assistantPanel.Dispose(); annotationsPanel.Dispose(); originalPages.Clear(); translatedPages.Clear(); structuredReading.Clear(); backend.Dispose(); };
+        Closed += (_, _) => { windowClosed = true; updatesPolling?.Cancel(); documentSearchCancellation?.Cancel(); readingTimer?.Stop(); assistantPanel.Dispose(); annotationsPanel.Dispose(); originalPages.Clear(); structuredReading.Clear(); backend.Dispose(); };
         AppWindow.Closing += async (_, e) =>
         {
             if (allowClose) return;
             if (updateInstallPreparing) { e.Cancel = true; status.Text = "正在校验更新包，请稍候。"; return; }
             if (translationCancellation is not null || translationPreparing) { e.Cancel = true; status.Text = "请先结束或取消翻译，任务结束后再关闭窗口。"; return; }
+            if (exportCancellation is not null) { e.Cancel = true; status.Text = "请先等待导出完成或取消导出，再关闭窗口。"; return; }
             if (pendingReading.Count == 0 && !savingReading) return;
             e.Cancel = true;
             if (closingAfterReading) return;
@@ -145,7 +143,8 @@ public sealed partial class MainWindow : Window
         }
         loading = false;
     }
-    private static string StatusName(string value) => value switch { "completed" => "已完成", "partial" => "部分完成", "running" => "翻译中", "failed" => "翻译失败", "cancelled" => "已取消", _ => "未翻译" };
+    // A result counts only with a reading draft; anything else reads as untranslated.
+    private static string StatusName(JsonObject? doc) => Text(doc, "status") switch { "completed" or "partial" when Text(doc, "reading_path") == "" => "未翻译", "completed" => "已完成", "partial" => "部分完成", "running" => "翻译中", "failed" => "翻译失败", "cancelled" => "已取消", _ => "未翻译" };
     private async Task OpenAsync(JsonObject doc)
     {
         int generation = ++selectionGeneration;
@@ -154,8 +153,8 @@ public sealed partial class MainWindow : Window
         if (generation != selectionGeneration) return;
         ContinuousPdfPane.Anchor? retainedPosition = Text(selected, "id") == Text(doc, "id") ? ActiveReadingPosition : null;
         bindingPages = true; selected = doc; loading = true; title.Text = Path.GetFileNameWithoutExtension(Text(doc, "name")); subtitle.Text = $"{LanguageName(Text(doc, "source_language"))} → {LanguageName(Text(doc, "target_language"))} · {doc["page_count"]} 页";
-        SelectStructuredOutput(doc);
-        if (mode.SelectedIndex == 2 && !HasTranslation) mode.SelectedIndex = 0;
+        ResetStructuredReading();
+        if (mode.SelectedIndex == 2 && !HasReading) mode.SelectedIndex = 0;
         page.Maximum = Math.Max(1, doc["page_count"]?.GetValue<int>() ?? 1); page.Value = Math.Clamp(doc["current_page"]?.GetValue<int>() ?? 1, 1, page.Maximum);
         pageCount.Text = $"/ {page.Maximum} 页"; loading = false; RefreshList(); UpdateDocumentState(); await RenderAsync(retainedPosition);
         if (generation == selectionGeneration) await LoadReadingAsync();
@@ -168,20 +167,13 @@ public sealed partial class MainWindow : Window
         bindingPages = true;
         try
         {
-            // Each completed translation has its own immutable result path.
-            string revision = Text(doc, "translated_path");
-            await originalPages.BindAsync(id, "original", id + "/original/" + Text(doc, "input_path"), targetPage);
-            if (generation != renderGeneration) return;
-            targetPage = Math.Clamp((int)page.Value, 1, (int)page.Maximum);
-            bool hasTranslation = Text(doc, "translated_path") != "";
-            if (hasTranslation) await translatedPages.BindAsync(id, "translated", id + "/translated/" + revision, targetPage);
-            else translatedPages.Clear();
+            await originalPages.BindAsync(id, id + "/original/" + Text(doc, "input_path"), targetPage);
             if (generation != renderGeneration) return;
             ApplyStructuredVisibility();
             await RefreshStructuredPageAsync();
             if (retainedPosition is { } position)
             {
-                if (ShowingReading) structuredReading.MoveTo(position);
+                if (HasReading) structuredReading.MoveTo(position);
                 originalPages.MoveTo(position);
             }
         }
@@ -195,36 +187,30 @@ public sealed partial class MainWindow : Window
         UpdateModeButtons();
         leftPane.Visibility = mode.SelectedIndex == 2 ? Visibility.Collapsed : Visibility.Visible;
         rightPane.Visibility = mode.SelectedIndex == 0 ? Visibility.Collapsed : Visibility.Visible;
-        originalPages.SetActive(mode.SelectedIndex != 2); translatedPages.SetActive(mode.SelectedIndex != 0 && !ShowingReading);
-        structuredReading.SetActive(mode.SelectedIndex != 0 && ShowingReading);
+        originalPages.SetActive(mode.SelectedIndex != 2);
+        structuredReading.SetActive(mode.SelectedIndex != 0 && HasReading);
         reader.ColumnDefinitions[0].Width = mode.SelectedIndex == 2 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
         reader.ColumnDefinitions[1].Width = mode.SelectedIndex == 0 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        activePages = mode.SelectedIndex == 2 && !ShowingReading ? translatedPages : originalPages;
-        structuredActive = ShowingReading && mode.SelectedIndex == 2;
+        structuredActive = HasReading && mode.SelectedIndex == 2;
         if (!bindingPages && selected is not null)
         {
             if (structuredActive) structuredReading.MoveTo(anchor);
-            else activePages.MoveTo(anchor);
+            else originalPages.MoveTo(anchor);
             SynchronizeReaders();
         }
     }
-    private ContinuousPdfPane OtherPane(ContinuousPdfPane pane) => ReferenceEquals(pane, originalPages) ? translatedPages : originalPages;
     private void JumpToPage(int value)
     {
         value = Math.Clamp(value, 1, (int)page.Maximum);
-        if (ShowingReading && structuredActive) structuredReading.Jump(value);
-        else activePages.Jump(value);
-        if (sync.IsOn && mode.SelectedIndex == 1)
-        {
-            if (ShowingReading) { originalPages.Jump(value); structuredReading.Jump(value); }
-            else OtherPane(activePages).Jump(value);
-        }
+        if (HasReading && structuredActive) structuredReading.Jump(value);
+        else originalPages.Jump(value);
+        if (sync.IsOn && mode.SelectedIndex == 1 && HasReading) { originalPages.Jump(value); structuredReading.Jump(value); }
         if (selected is not null) RememberReading(Text(selected, "id"), value);
         UpdateNavigationPage();
     }
     private void ReaderPositionChanged(ContinuousPdfPane pane)
     {
-        if (bindingPages || selected is null || (ShowingReading && structuredActive) || !ReferenceEquals(activePages, pane)) return;
+        if (bindingPages || selected is null || (HasReading && structuredActive)) return;
         SynchronizeReaders();
         AcceptReadingPosition(pane.CurrentPage);
     }
@@ -300,6 +286,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         if (translationPreparing || selected is null) return;
+        if (exportCancellation is not null) { status.Text = "正在导出 PDF，请完成或取消导出后再翻译。"; return; }
         if (Flag(selected, "trashed")) throw new InvalidOperationException("请先从回收站恢复文档。");
         translationPreparing = true;
         try
@@ -308,7 +295,7 @@ public sealed partial class MainWindow : Window
             if (serviceId == "") { await SettingsAsync(); return; }
             var docId = Text(selected, "id"); var name = Text(selected, "name");
             var choice = retryBlockId is null ? await TranslationDialogAsync(name, services)
-                : new TranslationChoice(Text(selected, "source_language"), Text(selected, "target_language"), null, "reading");
+                : new TranslationChoice(Text(selected, "source_language"), Text(selected, "target_language"), null);
             if (choice is null) return;
             using var cancellation = new CancellationTokenSource();
             translationCancellation = cancellation; translationPreparing = false;
@@ -323,7 +310,7 @@ public sealed partial class MainWindow : Window
                     if (!ReferenceEquals(translationCancellation, cancellation)) return;
                     if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
                     var message = Text(evt, "message"); if (message != "") status.Text = message;
-                }), cancellation.Token, choice.Mode, retryBlockId is null ? null : new[] { retryBlockId });
+                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId });
                 status.Text = cancellation.IsCancellationRequested ? "已取消，保留上次译文" : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成";
             }
             catch (OperationCanceledException) { status.Text = "已取消，保留上次译文"; }
@@ -331,7 +318,7 @@ public sealed partial class MainWindow : Window
             {
                 translationPreparing = true;
                 translationCancellation = null; translateButton.Content = "翻译"; progress.Visibility = Visibility.Collapsed;
-                await ReloadAsync(Text(selected, "id")); if (docId == Text(selected, "id") && HasTranslation) mode.SelectedIndex = 1;
+                await ReloadAsync(Text(selected, "id")); if (docId == Text(selected, "id") && HasReading) mode.SelectedIndex = 1;
             }
         }
         finally { translationPreparing = false; }

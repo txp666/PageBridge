@@ -65,7 +65,7 @@ internal sealed partial class StructuredReadingPane
         string key = id + "/" + revision;
         if (identity == key) return;
         Clear(); identity = key; documentId = id;
-        try { await pages.BindAsync(id, "original", key, page); }
+        try { await pages.BindAsync(id, key, page); }
         catch { identity = ""; throw; }
     }
 
