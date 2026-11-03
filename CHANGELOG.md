@@ -1,5 +1,51 @@
 # 版本记录
 
+## 0.6.1 / build 17 — 批注可右键删除和撤销
+
+- 在原文的高亮、下划线或笔记上右键即可“删除批注”，不必再打开笔记面板。
+- 添加、删除批注和修改笔记都可以撤销与重做：Mac 用 `⌘Z` / `⇧⌘Z`（也在“编辑”菜单中），Windows 用 `Ctrl+Z` / `Ctrl+Y`。
+
+**从 0.5.x 升级请先阅读：0.6.0 的变更**
+
+0.6.0 把翻译统一为原页版式阅读稿一种方式，并让阅读稿可以导出为 PDF。
+
+优点：
+
+- 阅读稿可导出译文 PDF（页数与原文相同，未翻译的页不变）和双语 PDF（每个已翻译的页紧跟在原页之后）。译文是可选择、可搜索的文字，放不下时缩小字号，不截断；导出在本机完成，不需要翻译服务。
+- 应用大幅变小：Mac ZIP 约 230 MB → 60 MB，安装后约 670 MB → 150 MB；Windows 安装器约 200 MB → 90 MB，安装后约 830 MB → 330 MB。
+- 参考文献、脚注、页脚等小字的译文最多缩到原字号的 85%，“放不下”的蓝色标记明显减少。
+- 扫描页和文字页使用同一套解析与翻译流程。
+
+缺点（不兼容变更）：
+
+- 移除“重排 PDF”模式。0.5.x 用该模式生成的译文不再显示（文件保留到删除该文档），需要用阅读模式重新翻译。
+- 译文一侧不能高亮、下划线或加批注，批注只能加在原文 PDF 上；0.5.x 加在译文 PDF 上的批注不再显示。
+- 有文字层的 PDF 也要先下载约 4 GB 的本地识别组件才能翻译。
+- 导出的 PDF 按 PageBridge 自己的排字规则生成，与屏幕上的阅读稿相近，但不逐像素一致。
+
+**English**
+
+- Right-click a highlight, underline or note on the original to delete it, without opening the notes panel.
+- Adding or deleting annotations and editing notes can be undone and redone: `⌘Z` / `⇧⌘Z` on the Mac (also in the Edit menu), `Ctrl+Z` / `Ctrl+Y` on Windows.
+
+**Upgrading from 0.5.x? Read the 0.6.0 changes first**
+
+0.6.0 made the original-layout reading draft the only translation mode and lets reading drafts be exported as PDF.
+
+Advantages:
+
+- Export reading drafts to a translated PDF (same page count, untranslated pages unchanged) or a bilingual PDF (each translated page right after its original). The translation is real, selectable, searchable text, shrunk to fit rather than truncated; export runs locally without a translation service.
+- Much smaller apps: Mac ZIP about 230 → 60 MB, installed about 670 → 150 MB; Windows installer about 200 → 90 MB, installed about 830 → 330 MB.
+- Small print (references, footnotes, footers) may shrink to 85% of its original size, so far fewer blocks show the blue "doesn't fit" marker.
+- Scanned and text pages go through the same parsing and translation path.
+
+Disadvantages (breaking changes):
+
+- The Reflowed PDF (重排 PDF) mode is removed. Translations made in that mode by 0.5.x are no longer shown (their files stay until the document is deleted); translate again in reading mode.
+- The translation side cannot be highlighted, underlined or annotated; annotations go on the original PDF only, and 0.5.x annotations on translated PDFs are no longer shown.
+- PDFs with a text layer also need the roughly 4 GB local recognition component before translating.
+- Exported PDFs use PageBridge's own typesetting: close to the on-screen reading draft, but not pixel-identical.
+
 ## 0.6.0 / build 16 — 只保留原页版式阅读，阅读稿可导出 PDF
 
 本版把翻译统一为原页版式阅读稿一种方式，并让阅读稿可以导出为 PDF。

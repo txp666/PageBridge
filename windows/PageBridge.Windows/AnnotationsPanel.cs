@@ -32,6 +32,8 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
 
     internal bool IsBusy => busy || editing;
     internal event Action<string, JsonArray>? AnnotationsChanged;
+    /// <summary>Document id, PDF revision and the change this panel just saved.</summary>
+    internal event Action<string, string, AnnotationStep>? StepCompleted;
 
     internal AnnotationsPanel(BackendClient backend,
         Func<ContentDialog, Task<ContentDialogResult>> showDialog,
@@ -118,6 +120,22 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
         if (annotation is not null) await EditAsync((JsonObject)annotation.DeepClone(), false);
     }
 
+    /// <summary>The PDF context menu deletes through the same path as a row's trash button.</summary>
+    internal async Task<bool> DeleteAnnotationAsync(string id)
+    {
+        if (disposed || busy || editing || sourceSHA.Length == 0) return false;
+        if (annotations.OfType<JsonObject>().FirstOrDefault(item => Text(item, "id") == id) is not { } annotation) return false;
+        await RunAsync(() => DeleteAsync((JsonObject)annotation.DeepClone()), rethrow: true);
+        return true;
+    }
+
+    /// <summary>Shows an envelope the window saved for this document, such as an undo step.</summary>
+    internal bool Accept(string id, JsonNode? envelope, string message)
+    {
+        if (disposed || documentId != id) return false;
+        ApplyEnvelope(envelope); SetStatus(message); return true;
+    }
+
     private async Task EditAsync(JsonObject annotation, bool isNew)
     {
         if (disposed || editing || sourceSHA.Length == 0 || XamlRoot is null) return;
@@ -168,7 +186,11 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
             };
             if (await showDialog(dialog) == ContentDialogResult.Primary && saved is not null && Current(version, id))
             {
+                var known = annotations.OfType<JsonObject>().Select(item => Text(item, "id")).ToHashSet();
                 ApplyEnvelope(saved); SetStatus("笔记已保存");
+                var after = annotations.OfType<JsonObject>().FirstOrDefault(item => isNew ? !known.Contains(Text(item, "id")) : Text(item, "id") == Text(annotation, "id"));
+                if (after is not null && (isNew || Text(after, "note") != Text(annotation, "note")))
+                    StepCompleted?.Invoke(id, sourceSHA, new AnnotationStep(isNew ? null : annotation, (JsonObject)after.DeepClone()));
             }
         }
         finally { editing = false; UpdateEnabled(); }
@@ -178,7 +200,7 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     {
         int version = generation; string id = documentId;
         var result = await backend.CallAsync("delete_annotation", new JsonObject { ["document_id"] = id, ["source_sha256"] = sourceSHA, ["annotation_id"] = Text(annotation, "id") });
-        if (Current(version, id)) { ApplyEnvelope(result); SetStatus("批注已删除"); }
+        if (Current(version, id)) { ApplyEnvelope(result); SetStatus("批注已删除"); StepCompleted?.Invoke(id, sourceSHA, new AnnotationStep(annotation, null)); }
     }
 
     private Task ExportAsync(string kind) => sourceSHA.Length > 0 ? export(kind, sourceSHA) : Task.CompletedTask;
@@ -252,14 +274,14 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
         AutomationProperties.SetAutomationId(button, id); button.Click += async (_, _) => await RunAsync(action); return button;
     }
 
-    private async Task RunAsync(Func<Task> action)
+    private async Task RunAsync(Func<Task> action, bool rethrow = false)
     {
         if (disposed || busy) return;
         string expectedDocument = documentId;
         busy = true; SetStatus(""); UpdateEnabled();
         try { await action(); }
         catch (OperationCanceledException) { }
-        catch (Exception error) { if (!disposed && documentId == expectedDocument) SetStatus(error.Message); }
+        catch (Exception error) when (!rethrow) { if (!disposed && documentId == expectedDocument) SetStatus(error.Message); }
         finally { busy = false; UpdateEnabled(); }
     }
 

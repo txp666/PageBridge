@@ -394,9 +394,14 @@ def dispatch_reading(store, request):
                 raise AppError("批注内容无效。")
             identifier = candidate.get("id")
             previous = next((item for item in items if item["id"] == identifier), None)
-            if identifier is not None and previous is None:
+            # Undo brings a deleted annotation back with its own id and times,
+            # validated like a stored one.
+            restore = request.get("restore") is True
+            if restore and (identifier is None or previous is not None):
+                raise AppError("只能恢复已删除的批注。")
+            if identifier is not None and previous is None and not restore:
                 raise AppError("批注已不存在，请刷新后重试。")
-            value = _normalise_annotation(candidate, pdf, previous=previous)
+            value = _normalise_annotation(candidate, pdf, previous=previous, from_storage=restore)
             if value["kind"] == "bookmark" and any(item["kind"] == "bookmark" and item["page"] == value["page"] and item["id"] != value["id"] for item in items):
                 raise AppError("该页已有书签。")
             items = [value if item["id"] == identifier else item for item in items] if previous else [*items, value]

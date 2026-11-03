@@ -17,6 +17,8 @@ final class ReaderWorkspace: ObservableObject {
     private var selectionRegions: [AnnotationRegion] = []
     private var reader: WeakReader?
     private var lastDocumentKey = ""
+    /// The window's undo manager. Text fields share it, so their typing undoes first.
+    weak var undoManager: UndoManager?
     @MainActor private final class WeakReader {
         weak var view: PDFView?
         weak var pdf: PDFDocument?
@@ -41,6 +43,7 @@ final class ReaderWorkspace: ObservableObject {
         document = record
         guard key != lastDocumentKey else { return }
         lastDocumentKey = key
+        undoManager?.removeAllActions(withTarget: self)
         selectionText = ""; selectionRegions = []
         source = record.originalURL
         binding = nil; items = []
@@ -55,6 +58,12 @@ final class ReaderWorkspace: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
         // The reader document may still be from the previous selection. Registration
         // will apply overlays only after PDFReaderView opens the matching URL.
+    }
+    /// Nothing is selected: a pending undo must not reach the closed document.
+    func close() {
+        lastDocumentKey = ""; document = nil; source = nil; binding = nil; items = []
+        selectionText = ""; selectionRegions = []
+        undoManager?.removeAllActions(withTarget: self)
     }
 
     func register(_ view: PDFView, documentID: UUID, url: URL) {
@@ -93,7 +102,7 @@ final class ReaderWorkspace: ObservableObject {
     private func addMarkup(_ kind: ReadingAnnotationKind) {
         guard canAnnotateSelection else { return }
         let annotation = ReadingAnnotation(kind: kind, page: selectionRegions[0].page, regions: selectionRegions, selectedText: selectionText)
-        if save(items + [annotation]) { reader?.view?.clearSelection() }
+        if save(items + [annotation], action: kind.title) { reader?.view?.clearSelection() }
     }
     func addNote() {
         guard hasDocument else { return }
@@ -106,24 +115,24 @@ final class ReaderWorkspace: ObservableObject {
               binding == revision,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let item = ReadingAnnotation(kind: .note, page: page, regions: regions, selectedText: quote, note: text)
-        _ = save(items + [item])
+        _ = save(items + [item], action: item.kind.title)
     }
     /// Saves an assistant answer or supplied text without opening another dialog.
     func addNote(text: String) {
         guard hasDocument, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let regions = canAnnotateSelection ? selectionRegions : []
         let item = ReadingAnnotation(kind: .note, page: regions.first?.page ?? currentPage, regions: regions, selectedText: canAnnotateSelection ? selectionText : "", note: text)
-        _ = save(items + [item])
+        _ = save(items + [item], action: item.kind.title)
     }
     func toggleBookmark() {
         guard hasDocument else { return }
         var list = items
         if list.contains(where: { $0.kind == .bookmark && $0.page == currentPage }) { list.removeAll { $0.kind == .bookmark && $0.page == currentPage } }
         else { list.append(ReadingAnnotation(kind: .bookmark, page: currentPage)) }
-        _ = save(list)
+        _ = save(list, action: ReadingAnnotationKind.bookmark.title)
     }
     func delete(_ item: ReadingAnnotation) {
-        _ = save(items.filter { $0.id != item.id })
+        _ = save(items.filter { $0.id != item.id }, action: "删除批注")
     }
     func edit(_ item: ReadingAnnotation) {
         let revision = binding
@@ -132,24 +141,38 @@ final class ReaderWorkspace: ObservableObject {
         var list = items
         guard let index = list.firstIndex(where: { $0.id == item.id }) else { return }
         list[index].note = text; list[index].modifiedAt = Date()
-        _ = save(list)
+        _ = save(list, action: "编辑笔记")
     }
     func edit(_ annotation: PDFAnnotation, in view: PDFView, documentID: UUID) {
-        guard document?.id == documentID, reader?.view === view,
-              let pdf = view.document, let id = PDFAnnotationRenderer.overlayID(for: annotation, in: pdf),
-              let item = items.first(where: { $0.id == id }) else { return }
+        guard let item = item(for: annotation, in: view, documentID: documentID) else { return }
         currentPage = item.page
         edit(item)
+    }
+    func delete(_ annotation: PDFAnnotation, in view: PDFView, documentID: UUID) {
+        if let item = item(for: annotation, in: view, documentID: documentID) { delete(item) }
+    }
+    private func item(for annotation: PDFAnnotation, in view: PDFView, documentID: UUID) -> ReadingAnnotation? {
+        guard document?.id == documentID, reader?.view === view,
+              let pdf = view.document, let id = PDFAnnotationRenderer.overlayID(for: annotation, in: pdf) else { return nil }
+        return items.first { $0.id == id }
     }
     func exportAnnotatedPDF() { export(isPDF: true) }
     func exportNotes() { export(isPDF: false) }
 
-    @discardableResult private func save(_ list: [ReadingAnnotation]) -> Bool {
+    @discardableResult private func save(_ list: [ReadingAnnotation], action: String) -> Bool {
         guard let store, let binding, let source else { return false }
+        let previous = items
         do {
             try store.save(list, for: binding, sourceURL: source)
-            items = list; render(); return true
+            items = list; render()
         } catch { errorMessage = error.localizedDescription; return false }
+        // Undo saves the exact previous list, which in turn registers the redo.
+        // Switching documents clears these; the binding check keeps a stale one inert.
+        undoManager?.registerUndo(withTarget: self) { workspace in
+            if workspace.binding == binding { workspace.save(previous, action: action) }
+        }
+        undoManager?.setActionName(action)
+        return true
     }
     private func render() {
         guard let reader, reader.url == source, let pdf = reader.view?.document,

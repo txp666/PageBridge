@@ -171,6 +171,22 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(deleted["annotations"], [])
         self.assertEqual(sha256(self.doc["input_path"]), before)
 
+    def test_undo_restores_a_deleted_annotation_with_its_id_and_times(self):
+        regions = [dict(page=0, rect=self.call("page_text", page=0)["tokens"][0]["rect"])]
+        saved = self.add("highlight", regions=regions, selected_text="S", note="Keep")["annotations"][0]
+        digest = self.bind()
+        self.call("delete_annotation", source_sha256=digest, annotation_id=saved["id"])
+        for value in (dict(saved, id="not-a-uuid"), dict(saved, created_at=float("nan")),
+                      dict(saved, regions=[dict(page=0, rect=dict(x=590, y=10, width=50, height=4))]),
+                      {key: value for key, value in saved.items() if key != "id"}):
+            with self.assertRaises(AppError):
+                self.call("save_annotation", source_sha256=digest, annotation=value, restore=True)
+        self.assertEqual(self.call("annotations")["annotations"], [])
+        restored = self.call("save_annotation", source_sha256=digest, annotation=saved, restore=True)
+        self.assertEqual(restored["annotations"], [saved])
+        with self.assertRaises(AppError):
+            self.call("save_annotation", source_sha256=digest, annotation=saved, restore=True)
+
     def test_bookmark_summary_and_duplicate_guard(self):
         result = self.add("bookmark", page=1)
         self.assertEqual(result["bookmarks"], [1])

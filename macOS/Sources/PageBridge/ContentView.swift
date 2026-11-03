@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var scrollSynchronizer = ReadingScrollSynchronizer()
     @StateObject private var workspace = ReaderWorkspace()
     @StateObject private var paperAssistant = PaperAssistantModel()
+    @Environment(\.undoManager) private var undoManager
     @AppStorage("PageBridge.showPageNavigation") private var showsNavigation = true
     @AppStorage("PageBridge.assistantServiceID") private var assistantServiceID = ""
     @State private var inspector: ReaderInspector?
@@ -67,6 +68,7 @@ struct ContentView: View {
             Button("好", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
         .onAppear { openReadingWorkspace() }
+        .onChange(of: undoManager, initial: true) { _, value in workspace.undoManager = value }
         .onChange(of: model.selectedID) { _, _ in
             scrollSynchronizer.reset()
             pageNavigation = PDFPageNavigation(page: model.page)
@@ -363,7 +365,7 @@ struct ContentView: View {
     }
 
     private func openReadingWorkspace() {
-        guard let document = model.selectedDocument else { return }
+        guard let document = model.selectedDocument else { workspace.close(); return }
         workspace.open(document: document)
         workspace.currentPage = model.page
         if let error = workspace.errorMessage { model.errorMessage = error; workspace.errorMessage = nil }

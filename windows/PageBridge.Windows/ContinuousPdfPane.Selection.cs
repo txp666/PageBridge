@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using global::Windows.ApplicationModel.DataTransfer;
@@ -20,6 +21,7 @@ internal sealed partial class ContinuousPdfPane
     internal PdfSelection? Selection { get; private set; }
     internal event Action<ContinuousPdfPane>? SelectionChanged;
     internal event Action<ContinuousPdfPane, string>? AnnotationInvoked;
+    internal event Action<ContinuousPdfPane, string>? AnnotationDeleteRequested;
     internal event Action<ContinuousPdfPane, string>? SelectionAction;
     internal event Action<ContinuousPdfPane, JsonNode>? LinkInvoked;
 
@@ -54,7 +56,15 @@ internal sealed partial class ContinuousPdfPane
             menu.Items.Add(item);
         }
         menu.Opening += (_, _) => { foreach (var item in menu.Items.OfType<MenuFlyoutItem>()) item.IsEnabled = Selection is not null || item.Text == "添加笔记"; };
-        view.Paper.ContextFlyout = menu;
+        // An annotation under the pointer gets its own menu; elsewhere the selection menu.
+        view.Paper.ContextRequested += (_, e) =>
+        {
+            e.Handled = true;
+            if (!e.TryGetPosition(view.Paper, out var point)) { menu.ShowAt(view.Paper); return; }
+            var options = new FlyoutShowOptions { Position = point };
+            if ((NoteMarkerAt(e.OriginalSource as DependencyObject, view) ?? AnnotationAt(index, view, point)) is { Length: > 0 } id) AnnotationMenu(id).ShowAt(view.Paper, options);
+            else menu.ShowAt(view.Paper, options);
+        };
         view.Paper.PointerPressed += async (_, e) =>
         {
             var point = e.GetCurrentPoint(view.Paper);
@@ -90,15 +100,42 @@ internal sealed partial class ContinuousPdfPane
         view.Paper.DoubleTapped += (_, e) =>
         {
             var point = e.GetPosition(view.Paper); double scale = view.Paper.Width / sizes[index].Width;
-            foreach (var item in annotationItems)
-                if (item?["regions"] is JsonArray regions && regions.Any(r => r?["page"]?.GetValue<int>() == index && PdfRect.Read(r?["rect"]).Contains(point.X / scale, point.Y / scale)))
-                { AnnotationInvoked?.Invoke(this, item?["id"]?.GetValue<string>() ?? ""); e.Handled = true; return; }
+            if (AnnotationAt(index, view, point) is { } annotation) { AnnotationInvoked?.Invoke(this, annotation); e.Handled = true; return; }
             if (view.Tokens is not { Count: > 0 } tokens) return;
             Activated?.Invoke(this); int first = Nearest(tokens, point.X / scale, point.Y / scale), last = first;
             while (first > 0 && tokens[first - 1].Line == tokens[first].Line && !string.IsNullOrWhiteSpace(tokens[first - 1].Text)) first--;
             while (last + 1 < tokens.Count && tokens[last + 1].Line == tokens[last].Line && !string.IsNullOrWhiteSpace(tokens[last + 1].Text)) last++;
             CommitSelection(index, view, first, last); e.Handled = true;
         };
+    }
+
+    private string? AnnotationAt(int index, PageView view, Point point)
+    {
+        double scale = view.Paper.Width / sizes[index].Width;
+        foreach (var item in annotationItems)
+            if (item?["regions"] is JsonArray regions && regions.Any(r => r?["page"]?.GetValue<int>() == index && PdfRect.Read(r?["rect"]).Contains(point.X / scale, point.Y / scale)))
+                return item?["id"]?.GetValue<string>() ?? "";
+        return null;
+    }
+
+    private static string? NoteMarkerAt(DependencyObject? source, PageView view)
+    {
+        for (var node = source; node is not null && !ReferenceEquals(node, view.Paper); node = VisualTreeHelper.GetParent(node))
+            if (node is Button { Tag: string id }) return id;
+        return null;
+    }
+
+    private MenuFlyout AnnotationMenu(string id)
+    {
+        var menu = new MenuFlyout();
+        foreach (var (label, automation, delete) in new[] { ("编辑笔记…", "AnnotationMenuEdit", false), ("删除批注", "AnnotationMenuDelete", true) })
+        {
+            var item = new MenuFlyoutItem { Text = label };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(item, automation);
+            item.Click += (_, _) => { Activated?.Invoke(this); (delete ? AnnotationDeleteRequested : AnnotationInvoked)?.Invoke(this, id); };
+            menu.Items.Add(item);
+        }
+        return menu;
     }
 
     private void AttachSelectionKeyboard()
@@ -213,7 +250,7 @@ internal sealed partial class ContinuousPdfPane
                 var first = regions.FirstOrDefault(r => r?["page"]?.GetValue<int>() == index);
                 var rect = first is null ? new PdfRect(18, 18, 20, 20) : PdfRect.Read(first["rect"]);
                 double scale = views[index].Paper.Width / sizes[index].Width;
-                var button = new Button { Content = "▤", Width = 22, Height = 22, MinHeight = 0, MinWidth = 0, Padding = new Thickness(0), FontSize = 14, Foreground = new SolidColorBrush(Colors.Black), Background = new SolidColorBrush(Colors.Gold), BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(4) };
+                var button = new Button { Tag = id, Content = "▤", Width = 22, Height = 22, MinHeight = 0, MinWidth = 0, Padding = new Thickness(0), FontSize = 14, Foreground = new SolidColorBrush(Colors.Black), Background = new SolidColorBrush(Colors.Gold), BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(4) };
                 ToolTipService.SetToolTip(button, item?["note"]?.GetValue<string>() ?? "编辑笔记");
                 Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, "编辑第 " + (index + 1) + " 页笔记");
                 button.Click += (_, _) => { Activated?.Invoke(this); AnnotationInvoked?.Invoke(this, id); };

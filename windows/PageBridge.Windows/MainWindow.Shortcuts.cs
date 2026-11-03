@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using global::Windows.System;
 
@@ -27,6 +28,12 @@ public sealed partial class MainWindow
         AddShortcut(VirtualKey.Add, VirtualKeyModifiers.Control, () => ZoomBy(.25), ReaderAvailable);
         AddShortcut((VirtualKey)189, VirtualKeyModifiers.Control, () => ZoomBy(-.25), ReaderAvailable);
         AddShortcut(VirtualKey.Subtract, VirtualKeyModifiers.Control, () => ZoomBy(-.25), ReaderAvailable);
+
+        // A focused text field keeps its own undo.
+        bool AnnotationHistoryAvailable() => ReaderAvailable() && FocusManager.GetFocusedElement(root.XamlRoot) is not (TextBox or PasswordBox or RichEditBox);
+        AddShortcut(VirtualKey.Z, VirtualKeyModifiers.Control, () => StepAnnotationsAsync(false), AnnotationHistoryAvailable);
+        AddShortcut(VirtualKey.Y, VirtualKeyModifiers.Control, () => StepAnnotationsAsync(true), AnnotationHistoryAvailable);
+        AddShortcut(VirtualKey.Z, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => StepAnnotationsAsync(true), AnnotationHistoryAvailable);
     }
 
     private void AddShortcut(VirtualKey key, VirtualKeyModifiers modifiers, Func<Task> action, Func<bool>? available = null)
