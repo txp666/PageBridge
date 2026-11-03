@@ -1,11 +1,10 @@
 import AppKit
 import PageBridgeCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @StateObject private var scrollSynchronizer = PDFScrollSynchronizer()
+    @StateObject private var scrollSynchronizer = ReadingScrollSynchronizer()
     @StateObject private var workspace = ReaderWorkspace()
     @StateObject private var paperAssistant = PaperAssistantModel()
     @AppStorage("PageBridge.showPageNavigation") private var showsNavigation = true
@@ -129,7 +128,7 @@ struct ContentView: View {
                     }
                     HStack(spacing: 1) {
                         if effectiveMode(document) != .translated {
-                            pane(document.originalURL, title: "原文", document: document)
+                            pane(document.originalURL, variant: .original, document: document)
                         }
                         if effectiveMode(document) == .dual { Divider() }
                         if effectiveMode(document) != .original {
@@ -146,7 +145,7 @@ struct ContentView: View {
                                         pageNavigation = PDFPageNavigation(page: page, sourceBounds: bbox)
                                     })
                             } else if let url = readableTranslation(document) {
-                                pane(url, title: "译文", document: document)
+                                pane(url, variant: .translated, document: document)
                             }
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -223,7 +222,7 @@ struct ContentView: View {
                 Button("阅读笔记（Markdown）…") { workspace.exportNotes() }
                 Divider()
                 Button("在 Finder 中显示输出") { model.openOutputFolder() }
-                    .disabled(!document.hasTranslation && document.bilingualURL == nil)
+                    .disabled(!document.hasTranslation)
             } label: {
                 Text("导出 PDF")
             }
@@ -266,25 +265,24 @@ struct ContentView: View {
         .padding(2).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
     }
 
-    private func pane(_ url: URL, title: String, document: DocumentRecord) -> some View {
+    private func pane(_ url: URL, variant: PDFDocumentVariant, document: DocumentRecord) -> some View {
         VStack(spacing: 0) {
             if effectiveMode(document) == .dual {
                 HStack {
-                    Text(title).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+                    Text(variant.title).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
                     Spacer()
-                    Text(title == "原文" ? languageName(document.sourceLanguage) : languageName(document.targetLanguage) + (model.syncScrolling ? "" : " · 第 \(independentTranslatedPage) 页"))
+                    Text(variant == .original ? languageName(document.sourceLanguage) : languageName(document.targetLanguage) + (model.syncScrolling ? "" : " · 第 \(independentTranslatedPage) 页"))
                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                 }.lineLimit(1).padding(.horizontal, 16).frame(height: 22)
             }
-            PDFReaderView(url: url, page: title == "译文" && effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
+            PDFReaderView(url: url, page: variant == .translated && effectiveMode(document) == .dual && !model.syncScrolling ? $independentTranslatedPage : $model.page,
                           navigation: pageNavigation,
-                          acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual || navigationVariant == (title == "译文" ? .translated : .original),
+                          acceptsNavigation: model.syncScrolling || effectiveMode(document) != .dual || navigationVariant == variant,
                           zoom: model.zoom,
                           synchronizesScrolling: model.syncScrolling && effectiveMode(document) == .dual,
                           synchronizer: scrollSynchronizer,
                           searchQuery: model.searchPresented ? model.searchQuery : "",
-                          workspace: workspace, documentID: document.id,
-                          variant: title == "译文" ? .translated : .original)
+                          workspace: workspace, documentID: document.id, variant: variant)
         }
     }
 
@@ -525,17 +523,11 @@ struct ContentView: View {
     }
 
     private func canExport(_ kind: ExportKind, document: DocumentRecord) -> Bool {
-        let url: URL?
-        switch kind {
-        case .original: url = document.originalURL
-        case .translated: url = document.translatedURL
-        case .bilingual: url = document.bilingualURL
-        }
-        return url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        document.url(for: kind).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 
     private func languageName(_ code: String) -> String {
-        ["en": "英语", "zh": "简体中文", "zh-TW": "繁体中文", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语", "es": "西班牙语", "ru": "俄语"][code] ?? code
+        TranslationSheet.languages.first { $0.0 == code }?.1 ?? code
     }
 }
 

@@ -18,7 +18,7 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
     public var isPartial: Bool { status == "partial" || failedBlockCount > 0 || failedPageCount > 0 }
     public func page(_ number: Int) -> StructuredReadingPage? { pages.first { $0.pageNumber == number } }
 
-    public static func load(_ url: URL, for document: DocumentRecord, verifySource: Bool = true) throws -> Self {
+    public static func load(_ url: URL, for document: DocumentRecord) throws -> Self {
         let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard info.isRegularFile == true, info.isSymbolicLink != true,
               let size = info.fileSize, size > 0, size <= 64 * 1024 * 1024 else {
@@ -26,7 +26,7 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
         }
         let reading = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
         try reading.validate(for: document)
-        if verifySource, try DocumentRepository.sha256(document.originalURL) != document.inputSHA256 {
+        if try DocumentRepository.sha256(document.originalURL) != document.inputSHA256 {
             throw BridgeError.message("原 PDF 已发生变化，无法关联这份阅读稿。")
         }
         return reading
@@ -141,7 +141,6 @@ public struct StructuredReadingBlock: Codable, Sendable, Equatable, Identifiable
 
 public struct StructuredReadingInlineMath: Codable, Sendable, Equatable {
     public var token: String
-    public var latex: String
     public var bbox: [Double]
 }
 

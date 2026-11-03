@@ -88,7 +88,7 @@ public struct TranslationFailureSummary: Codable, Equatable, Sendable {
         return "\(unresolvedCount) 段未通过完整性校验（已通过 \(validatedParagraphs)/\(preparedParagraphs)）。\(detail)本次未提交译文；\(result)"
     }
 
-    /// Older workers may only return a generic integrity error. Do not fabricate
+    /// Without a retained report the worker error is generic. Do not fabricate
     /// counts or claim a previous successful result when none exists.
     public static func fallbackMessage(_ error: String, hasPreviousResult: Bool) -> String {
         guard error.contains("部分段落未通过译文完整性校验") else { return error }

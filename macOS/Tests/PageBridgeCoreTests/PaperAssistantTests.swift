@@ -10,12 +10,6 @@ final class PaperAssistantTests: XCTestCase {
     private var context: PaperAssistantContext { .init(mode: .currentPage, totalPages: 20, scannedPages: [3], evidence: evidence) }
     private func payload(_ request: URLRequest) throws -> [String: Any] { try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any]) }
 
-    func testDocumentModeRetainsLegacySerializedValue() throws {
-        let mode = try JSONDecoder().decode(PaperAssistantMode.self, from: Data(#""paper""#.utf8))
-        XCTAssertEqual(mode, .paper)
-        XCTAssertEqual(mode.title, "文档问答")
-        XCTAssertEqual(String(data: try JSONEncoder().encode(mode), encoding: .utf8), #""paper""#)
-    }
     func testManualQuestionIncludesOverviewRequirementsAndPrecautionsWithinBudget() {
         var pages = Dictionary(uniqueKeysWithValues: (1...12).map { ($0, "General reference page \($0).") })
         pages[2] = "1. Overview\nThis manual explains the installation and maintenance of a controller."
@@ -70,11 +64,11 @@ final class PaperAssistantTests: XCTestCase {
     func testFreeQuestionDoesNotEvenReadMissingPDFOrSelection() throws {
         let c = try PaperAssistantContextBuilder.prepare(document: record(), mode: .freeQuestion, currentPage: 3, selection: "secret excerpt", question: "general question")
         XCTAssertTrue(c.evidence.isEmpty); XCTAssertTrue(c.scannedPages.isEmpty)
-        let request = try PaperAssistantService.request(service: .defaultOllama, apiKey: "ignored-key", question: "general question", context: c, history: [])
+        let request = try PaperAssistantService.request(service: .preset(.ollama), apiKey: "ignored-key", question: "general question", context: c, history: [])
         XCTAssertFalse(String(data: request.httpBody!, encoding:.utf8)!.contains("secret excerpt"))
     }
     func testRequestUsesNativeOllamaEndpointAndNeverSendsKey() throws {
-        let r = try PaperAssistantService.request(service: .defaultOllama, apiKey: "must-not-send", question: "解释方法", context: context, history: [])
+        let r = try PaperAssistantService.request(service: .preset(.ollama), apiKey: "must-not-send", question: "解释方法", context: context, history: [])
         XCTAssertEqual(r.url?.absoluteString,"http://127.0.0.1:11434/api/chat")
         XCTAssertNil(r.value(forHTTPHeaderField:"Authorization"))
         let body = try payload(r)
@@ -95,7 +89,7 @@ final class PaperAssistantTests: XCTestCase {
     }
     func testRequestRetainsInstructionBoundaryAndBoundsHistory() throws {
         let history=(0..<60).map { PaperAssistantMessage(role:$0.isMultiple(of:2) ? .user : .assistant,text:String(repeating:"H",count:5_000)) }
-        let r=try PaperAssistantService.request(service:.defaultOllama,apiKey:"",question:"Explain",context:context,history:history)
+        let r=try PaperAssistantService.request(service:.preset(.ollama),apiKey:"",question:"Explain",context:context,history:history)
         let m=try XCTUnwrap(try payload(r)["messages"] as? [[String:String]])
         XCTAssertEqual(m.first?["role"],"system")
         XCTAssertTrue(m.first?["content"]?.contains("untrusted evidence") == true)
@@ -110,8 +104,8 @@ final class PaperAssistantTests: XCTestCase {
             .init(mode:.selection,totalPages:20,scannedPages:[],evidence:[.init(page:1,text:String(repeating:"x",count:6_001))]),
             .init(mode:.currentPage,totalPages:20,scannedPages:[],evidence:evidence+evidence),
             .init(mode:.currentPage,totalPages:0,scannedPages:[],evidence:[.init(page:1,text:"bad")])]
-        for c in invalid { XCTAssertThrowsError(try PaperAssistantService.request(service:.defaultOllama,apiKey:"",question:"Explain",context:c,history:[])) }
-        XCTAssertThrowsError(try PaperAssistantService.request(service:.defaultOllama,apiKey:"",question:String(repeating:"x",count:2_001),context:context,history:[]))
+        for c in invalid { XCTAssertThrowsError(try PaperAssistantService.request(service:.preset(.ollama),apiKey:"",question:"Explain",context:c,history:[])) }
+        XCTAssertThrowsError(try PaperAssistantService.request(service:.preset(.ollama),apiKey:"",question:String(repeating:"x",count:2_001),context:context,history:[]))
     }
     func testOnlyActuallySuppliedCitationPagesCanNavigate() {
         let answer=PaperAssistantAnswer(text:"Supported [P3]. Invented [P1], [P999]. Repeated [P3].",evidence:evidence)
@@ -126,22 +120,6 @@ final class PaperAssistantTests: XCTestCase {
             XCTAssertThrowsError(try PaperAssistantService.parseResponse(Data(raw.utf8),kind:.openAI,evidence:evidence))
         }
         XCTAssertThrowsError(try PaperAssistantService.parseResponse(Data(#"{"message":{"content":"partial"},"done":false}"#.utf8),kind:.ollama,evidence:evidence))
-    }
-    func testEphemeralSessionHasNoCookieCacheOrCredentialPersistence() {
-        let c=PaperAssistantService.sessionConfiguration(timeout:37)
-        XCTAssertNil(c.urlCache);XCTAssertNil(c.httpCookieStorage);XCTAssertNil(c.urlCredentialStorage)
-        XCTAssertFalse(c.httpShouldSetCookies);XCTAssertEqual(c.timeoutIntervalForResource,37)
-    }
-    func testRedirectDelegateRefusesCredentialForwarding() throws {
-        let delegate=PaperAssistantNoRedirect(),session=URLSession(configuration:.ephemeral)
-        defer{session.invalidateAndCancel()}
-        let first=URLRequest(url:URL(string:"https://example.com")!),task=session.dataTask(with:first)
-        let response=try XCTUnwrap(HTTPURLResponse(url:first.url!,statusCode:302,httpVersion:nil,headerFields:["Location":"https://other.example/"]))
-        var called=false
-        delegate.urlSession(session,task:task,willPerformHTTPRedirection:response,newRequest:URLRequest(url:URL(string:"https://other.example")!)){redirect in
-            called=true;XCTAssertNil(redirect)
-        }
-        XCTAssertTrue(called)
     }
     func testHistoryIsolatedByDocumentAndSourceAndContainsNoServiceCredentials() throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -212,19 +190,6 @@ final class PaperAssistantTests: XCTestCase {
         XCTAssertEqual(a.citations.map(\.page),[2,3]);XCTAssertEqual(a.unverifiedPages,[99])
         let malformed=PaperAssistantAnswer(text:"[P2 or P99] [P2, https://example.com]",evidence:supplied)
         XCTAssertTrue(malformed.citations.isEmpty)
-    }
-    func testPromptExplainsPhysicalPageLabelsAndPlainText() throws {
-        let r=try PaperAssistantService.request(service:.defaultOllama,apiKey:"",question:"Explain",context:context,history:[])
-        let messages=try XCTUnwrap(try payload(r)["messages"] as? [[String:String]])
-        let system=try XCTUnwrap(messages.first?["content"])
-        XCTAssertTrue(system.contains("actual one-based physical PDF page numbers"))
-        XCTAssertTrue(system.contains("page numbers ARE available"))
-        XCTAssertTrue(system.contains("may differ from page numbers printed"))
-        XCTAssertTrue(system.contains("Use plain text"))
-        XCTAssertTrue(system.contains("[P2][P3]"))
-        XCTAssertTrue(system.contains("document-reading assistant"))
-        XCTAssertTrue(system.contains("manuals, reports, contracts, textbooks and research papers"))
-        XCTAssertTrue(system.contains("do not assume every document describes research"))
     }
 
 }

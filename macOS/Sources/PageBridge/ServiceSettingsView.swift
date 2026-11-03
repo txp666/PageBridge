@@ -4,8 +4,8 @@ import PageBridgeCore
 @MainActor
 struct ServiceSettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var draft = ServiceConfiguration.defaultOllama
-    @State private var baseline = ServiceConfiguration.defaultOllama
+    @State private var draft = ServiceConfiguration.preset(.ollama)
+    @State private var baseline = ServiceConfiguration.preset(.ollama)
     @State private var apiKey = ""
     @State private var baselineKey = ""
     @State private var showKey = false
@@ -466,11 +466,8 @@ struct ServiceSettingsView: View {
             if model.services.contains(where: { $0.id != clean.id && $0.name == clean.name }) {
                 formError = "配置名称已经存在，请使用不同名称。"; return
             }
-            let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            if clean.kind == .openAI && cleanKey.isEmpty { throw ServiceConnectionError.missingKey }
-            if cleanKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) { throw ServiceConnectionError.invalidKey }
+            let cleanKey = try ServiceConnectionTester.cleanAPIKey(apiKey, kind: clean.kind)
             try model.saveService(clean, apiKey: clean.kind == .openAI ? cleanKey : "")
-            model.activateService(clean.id)
             draft = clean; baseline = clean
             apiKey = clean.kind == .ollama ? "" : cleanKey
             baselineKey = apiKey; isNew = false

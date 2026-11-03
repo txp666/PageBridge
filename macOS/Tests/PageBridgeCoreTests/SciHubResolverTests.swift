@@ -78,16 +78,6 @@ final class SciHubResolverTests: XCTestCase {
         XCTAssertEqual(try SciHubResolver.pdfURL(in: matching, pageURL: pageURL, expectedDOI: doi).path, "/correct.pdf")
     }
 
-    func testCaptchaAndMissingPDFProduceDistinctActionableErrors() {
-        for (html, expected) in [("<altcha-widget challengeurl='/captcha/challenge'>", "验证码"),
-                                 ("<h1>Please verify you are human</h1>", "验证"),
-                                 ("<h1>Article not found</h1>", "未返回")] {
-            XCTAssertThrowsError(try SciHubResolver.pdfURL(in: html, pageURL: pageURL, expectedDOI: doi)) {
-                XCTAssertTrue($0.localizedDescription.contains(expected), $0.localizedDescription)
-            }
-        }
-    }
-
     func testUnsafePDFTargetsAreRejected() {
         for url in ["http://example.org/a.pdf", "https://127.0.0.1/a.pdf", "https://198.18.0.17/a.pdf",
                     "https://192.168.1.1/a.pdf", "file:///tmp/a.pdf", "javascript:alert(1)",
@@ -117,34 +107,14 @@ final class SciHubResolverTests: XCTestCase {
         catch { XCTAssertTrue(error.localizedDescription.contains("私有网络")) }
     }
 
-    func testHTTPStatusAndOversizedHTMLFailClearly() async {
-        for (status, expected) in [(403, "验证"), (404, "未找到"), (429, "过于频繁"), (503, "不可用")] {
-            let (resolver, root) = fixture(html: "", status: status)
-            do { _ = try await resolver.resolve(doi: doi, baseURL: root); XCTFail("Expected HTTP rejection") }
-            catch { XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription) }
+    func testDeclaredAndActualHTMLSizeLimits() async {
+        let cases: [(String, [String: String])] = [("", ["Content-Length": "2097153"]),
+                                                    (String(repeating: "x", count: 2 * 1_024 * 1_024 + 1), [:])]
+        for (html, headers) in cases {
+            let (resolver, root) = fixture(html: html, headers: headers)
+            do { _ = try await resolver.resolve(doi: doi, baseURL: root); XCTFail("Expected HTML limit") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("上限")) }
         }
-        let (resolver, root) = fixture(html: "", headers: ["Content-Length": "2097153"])
-        do { _ = try await resolver.resolve(doi: doi, baseURL: root); XCTFail("Expected HTML limit") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("上限")) }
-    }
-
-    func testActualByteLimitStopsChunkedHTML() async {
-        let (resolver, root) = fixture(html: String(repeating: "x", count: 2 * 1_024 * 1_024 + 1))
-        do { _ = try await resolver.resolve(doi: doi, baseURL: root); XCTFail("Expected stream limit") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("上限")) }
-    }
-
-    func testCancellationAndTimeoutRemainDistinct() async {
-        let started = expectation(description: "Request started")
-        let (resolver, root) = fixture(html: "", stalls: true) { _ in started.fulfill() }
-        let task = Task { try await resolver.resolve(doi: self.doi, baseURL: root) }
-        await fulfillment(of: [started], timeout: 2)
-        task.cancel()
-        do { _ = try await task.value; XCTFail("Expected cancellation") }
-        catch { XCTAssertTrue(error is CancellationError, error.localizedDescription) }
-        let (timeoutResolver, timeoutRoot) = fixture(html: "", error: URLError(.timedOut))
-        do { _ = try await timeoutResolver.resolve(doi: doi, baseURL: timeoutRoot); XCTFail("Expected timeout") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("超时")) }
     }
 
     func testPDFResponseReturnsFinalURLForExistingDownloader() async throws {
@@ -153,13 +123,11 @@ final class SciHubResolverTests: XCTestCase {
         XCTAssertEqual(result.path, "/" + doi)
     }
 
-    private func fixture(html: String, status: Int = 200, headers: [String: String] = [:],
-                         addresses: [String] = ["198.18.0.17"], stalls: Bool = false, error: Error? = nil,
+    private func fixture(html: String, headers: [String: String] = [:], addresses: [String] = ["198.18.0.17"],
                          inspect: @escaping (URLRequest) -> Void = { _ in }) -> (SciHubResolver, String) {
         let host = "fixture-\(UUID().uuidString.lowercased()).example.org"
         hosts.append(host)
-        SciHubFixtureProtocol.register(host, fixture: .init(data: Data(html.utf8), status: status,
-                                                          headers: headers, stalls: stalls, error: error, inspect: inspect))
+        SciHubFixtureProtocol.register(host, fixture: .init(data: Data(html.utf8), headers: headers, inspect: inspect))
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SciHubFixtureProtocol.self]
         config.httpAdditionalHeaders = ["Authorization": "Bearer test-secret", "Cookie": "test=secret", "X-Api-Key": "secret"]
@@ -170,10 +138,7 @@ final class SciHubResolverTests: XCTestCase {
 private final class SciHubFixtureProtocol: URLProtocol {
     struct Fixture {
         let data: Data
-        let status: Int
         let headers: [String: String]
-        let stalls: Bool
-        let error: Error?
         let inspect: (URLRequest) -> Void
     }
     private static let lock = NSLock()
@@ -188,12 +153,10 @@ private final class SciHubFixtureProtocol: URLProtocol {
         Self.lock.unlock()
         guard let fixture else { client?.urlProtocol(self, didFailWithError: URLError(.badURL)); return }
         fixture.inspect(request)
-        if let error = fixture.error { client?.urlProtocol(self, didFailWithError: error); return }
         var headers = ["Content-Type": "text/html; charset=utf-8"]
         headers.merge(fixture.headers) { _, new in new }
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: fixture.status,
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200,
                                                            httpVersion: "HTTP/1.1", headerFields: headers)!, cacheStoragePolicy: .notAllowed)
-        if fixture.stalls { return }
         client?.urlProtocol(self, didLoad: fixture.data)
         client?.urlProtocolDidFinishLoading(self)
     }

@@ -122,10 +122,11 @@ public struct ReadingScrollLayout: Equatable {
         max(1, min(pageFrames.count, anchor.page + (anchor.fraction >= 1 ? 1 : 0)))
     }
 
-    public func visiblePages(in viewport: CGRect, prefetch: Int = 1) -> [Int] {
+    /// Visible pages plus one neighbour on each side.
+    public func visiblePages(in viewport: CGRect) -> [Int] {
         guard !pageFrames.isEmpty else { return [] }
-        let first = max(0, (anchor(at: viewport.minY)?.page ?? 1) - 1 - prefetch)
-        let last = min(pageFrames.count - 1, (anchor(at: viewport.maxY)?.page ?? 1) - 1 + prefetch)
+        let first = max(0, (anchor(at: viewport.minY)?.page ?? 1) - 2)
+        let last = min(pageFrames.count - 1, anchor(at: viewport.maxY)?.page ?? 1)
         return first <= last ? Array(first...last).map { $0 + 1 } : []
     }
 }

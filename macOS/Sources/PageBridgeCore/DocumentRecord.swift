@@ -44,6 +44,9 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
     public var originalURL: URL { URL(fileURLWithPath: inputPath) }
     public var translatedURL: URL? { translatedPath.map(URL.init(fileURLWithPath:)) }
     public var bilingualURL: URL? { bilingualPath.map(URL.init(fileURLWithPath:)) }
+    public func url(for kind: ExportKind) -> URL? {
+        switch kind { case .original: originalURL; case .translated: translatedURL; case .bilingual: bilingualURL }
+    }
 }
 
 public enum ReadingMode: String, CaseIterable, Identifiable, Sendable {

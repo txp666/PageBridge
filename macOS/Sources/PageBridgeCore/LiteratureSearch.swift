@@ -57,7 +57,7 @@ public struct LiteratureSearchClient {
                      URLQueryItem(name: "page", value: String(page)),
                      URLQueryItem(name: "select", value: "id,doi,display_name,publication_year,authorships,primary_location,best_oa_location,locations,open_access")]
         var filters: [String] = []
-        if let doi = Self.normalizedDOI(query) {
+        if let doi = SciHubResolver.normalizedDOI(query) {
             // Comma and pipe have structural meaning in OpenAlex filters. Do not let
             // an identifier add another filter or broaden an exact DOI lookup.
             guard !doi.contains(","), !doi.contains("|") else {
@@ -123,7 +123,7 @@ public struct LiteratureSearchClient {
 
     private static func work(from dto: WorkDTO) -> LiteratureWork? {
         guard let title = clean(dto.display_name, limit: 800) else { return nil }
-        let doi = dto.doi.flatMap(normalizedDOI)
+        let doi = dto.doi.flatMap(SciHubResolver.normalizedDOI)
         guard let id = clean(dto.id, limit: 512) ?? doi else { return nil }
         let locations = [dto.best_oa_location, dto.primary_location].compactMap { $0 } + Array((dto.locations ?? []).prefix(100))
         let pdf = locations.lazy.filter { $0.is_oa == true }.compactMap { publicURL($0.pdf_url) }.first
@@ -151,22 +151,6 @@ public struct LiteratureSearchClient {
         guard let value else { return nil }
         let text = value.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         return text.isEmpty ? nil : String(text.prefix(limit))
-    }
-
-    private static func normalizedDOI(_ input: String) -> String? {
-        var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.lowercased().hasPrefix("doi:") {
-            value = String(value.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let url = URLComponents(string: value), let scheme = url.scheme?.lowercased(),
-           ["http", "https"].contains(scheme), let host = url.host?.lowercased(),
-           ["doi.org", "dx.doi.org", "www.doi.org"].contains(host), url.user == nil, url.password == nil {
-            value = String(url.path.drop(while: { $0 == "/" }))
-        }
-        guard value.count <= 512,
-              value.range(of: "^10\\.[0-9]{4,9}/[^\\s]+$", options: .regularExpression) != nil,
-              !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
-        return value.lowercased()
     }
 
     private static func doiURL(_ doi: String) -> URL? {

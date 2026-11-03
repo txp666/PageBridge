@@ -20,15 +20,6 @@ public struct LibraryDocumentMetadata: Codable, Equatable, Sendable {
         self.folderID = folderID; self.isFavorite = isFavorite
         self.lastOpenedAt = lastOpenedAt; self.trashedAt = trashedAt
     }
-
-    private enum CodingKeys: String, CodingKey { case folderID, isFavorite, lastOpenedAt, trashedAt }
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
-        isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
-        lastOpenedAt = try values.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
-        trashedAt = try values.decodeIfPresent(Date.self, forKey: .trashedAt)
-    }
 }
 
 public enum LibraryFilter: Hashable, Sendable {

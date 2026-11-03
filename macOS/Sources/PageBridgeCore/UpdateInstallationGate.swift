@@ -6,7 +6,6 @@ public struct UpdateInstallationGate {
     private var continuation: (() -> Void)?
 
     public init() {}
-    public var hasPendingInstallation: Bool { continuation != nil }
 
     public mutating func postpone(whileBusy: Bool, resume: @escaping () -> Void) -> Bool {
         guard whileBusy else { return false }

@@ -18,8 +18,8 @@ final class PaperAssistantModel: ObservableObject {
     private var storeInitializationError: String?
     var isBusy: Bool { activeDocumentID != nil }
 
-    init(historyDirectory: URL? = nil) {
-        do { store = try PaperAssistantHistoryStore(directory: historyDirectory) }
+    init() {
+        do { store = try PaperAssistantHistoryStore() }
         catch { store = nil; storeInitializationError = "对话暂时无法保存到本机。" }
     }
 

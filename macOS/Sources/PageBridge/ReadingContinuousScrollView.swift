@@ -11,7 +11,7 @@ struct ReadingContinuousScrollView: NSViewRepresentable {
     let acceptsNavigation: Bool
     let zoom: Double
     let synchronizesScrolling: Bool
-    let synchronizer: PDFScrollSynchronizer
+    let synchronizer: ReadingScrollSynchronizer
     let content: (Int, CGFloat) -> AnyView
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -131,11 +131,7 @@ struct ReadingContinuousScrollView: NSViewRepresentable {
                 if scroll.contentView.bounds.size == viewport { break }
             }
             lastViewport = scroll.contentView.bounds.size
-            if previous != geometry {
-                applyAnchor(anchor)
-            } else if pendingAnchor != nil {
-                applyAnchor(anchor)
-            }
+            if previous != geometry || pendingAnchor != nil { applyAnchor(anchor) }
             refreshVisiblePages()
         }
 

@@ -119,10 +119,7 @@ struct LibrarySidebar: View {
                     return library.renameFolder(id: folder.id, name: name) ? nil : library.errorMessage
                 case .document(let document):
                     guard !isBusy(document) else { return "文档正在翻译或取消任务，暂时不能重命名。" }
-                    model.renameDocument(id: document.id, name: name)
-                    let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let expected = clean.lowercased().hasSuffix(".pdf") ? clean : clean + ".pdf"
-                    return model.documents.first(where: { $0.id == document.id })?.name == expected ? nil : (model.errorMessage ?? "无法重命名文档。")
+                    return model.renameDocument(id: document.id, name: name) ? nil : (model.errorMessage ?? "无法重命名文档。")
                 }
             }
         }

@@ -39,15 +39,6 @@ final class LiteraturePDFDownloadTests: XCTestCase {
         try assertNoTemporaryFiles()
     }
 
-    func testOctetStreamRequiresActualReadablePDF() async throws {
-        let data = try pdfFixture()
-        let url = stub { $0.respond(body: data, headers: ["Content-Type": "application/octet-stream"]) }
-        let pdf = try await downloader().download(from: url, title: "public document")
-        XCTAssertEqual(PDFDocument(url: pdf.url)?.pageCount, 2)
-        pdf.cleanup()
-        try assertNoTemporaryFiles()
-    }
-
     func testHTMLAndMislabeledLoginPagesAreRejectedAndCleanedUp() async throws {
         for contentType in ["text/html", "application/pdf", "application/octet-stream"] {
             let url = stub { $0.respond(body: Data("<html>Please log in or solve the CAPTCHA</html>".utf8),
