@@ -17,7 +17,7 @@ public sealed partial class MainWindow
     private bool UpdateInstallBusy => translationCancellation is not null || translationPreparing
         || assistantPanel.IsBusy || annotationsPanel.IsBusy || loading || bindingPages
         || settingsOpening || literatureOpening || activeUiOperations > 1
-        || settingsOverlay is ServiceSettingsView { IsBusy: true };
+        || settingsOverlay is { IsBusy: true };
 
     private async Task ShowUpdatesAsync()
     {
@@ -207,6 +207,4 @@ public sealed partial class MainWindow
             if (!windowClosed) { interactionHost.IsEnabled = true; if (pendingReading.Count > 0) readingTimer?.Start(); }
         }
     }
-
-    private void DisposeUpdates() => updatesPolling?.Cancel();
 }

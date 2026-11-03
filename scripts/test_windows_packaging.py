@@ -34,9 +34,9 @@ class StableWindowsPackageTests(unittest.TestCase):
                      'windows/PageBridge.Windows/packages.lock.json','scripts/build-windows.ps1','scripts/windows_package.py',
                      'scripts/build-windows-engine.py','scripts/verify-windows-engine.py','scripts/bundle-profile.json',
                      'scripts/setup-inno.ps1','scripts/windows-installer.iss','docs/WINDOWS.md','docs/USER_GUIDE.md',
-                     'desktop/bridge.py','desktop/pagebridge/core.py','demos/README.md',
-                     *('engine/'+name for name in release.ENGINE_FILES)):
+                     'desktop/bridge.py','desktop/pagebridge/core.py','demos/README.md','engine/worker.py','engine/uv.lock'):
             path=self.root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text('public synthetic fixture\n')
+        (self.root/'scripts/bundle-profile.json').write_text(json.dumps({'engineFiles':['worker.py','uv.lock']}))
         (self.root/'VERSION.json').write_text(json.dumps({'version':'0.4.0','build':'13'}))
         (self.root/'windows/PageBridge.Windows/packages.lock.json').write_text(json.dumps({'version':1,'dependencies':{'fixture':{}}}))
         self.folder=Path(self.temp.name)/release.package_name(self.root);self.folder.mkdir()
@@ -47,7 +47,6 @@ class StableWindowsPackageTests(unittest.TestCase):
             (self.folder/name).write_bytes(b'MZ'+b'\0'*126)
         (self.folder/'WINDOWS_BUILD.json').write_text(json.dumps(release.build_metadata(self.root)))
         (self.folder/'resources/windows/app.manifest').write_text('<assembly xmlns="urn:schemas-microsoft-com:asm.v1"><assemblyIdentity version="0.4.0.13"/></assembly>')
-        self.archive=self.folder.with_suffix('.zip') # dotted version requires appending, not suffix replacement
         self.archive=Path(str(self.folder)+'.zip')
 
     def archive_package(self):

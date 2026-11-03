@@ -3,16 +3,7 @@ import copy
 from dataclasses import asdict
 import unittest
 
-try:
-    from .test_layout_guard import (
-        guard as g, line_paragraph, page, ParagraphFinder,
-        PdfParagraphComposition, PdfLine, PdfFormula,
-    )
-except ImportError:
-    from test_layout_guard import (
-        guard as g, line_paragraph, page, ParagraphFinder,
-        PdfParagraphComposition, PdfLine, PdfFormula,
-    )
+from test_layout_guard import guard as g, line_paragraph, page, ParagraphFinder, PdfParagraphComposition, PdfFormula
 
 
 class BetterFiguresLayout(unittest.TestCase):

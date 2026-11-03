@@ -150,12 +150,10 @@ public final class DocumentRepository {
         while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    public static func export(source: URL, destination: URL, protectedInput: URL, managedRoot: URL? = nil) throws {
-        if let managedRoot {
-            let managed = managedRoot.resolvingSymlinksInPath().path
-            let target = destination.resolvingSymlinksInPath().path
-            guard target != managed, !target.hasPrefix(managed + "/") else { throw BridgeError.message("请导出到文稿、桌面等其他目录，不能覆盖 PageBridge 管理的工作文件。") }
-        }
+    public static func export(source: URL, destination: URL, protectedInput: URL, managedRoot: URL) throws {
+        let managed = managedRoot.resolvingSymlinksInPath().path
+        let target = destination.resolvingSymlinksInPath().path
+        guard target != managed, !target.hasPrefix(managed + "/") else { throw BridgeError.message("请导出到文稿、桌面等其他目录，不能覆盖 PageBridge 管理的工作文件。") }
         guard destination.resolvingSymlinksInPath() != protectedInput.resolvingSymlinksInPath(), destination.resolvingSymlinksInPath() != source.resolvingSymlinksInPath() else { throw BridgeError.message("请另选保存位置，不能覆盖工作文件。") }
         guard let pdf = PDFDocument(url: source), pdf.pageCount > 0 else { throw BridgeError.message("要导出的 PDF 不可用。") }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".pagebridge-\(UUID().uuidString).pdf")

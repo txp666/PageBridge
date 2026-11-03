@@ -1,5 +1,4 @@
 import AppKit
-import PDFKit
 import SwiftUI
 import PageBridgeCore
 
@@ -10,7 +9,7 @@ struct StructuredReadingView: View {
     let navigation: PDFPageNavigation
     let acceptsNavigation: Bool
     let synchronizesScrolling: Bool
-    let synchronizer: PDFScrollSynchronizer
+    let synchronizer: ReadingScrollSynchronizer
     let onLocate: (Int, [Double]?) -> Void
     @StateObject private var sourcePages = ReadingSourcePages()
     @State private var showsUnlocated = false

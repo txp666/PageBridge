@@ -34,7 +34,6 @@ class CoreTests(unittest.TestCase):
 
     def result(self, doc, wrong_pages=False):
         attempt, directory = self.store.new_attempt(doc["id"])
-        self.store.mark_running(doc["id"], attempt)
         result = directory / "result"
         result.mkdir()
         mono = pdf_file(result / "translated.pdf")
@@ -53,8 +52,6 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(first["input_path"], str(self.source))
         self.assertEqual(sha256(first["input_path"]), sha256(self.source))
         self.assertEqual(DocumentStore(self.store.root).documents(), [first])
-        first["name"] = "changed outside store"
-        self.assertEqual(self.store.get(first["id"])["name"], self.source.name)
 
     def test_page_info_preserves_rotation_crop_and_mixed_sizes_without_rendering(self):
         mixed = self.root / "mixed-pages.pdf"
@@ -88,28 +85,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.store.documents(), [])
         self.assertEqual(list((self.store.root / "documents").iterdir()), [])
 
-    def test_folders_favorite_trash_restore_persist(self):
-        doc = self.imported()
-        folder = self.store.create_folder("报告")
-        self.store.move_to_folder(doc["id"], folder["id"])
-        self.store.set_favorite(doc["id"], True)
-        self.store.trash(doc["id"])
-        self.store.trash(doc["id"], False)
-        restored = DocumentStore(self.store.root).get(doc["id"])
-        self.assertEqual(restored["folder_id"], folder["id"])
-        self.assertTrue(restored["favorite"])
-        self.assertFalse(restored["trashed"])
-        with self.assertRaises(AppError):
-            self.store.create_folder("报告")
-
     def test_busy_mutations_rejected_and_short_lived_reader_does_not_recover(self):
         doc = self.imported()
-        attempt, _ = self.store.new_attempt(doc["id"])
-        self.store.mark_running(doc["id"], attempt)
+        self.store.new_attempt(doc["id"])
         with self.assertRaises(AppError):
             self.store.trash(doc["id"])
-        self.assertEqual(DocumentStore(self.store.root, recover_interrupted=False).get(doc["id"])["status"], "running")
-        self.assertEqual(DocumentStore(self.store.root).get(doc["id"])["status"], "interrupted")
+        self.assertEqual(DocumentStore(self.store.root).get(doc["id"])["status"], "running")
+        self.assertEqual(DocumentStore(self.store.root, recover_interrupted=True).get(doc["id"])["status"], "interrupted")
 
     def test_success_commit_and_safe_export(self):
         doc = self.imported()

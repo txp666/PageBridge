@@ -186,9 +186,9 @@ def guarded_translate_wrapper(settings, *args):
 
     def write_report():
         pdf_links.write_mapping(Path(settings.translation.output) / 'link-mapping.json')
-        report = translation_guard.write_report(report_path)
+        report = translation_guard.snapshot()
         report["layoutGuard"] = layout_guard.snapshot()
-        temporary_report = report_path.with_suffix(".json.layout-tmp")
+        temporary_report = report_path.with_suffix(".json.tmp")
         temporary_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary_report.replace(report_path)
 
@@ -253,14 +253,18 @@ PROVIDER_ENDPOINTS = {
 }
 
 
+def token_limit_key(service):
+    modern_openai = service.get("provider") == "openAI" and service["model"].startswith(("gpt-6", "gpt-5", "o"))
+    return "max_completion_tokens" if modern_openai else "max_tokens"
+
+
 def provider_request_options(service, *, probe=False):
     """No credentials or URL changes; only documented options for exact official presets."""
     provider = service.get("provider", "custom")
     result = {}
     model = service["model"]
     if probe:
-        modern_openai = provider == "openAI" and model.startswith(("gpt-6", "gpt-5", "o"))
-        result["max_completion_tokens" if modern_openai else "max_tokens"] = 1024
+        result[token_limit_key(service)] = 1024
     if service["kind"] == "ollama" or (provider == "openAI" and model.startswith("gpt-6")):
         result["reasoning_effort"] = "none"
     if service["kind"] == "ollama":
@@ -447,7 +451,7 @@ def safe_error(error):
         return "检测到扫描 PDF，当前版本需要可读取文字的 PDF。"
     if "database is locked" in message:
         return "引擎翻译缓存正忙，请等待其他任务完成后重试。"
-    if isinstance(error, importlib.metadata.PackageNotFoundError) or isinstance(error, ImportError):
+    if isinstance(error, ImportError):  # Includes importlib.metadata.PackageNotFoundError.
         return "翻译引擎安装不完整，请重新安装引擎。"
     return "翻译失败，请检查 PDF、所选模型及引擎资源。"
 
@@ -625,19 +629,19 @@ async def translate(request, events):
                 shutil.copyfile(report_path, output / ("rejected-quality-" + request["attemptId"] + ".json"))
             raise
         events.emit("stage", stage="verify", progress=0.99, message="正在验证生成的 PDF。")
-        mono = validate_pdf(getattr(result, "no_watermark_mono_pdf_path", None) or getattr(result, "mono_pdf_path", None), temporary, page_count)
-        dual = validate_pdf(getattr(result, "no_watermark_dual_pdf_path", None) or getattr(result, "dual_pdf_path", None), temporary, page_count * 2)
-        if mono == dual or mono == input_path or dual == input_path:
+        # no_watermark mode stores the same paths in mono_pdf_path/dual_pdf_path.
+        mono = validate_pdf(result.mono_pdf_path, temporary, page_count)
+        dual = validate_pdf(result.dual_pdf_path, temporary, page_count * 2)
+        if input_path in (mono, dual) or mono == dual:
             raise WorkerError("引擎未生成独立的译文和双语 PDF。")
         import pdf_links
         quality['links'] = pdf_links.restore_links(input_path, mono, dual, temporary / 'link-mapping.json')
         with pymupdf.open(input_path) as original, pymupdf.open(mono) as translated:
-            pages = [int(number) - 1 for number in request["pages"].split(",")] if request["pages"] else range(page_count)
-            for index in pages:
+            for index in selected_pages:
                 if artifact_marker_count(translated[index].get_text()) > artifact_marker_count(original[index].get_text()):
                     raise WorkerError("译文仍含未解析的样式标记，结果未提交。请重试或更换模型。")
-            original_text = "".join(original[index].get_text() for index in pages)
-            translated_text = "".join(translated[index].get_text() for index in pages)
+            original_text = "".join(original[index].get_text() for index in selected_pages)
+            translated_text = "".join(translated[index].get_text() for index in selected_pages)
             if not translated_text.strip() or re.sub(r"\s+", "", original_text) == re.sub(r"\s+", "", translated_text):
                 raise WorkerError("输出未包含已翻译的文字，请尝试其他模型。")
             if request["targetLanguage"].lower().startswith("zh") and not re.search(r"[\u3400-\u9fff]", translated_text):
@@ -677,7 +681,7 @@ async def run(request, events, control_input=None):
         import onnxruntime
         # Importing pdf2zh_next opens a shared SQLite translation cache. Health
         # must remain safe to run while a translation worker owns that cache.
-        events.emit("result", engineVersion=version, message="引擎依赖已就绪，首次翻译可能需要下载官方模型和字体。")
+        events.emit("result", message="引擎依赖已就绪，首次翻译可能需要下载官方模型和字体。")
     elif request["action"] == "probe":
         await probe(request, events)
     elif request["action"] == "prepare_reading":

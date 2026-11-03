@@ -76,8 +76,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
     public var timeoutSeconds: Double
     public var concurrency: Int
 
-    public init(id: UUID = UUID(), name: String = "本机 Ollama", kind: ServiceKind = .ollama,
-                baseURL: String = "http://127.0.0.1:11434", model: String = "qwen3.5:35b-a3b-int4",
+    public init(id: UUID = UUID(), name: String, kind: ServiceKind, baseURL: String, model: String,
                 timeoutSeconds: Double = 120, concurrency: Int = 1, provider: ServiceProvider? = nil) {
         self.id = id
         self.name = name
@@ -108,8 +107,6 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
-    public static var defaultOllama: Self { Self() }
-
     public static func preset(_ provider: ServiceProvider) -> Self {
         Self(name: provider == .ollama ? "本机 Ollama" : provider.title,
              kind: provider.kind, baseURL: provider.baseURL,
@@ -131,10 +128,6 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         copy.baseURL = template.baseURL; copy.model = template.model
         copy.timeoutSeconds = template.timeoutSeconds; copy.concurrency = template.concurrency
         return copy
-    }
-
-    public static var defaultOpenAI: Self {
-        Self(name: "自定义 API", kind: .openAI, baseURL: "https://api.example.com/v1", model: "translation-model", timeoutSeconds: 60, concurrency: 2)
     }
 
     public var isLocal: Bool {

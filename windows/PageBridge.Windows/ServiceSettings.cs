@@ -7,47 +7,6 @@ using Microsoft.UI.Text;
 
 namespace PageBridge.Windows;
 
-internal static class ServiceSettings
-{
-    public static async Task<ServiceSettingsView> CreateViewAsync(XamlRoot xamlRoot, BackendClient backend, Action onClose)
-    {
-        var view = new ServiceSettingsView(xamlRoot, backend, onClose);
-        await view.InitializeAsync();
-        return view;
-    }
-
-    // Compatibility for callers that do not own a document workspace.
-    public static async Task ShowAsync(XamlRoot xamlRoot, BackendClient backend)
-    {
-        var dialog = new ContentDialog { XamlRoot = xamlRoot, Padding = new Thickness(0) };
-        var themeRoot = xamlRoot.Content as FrameworkElement;
-        void FollowRootTheme(FrameworkElement sender, object args) => dialog.RequestedTheme = sender.ActualTheme;
-        if (themeRoot is not null) dialog.RequestedTheme = themeRoot.ActualTheme;
-        dialog.Resources["ContentDialogMaxWidth"] = 1040d;
-        dialog.Resources["ContentDialogPadding"] = new Thickness(0);
-        var view = await CreateViewAsync(xamlRoot, backend, dialog.Hide);
-        view.Width = Math.Max(640, Math.Min(1000, xamlRoot.Size.Width - 80));
-        view.Height = Math.Max(440, xamlRoot.Size.Height - 100);
-        dialog.Content = view;
-        bool confirmed = false;
-        dialog.Closing += async (_, args) =>
-        {
-            if (confirmed) return;
-            var deferral = args.GetDeferral();
-            args.Cancel = !await view.RequestCloseAsync();
-            confirmed = !args.Cancel;
-            deferral.Complete();
-        };
-        if (themeRoot is not null) { dialog.RequestedTheme = themeRoot.ActualTheme; themeRoot.ActualThemeChanged += FollowRootTheme; }
-        try { await dialog.ShowAsync(); }
-        finally
-        {
-            if (themeRoot is not null) themeRoot.ActualThemeChanged -= FollowRootTheme;
-            view.Dispose();
-        }
-    }
-}
-
 /// <summary>The same header, service rail, cards and footer as the Mac settings workspace.</summary>
 internal sealed class ServiceSettingsView : Grid, IDisposable
 {
@@ -61,8 +20,7 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         new("custom", "自定义 API", "连接支持 OpenAI Chat Completions 的服务。", [])
     ];
     private readonly BackendClient backend;
-    private readonly Action onClose;
-    private readonly SolidColorBrush background, card, secondary, line, accent, selected;
+    private readonly SolidColorBrush background = new(), card = new(), secondary = new(), line = new(), selected = new(), accent = Brush(0x1687f8);
     private readonly StackPanel profilesPanel = new() { Spacing = 5 };
     private readonly ComboBox provider = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
     private readonly ComboBox model = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
@@ -106,19 +64,18 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private bool IsLocal => Text(current, "kind") == "ollama";
     private bool Dirty => isNew || key.Password.Length > 0 || credentialInvalidated || !JsonNode.DeepEquals(Capture(), baseline);
     internal bool IsBusy => saving || operation is not null;
-    internal Func<Task>? CheckUpdates { get; set; }
 
-    public ServiceSettingsView(XamlRoot xamlRoot, BackendClient backend, Action onClose)
+    internal static async Task<ServiceSettingsView> CreateAsync(XamlRoot xamlRoot, BackendClient backend, Action onClose, Func<Task> checkUpdates)
+    {
+        var view = new ServiceSettingsView(xamlRoot, backend, onClose, checkUpdates);
+        await view.InitializeAsync();
+        return view;
+    }
+
+    private ServiceSettingsView(XamlRoot xamlRoot, BackendClient backend, Action onClose, Func<Task> checkUpdates)
     {
         this.backend = backend;
-        this.onClose = onClose;
-        var dark = (xamlRoot.Content as FrameworkElement)?.ActualTheme == ElementTheme.Dark;
-        background = Brush(dark ? 0x202020u : 0xf5f5f5u);
-        card = Brush(dark ? 0x292929u : 0xffffffu);
-        secondary = Brush(dark ? 0xa1a1a5u : 0x6f6f74u);
-        line = Brush(dark ? 0x3b3b3du : 0xdededfu);
-        accent = Brush(0x1687f8);
-        selected = Brush(dark ? 0x24384eu : 0xe7f1fbu);
+        ApplyPalette((xamlRoot.Content as FrameworkElement)?.ActualTheme == ElementTheme.Dark);
         Background = background;
         RowDefinitions.Add(new() { Height = GridLength.Auto });
         RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -171,7 +128,7 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         var railFooter = new StackPanel { Spacing = 9 };
         var updates = SmallButton("检查更新…");
         AutomationProperties.SetAutomationId(updates, "SettingsCheckUpdates");
-        updates.Click += async (_, _) => { if (CheckUpdates is not null) await CheckUpdates(); };
+        updates.Click += async (_, _) => await checkUpdates();
         railFooter.Children.Add(railNote); railFooter.Children.Add(updates);
         Grid.SetRow(railFooter, 2); rail.Children.Add(railFooter);
         body.Children.Add(new Border { Child = rail, BorderBrush = line, BorderThickness = new Thickness(0, 0, 1, 0) });
@@ -293,12 +250,12 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         };
         saveButton.Click += async (_, _) => await SaveAsync();
         deleteButton.Click += async (_, _) => await DeleteAsync();
-        Loaded += (_, _) => ApplySettingsTheme();
-        ActualThemeChanged += (_, _) => ApplySettingsTheme();
+        Loaded += (_, _) => ApplyPalette(ActualTheme == ElementTheme.Dark);
+        ActualThemeChanged += (_, _) => ApplyPalette(ActualTheme == ElementTheme.Dark);
         Unloaded += (_, _) => Dispose();
     }
 
-    public async Task InitializeAsync()
+    private async Task InitializeAsync()
     {
         await RefreshAsync();
         var profile = profiles.FirstOrDefault(p => Text(p, "id") == activeId) ?? profiles.FirstOrDefault();
@@ -530,12 +487,11 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private void FinishConfirmation(bool value) { confirmation.Visibility = Visibility.Collapsed; var pending = confirmationResult; confirmationResult = null; pending?.TrySetResult(value); }
     private string UniqueName(string value, string? exclude = null) { var result = value; int suffix = 2; while (profiles.Any(p => Text(p, "id") != exclude && Text(p, "name") == result)) result = value + " " + suffix++; return result; }
     private void SetStatus(string message, bool error = false) { status.Text = message; status.Foreground = error ? Brush(0xe46262) : secondary; }
-    private void ApplySettingsTheme()
+    private void ApplyPalette(bool dark)
     {
         // Mutate the shared brushes already used by cards, borders, labels and
         // profile rows. New controls and open settings then follow the same
         // effective theme as the document workspace, including live changes.
-        bool dark = ActualTheme == ElementTheme.Dark;
         background.Color = Color(dark ? 0x202020u : 0xf5f5f5u);
         card.Color = Color(dark ? 0x292929u : 0xffffffu);
         secondary.Color = Color(dark ? 0xa1a1a5u : 0x6f6f74u);

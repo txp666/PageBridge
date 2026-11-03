@@ -11,7 +11,7 @@ public sealed partial class MainWindow
     {
         if (literatureOpening) return;
         literatureOpening = true;
-        string target = (filter.SelectedItem as ComboBoxItem)?.Tag as string ?? "all";
+        string target = libraryFilter;
         string? importedID = null;
         LiteratureSearchPanel? panel = null;
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Padding = new Thickness(0) };
@@ -32,7 +32,7 @@ public sealed partial class MainWindow
 
     private async Task ImportPathsAsync(IEnumerable<string> paths)
     {
-        string target = (filter.SelectedItem as ComboBoxItem)?.Tag as string ?? "all";
+        string target = libraryFilter;
         string? id = null;
         foreach (var path in paths)
         {
@@ -55,10 +55,8 @@ public sealed partial class MainWindow
         bool existing = documents.Any(document => Text(document, "id") == id);
         if (existing) target = "all";
         if (!alreadyPlaced) await PlaceImportedAsync(id, target);
-        if (target is "favorites" or "trash") target = "unfiled";
-        loading = true;
-        try { search.Text = ""; filter.SelectedItem = filter.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == target) ?? filter.Items[0]; }
-        finally { loading = false; }
+        libraryFilter = target is "favorites" or "trash" ? "unfiled" : target;
+        loading = true; search.Text = ""; loading = false;
         await ReloadAsync(id); status.Text = existing ? "已打开文档库中已有的文档" : "已导入文档库";
     }
 }

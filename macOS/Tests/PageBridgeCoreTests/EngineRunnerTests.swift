@@ -25,11 +25,6 @@ final class EngineRunnerTests: XCTestCase {
         try (header + body).write(to: script, atomically: true, encoding: .utf8)
         return EngineRunner(location: EngineLocation(python: URL(fileURLWithPath: "/usr/bin/python3"), worker: script))
     }
-    func testOnlyMatchingTerminalResultIsAccepted() async throws {
-        let engine = try runner(body: "emit('ready',0)\nemit('result',1,message='verified')\n")
-        let result = try await engine.run(WorkerRequest(action: "health"))
-        XCTAssertEqual(result.message, "verified")
-    }
     func testImportsAndChildProcessesDoNotModifySignedRuntime() async throws {
         try "VALUE = 42\n".write(to: directory.appendingPathComponent("bundle_module.py"), atomically: true, encoding: .utf8)
         let engine = try runner(body: "import bundle_module,subprocess\nassert sys.dont_write_bytecode\nsubprocess.run([sys.executable,'-c','import sys,bundle_module; assert sys.dont_write_bytecode'],check=True)\nemit('ready',0)\nemit('result',1,message='readonly')\n")

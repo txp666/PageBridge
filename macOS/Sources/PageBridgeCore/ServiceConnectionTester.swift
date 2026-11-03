@@ -14,7 +14,7 @@ public enum ServiceConnectionTester {
         return try parseModels(data, kind: service.kind, provider: service.provider)
     }
 
-    static func cleanAPIKey(_ apiKey: String, kind: ServiceKind) throws -> String {
+    public static func cleanAPIKey(_ apiKey: String, kind: ServiceKind) throws -> String {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if kind == .openAI && key.isEmpty { throw ServiceConnectionError.missingKey }
         if key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
@@ -37,44 +37,56 @@ public enum ServiceConnectionTester {
     static func testRequest(service: ServiceConfiguration, apiKey: String) throws -> URLRequest {
         let service = service.normalized()
         try service.validate()
-        let cleanKey = try cleanAPIKey(apiKey, kind: service.kind)
+        let messages = [
+            ["role": "system", "content": "Translate the user sentence into Simplified Chinese. Reply only with the translated sentence, without explanation."],
+            ["role": "user", "content": "The document is ready."]
+        ]
+        return try chatRequest(service: service, key: cleanAPIKey(apiKey, kind: service.kind), messages: messages,
+                               maxTokens: service.kind == .ollama ? 128 : 1024, temperature: 0.1)
+    }
+
+    /// A non-streaming chat completion for a validated, normalized service. The key
+    /// travels only in the Authorization header, and never to Ollama.
+    static func chatRequest(service: ServiceConfiguration, key: String, messages: [[String: String]],
+                            maxTokens: Int, temperature: Double) throws -> URLRequest {
         var request = URLRequest(url: try service.requestURL())
         request.httpMethod = "POST"
         request.timeoutInterval = service.timeoutSeconds
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if service.kind == .openAI { request.setValue("Bearer \(cleanKey)", forHTTPHeaderField: "Authorization") }
-        let messages = [
-            ["role": "system", "content": "Translate the user sentence into Simplified Chinese. Reply only with the translated sentence, without explanation."],
-            ["role": "user", "content": "The document is ready."]
-        ]
+        if service.kind == .openAI { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         var body: [String: Any] = ["model": service.model, "messages": messages, "stream": false]
         if service.kind == .ollama {
             body["think"] = false
-            body["options"] = ["temperature": 0.1, "num_predict": 128]
+            body["options"] = ["temperature": temperature, "num_predict": maxTokens]
         } else if service.provider == .openAI && (service.model.hasPrefix("gpt-6") || service.model.hasPrefix("gpt-5") || service.model.hasPrefix("o")) {
-            body["max_completion_tokens"] = 1024
+            body["max_completion_tokens"] = maxTokens
             if service.model.hasPrefix("gpt-6") { body["reasoning_effort"] = "none" }
         } else {
-            body["max_tokens"] = 1024
+            body["max_tokens"] = maxTokens
         }
         if service.provider == .deepSeek { body["thinking"] = ["type": "disabled"] }
         if service.provider == .alibaba && ["qwen-plus", "qwen-flash"].contains(service.model) { body["enable_thinking"] = false }
         if service.provider == .siliconFlow && service.model == "deepseek-ai/DeepSeek-V4-Flash" { body["enable_thinking"] = false }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
         return request
     }
 
-    private static func perform(_ request: URLRequest) async throws -> Data {
+    /// Ephemeral and credential-free; redirects are refused.
+    static func session(timeout: TimeInterval) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = request.timeoutInterval
-        configuration.timeoutIntervalForResource = request.timeoutInterval
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        return URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+    }
+
+    private static func perform(_ request: URLRequest) async throws -> Data {
+        let session = Self.session(timeout: request.timeoutInterval)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)

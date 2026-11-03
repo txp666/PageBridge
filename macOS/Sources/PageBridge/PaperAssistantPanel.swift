@@ -21,11 +21,11 @@ struct PaperAssistantPanel: View {
 
     private var messages: [PaperAssistantMessage] { model.messages(for: document) }
     private var previewID: String { "\(document.id)|\(document.inputSHA256)|\(page)|\(mode.rawValue)|\(selectionText.count)|\(String(selectionText.prefix(PaperAssistantLimits.selectionCharacters)))" }
-    private var disabled: Bool {
-        service == nil || model.isBusy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || question.count > PaperAssistantLimits.questionCharacters || (mode == .selection && selectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    }
     private var quickQuestionsDisabled: Bool {
         service == nil || model.isBusy || (mode == .selection && selectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+    private var disabled: Bool {
+        quickQuestionsDisabled || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || question.count > PaperAssistantLimits.questionCharacters
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

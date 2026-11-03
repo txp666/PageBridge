@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 
 namespace PageBridge.Windows;
@@ -10,7 +11,7 @@ public sealed partial class MainWindow
     private readonly ComboBox readingOutput = new() { Width = 130, MinHeight = 25, FontSize = 11, Padding = new Thickness(6, 1, 6, 1), HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBlock readingPageNoticeText = new() { FontSize = 10.5, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 };
     private readonly Button readingPageNotice = new() { MinWidth = 0, MinHeight = 0, Height = 25, Padding = new Thickness(6, 0, 0, 0), BorderThickness = new Thickness(0),
-        Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Right,
+        Background = Clear, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Right,
         VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
     private bool changingReadingOutput, showReading, structuredActive;
     private bool HasReading => Text(selected, "reading_path") != "";
@@ -36,27 +37,21 @@ public sealed partial class MainWindow
         };
         structuredReading.PageMetadataChanged += UpdatePDFPaneLabels;
         structuredReading.PreviewError += message => status.Text = "预览加载失败：" + message;
-        if (rightPane.Children[0] is Grid header)
-        {
-            header.Children[0].Visibility = Visibility.Collapsed;
-            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-            var language = header.Children.OfType<TextBlock>().FirstOrDefault(item => item.Tag as string == "paneLanguage");
-            if (language is not null)
-            {
-                Grid.SetColumn(language, 1); language.VerticalAlignment = VerticalAlignment.Center;
-                language.TextTrimming = TextTrimming.CharacterEllipsis;
-            }
-            header.Children.Add(readingOutput);
-            readingPageNotice.Content = readingPageNoticeText;
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(readingPageNotice, "StructuredReadingPageNotice");
-            readingPageNotice.Click += (_, _) => structuredReading.CurrentPageDetails()?.ShowAt(readingPageNotice);
-            Grid.SetColumn(readingPageNotice, 1); header.Children.Add(readingPageNotice);
-            // The output selector is taller than the original's plain title.
-            // Equal header heights keep both PDF viewports on the same baseline.
-            if (leftPane.Children[0] is FrameworkElement originalHeader)
-                header.SizeChanged += (_, _) => { if (header.ActualHeight > 0) originalHeader.Height = header.ActualHeight; };
-        }
+        var header = (Grid)rightPane.Children[0];
+        header.Children[0].Visibility = Visibility.Collapsed;
+        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(translatedLanguage, 1); translatedLanguage.VerticalAlignment = VerticalAlignment.Center;
+        translatedLanguage.TextTrimming = TextTrimming.CharacterEllipsis;
+        header.Children.Add(readingOutput);
+        readingPageNotice.Content = readingPageNoticeText;
+        AutomationProperties.SetAutomationId(readingPageNotice, "StructuredReadingPageNotice");
+        readingPageNotice.Click += (_, _) => structuredReading.CurrentPageDetails()?.ShowAt(readingPageNotice);
+        Grid.SetColumn(readingPageNotice, 1); header.Children.Add(readingPageNotice);
+        // The output selector is taller than the original's plain title.
+        // Equal header heights keep both PDF viewports on the same baseline.
+        var originalHeader = (FrameworkElement)leftPane.Children[0];
+        header.SizeChanged += (_, _) => { if (header.ActualHeight > 0) originalHeader.Height = header.ActualHeight; };
         readingOutput.Items.Add("对照阅读稿"); readingOutput.Items.Add("PDF 译文");
         readingOutput.SelectionChanged += async (_, _) =>
         {
@@ -103,7 +98,6 @@ public sealed partial class MainWindow
 
     private void ApplyStructuredVisibility()
     {
-        if (structuredReading is null) return;
         structuredReading.View.Visibility = ShowingReading ? Visibility.Visible : Visibility.Collapsed;
         structuredReading.SetActive(ShowingReading && mode.SelectedIndex != 0);
         translatedPages.Scroll.Visibility = ShowingReading ? Visibility.Collapsed : Visibility.Visible;
@@ -138,5 +132,28 @@ public sealed partial class MainWindow
             RememberReading(Text(selected, "id"), value); UpdateNavigationPage();
         }
         UpdatePDFPaneLabels();
+    }
+
+    private void UpdatePDFPaneLabels()
+    {
+        foreach (var (label, translated) in new[] { (originalLanguage, false), (translatedLanguage, true) })
+        {
+            label.Text = selected is null ? "" : LanguageName(Text(selected, ShowingReading
+                ? (translated ? "reading_target_language" : "reading_source_language")
+                : (translated ? "target_language" : "source_language")));
+            if (selected is not null && translated && mode.SelectedIndex == 1 && !sync.IsOn)
+                label.Text += $" · 第 {(ShowingReading ? structuredReading.CurrentPage : translatedPages.CurrentPage)} 页";
+            if (translated)
+            {
+                var notice = ShowingReading ? structuredReading.CurrentPageNotice : null;
+                label.Visibility = notice is null ? Visibility.Visible : Visibility.Collapsed;
+                readingPageNotice.Visibility = notice is null ? Visibility.Collapsed : Visibility.Visible;
+                readingPageNoticeText.Text = notice is { } current ? label.Text + " · " + current.Label : "";
+                string description = notice?.Message ?? "";
+                ToolTipService.SetToolTip(readingPageNotice, description.Length > 0 ? description : null);
+                AutomationProperties.SetName(readingPageNotice, description);
+                AutomationProperties.SetHelpText(readingPageNotice, description);
+            }
+        }
     }
 }

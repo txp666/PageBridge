@@ -10,9 +10,6 @@ struct PDFPageNavigation: Equatable {
     var id = UUID()
 }
 
-typealias PDFScrollAnchor = ReadingScrollAnchor
-typealias PDFScrollSynchronizer = ReadingScrollSynchronizer
-
 struct PDFReaderView: NSViewRepresentable {
     let url: URL
     @Binding var page: Int
@@ -20,7 +17,7 @@ struct PDFReaderView: NSViewRepresentable {
     var acceptsNavigation = true
     var zoom: Double
     var synchronizesScrolling: Bool
-    let synchronizer: PDFScrollSynchronizer
+    let synchronizer: ReadingScrollSynchronizer
     var searchQuery: String
     var workspace: ReaderWorkspace? = nil
     var documentID: UUID? = nil
@@ -53,7 +50,7 @@ struct PDFReaderView: NSViewRepresentable {
         private var scrollObserver: NSObjectProtocol?
         private var applyingChange = false
         private var lastOrigin: NSPoint?
-        private var lastKnownAnchor: PDFScrollAnchor?
+        private var lastKnownAnchor: ReadingScrollAnchor?
         private var settledScrollGeneration = 0
         private var settlingScroll = false
         private var lastNavigation: UUID?
@@ -188,7 +185,7 @@ struct PDFReaderView: NSViewRepresentable {
                         beginInitialPosition(page: parent.navigation.page)
                         layoutReader()
                     }
-                    applyAnchor(PDFScrollAnchor(page: parent.navigation.page, fraction: 0))
+                    applyAnchor(ReadingScrollAnchor(page: parent.navigation.page, fraction: 0))
                     if let box = parent.navigation.sourceBounds, box.count == 4,
                        let target = pdf.document?.page(at: parent.navigation.page - 1) {
                         // Coordinates describe the displayed crop box from its top-left.
@@ -268,7 +265,7 @@ struct PDFReaderView: NSViewRepresentable {
                 let pageRect = documentView.convert(pdf.convert(targetPage.bounds(for: .cropBox), from: targetPage), from: pdf)
                 guard pageRect.height > 0, pageRect.minY >= documentView.bounds.minY - 1,
                       pageRect.maxY <= documentView.bounds.maxY + 1 else { return }
-                self.applyAnchorImmediately(PDFScrollAnchor(page: target, fraction: 0))
+                self.applyAnchorImmediately(ReadingScrollAnchor(page: target, fraction: 0))
                 if self.initialGeometry == geometry {
                     // Keep PDFKit's startup bounds notifications from overwriting
                     // the saved page until two main-loop layouts agree. This gate
@@ -334,7 +331,7 @@ struct PDFReaderView: NSViewRepresentable {
         }
 
         /// Native clip scrolling preserves momentum and avoids PDFDestination relayout.
-        func applyAnchor(_ anchor: PDFScrollAnchor) {
+        func applyAnchor(_ anchor: ReadingScrollAnchor) {
             // A newer explicit or peer scroll supersedes the saved startup page.
             cancelInitialPosition()
             applyAnchorImmediately(anchor)
@@ -346,7 +343,7 @@ struct PDFReaderView: NSViewRepresentable {
             settleScroll(anchor, generation: generation, remaining: 2)
         }
 
-        private func settleScroll(_ anchor: PDFScrollAnchor, generation: Int, remaining: Int) {
+        private func settleScroll(_ anchor: ReadingScrollAnchor, generation: Int, remaining: Int) {
             DispatchQueue.main.async { [weak self] in
                 guard let self, generation == self.settledScrollGeneration else { return }
                 if remaining == 0 { self.settlingScroll = false; return }
@@ -360,7 +357,7 @@ struct PDFReaderView: NSViewRepresentable {
             settlingScroll = false
         }
 
-        private func applyAnchorImmediately(_ anchor: PDFScrollAnchor) {
+        private func applyAnchorImmediately(_ anchor: ReadingScrollAnchor) {
             guard let pdf = container?.pdfView, let document = pdf.document,
                   let documentView = pdf.documentView, let scroll = observedScrollView,
                   let target = document.page(at: max(0, min(anchor.page - 1, document.pageCount - 1))) else { return }
@@ -385,7 +382,7 @@ struct PDFReaderView: NSViewRepresentable {
             applyingChange = false
         }
 
-        func visibleAnchor() -> PDFScrollAnchor? {
+        func visibleAnchor() -> ReadingScrollAnchor? {
             guard !needsInitialPosition else { return nil }
             guard let pdf = container?.pdfView, let document = pdf.document,
                   let documentView = pdf.documentView else { return nil }
@@ -399,8 +396,8 @@ struct PDFReaderView: NSViewRepresentable {
                 ? (top.y - pageRect.minY) / pageRect.height
                 : (pageRect.maxY - top.y) / pageRect.height
             let viewport = observedScrollView?.contentView.bounds ?? rect
-            return PDFScrollAnchor(page: document.index(for: visiblePage) + 1, fraction: fraction,
-                horizontalFraction: PDFScrollAnchor.horizontalFraction(at: viewport.minX - documentView.bounds.minX,
+            return ReadingScrollAnchor(page: document.index(for: visiblePage) + 1, fraction: fraction,
+                horizontalFraction: ReadingScrollAnchor.horizontalFraction(at: viewport.minX - documentView.bounds.minX,
                     contentWidth: documentView.bounds.width, viewportWidth: viewport.width,
                     pageMargins: pdf.pageBreakMargins.left + pdf.pageBreakMargins.right))
         }
@@ -425,7 +422,7 @@ struct PDFReaderView: NSViewRepresentable {
             reportPage(pageNumber(for: anchor))
         }
 
-        func pageNumber(for anchor: PDFScrollAnchor) -> Int {
+        func pageNumber(for anchor: ReadingScrollAnchor) -> Int {
             let count = container?.pdfView.document?.pageCount ?? 1
             // At the bottom of a document the top of the viewport can sit in
             // the preceding page gap, although the visible content is the last page.

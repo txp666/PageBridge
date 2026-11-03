@@ -1,10 +1,7 @@
 """Regression coverage for complete Wind paragraphs rejected in v6."""
 import unittest
 
-try:
-    from .test_guard_review_boundaries import g, ti, formula, translator, paragraph, ParagraphTranslateTracker
-except ImportError:
-    from test_guard_review_boundaries import g, ti, formula, translator, paragraph, ParagraphTranslateTracker
+from test_guard_review_boundaries import g, ti, formula, translator, paragraph, ParagraphTranslateTracker
 
 
 def prediction_source(name='CWT'):

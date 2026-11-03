@@ -2,8 +2,10 @@ import copy
 import pickle
 import unittest
 from test_layout_guard import (guard, character, page, PdfParagraph, PdfParagraphComposition,
-    PdfSameStyleCharacters, PdfFormula, PdfStyle, GraphicState, Box, VisualBbox)
+    PdfFormula, Box, VisualBbox)
 from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
+from types import SimpleNamespace as NS
+import translation_guard as tg
 
 def styler():return object.__new__(StylesAndFormulas)
 def chars(p):return [c for q in p.pdf_paragraph for co in q.pdf_paragraph_composition for c in guard._composition_characters(co)]
@@ -172,5 +174,43 @@ class NativeWordGroupTests(unittest.TestCase):
                 before=chars(p);values=pickle.dumps(before)
                 self.assertEqual(guard.restore_source_reference_articles(styler(),p),0)
                 self.assert_preserved(p,before,values)
+
+
+def ti(text):return NS(unicode=text,placeholders=[],base_style=NS(font_size=8,font_id='F2'),_pagebridge_layout_label='plain_text')
+
+class NativeOverprintRequestTests(unittest.TestCase):
+    def bound(self):
+        p,q,_,_,_=overprint_fixture(True)
+        self.assertEqual(guard.bind_source_overprinted_words(styler(),p),1)
+        original=ti('Earlier we used a method. In {v1}section {v2}{v3}wwe show how the model works.')
+        tg._prepare_native_overprint_words(q,original)
+        return q,original
+
+    def test_only_request_spelling_changes_and_real_source_stays_exact(self):
+        q,original=self.bound();text=original.unicode
+        result=tg._source_review_prompt_view(original,text)
+        self.assertEqual(result,text.replace('wwe','we'))
+        self.assertEqual(original.unicode,text)
+        self.assertEqual(tg._source_review_prompt_view(original,result),result)
+
+    def test_no_native_binding_or_changed_source_or_paragraph_is_not_authorized(self):
+        q,original=self.bound()
+        self.assertEqual(tg._native_overprint_request_replacements(ti(original.unicode)),[])
+        changed=copy.copy(original);changed.unicode+=' changed.'
+        self.assertEqual(tg._native_overprint_request_replacements(changed),[])
+        different=copy.deepcopy(q)
+        self.assertEqual(guard.source_native_overprint_words(different),())
+        q.pdf_paragraph_composition.pop()
+        self.assertEqual(guard.source_native_overprint_words(q),())
+
+    def test_plain_recovery_copy_retains_exact_full_source_binding(self):
+        q,original=self.bound()
+        reduced=ti(original.unicode)
+        tg._copy_source_continuity(original,reduced)
+        self.assertEqual(tg._source_review_prompt_view(reduced,reduced.unicode),original.unicode.replace('wwe','we'))
+        changed=ti(original.unicode.replace('model','variable'))
+        tg._copy_source_continuity(original,changed)
+        self.assertEqual(tg._native_overprint_request_replacements(changed),[])
+
 
 if __name__=='__main__':unittest.main()

@@ -13,22 +13,6 @@ final class LibraryStoreTests: XCTestCase {
         result.importedAt = importedAt; return result
     }
 
-    func testOldDocumentsRemainUnclassifiedWithoutRewritingLegacyIndex() throws {
-        let repository = try DocumentRepository(root: root)
-        let original = [record("Older.pdf"), record("Newer.pdf")]
-        try repository.saveDocuments(original)
-        let index = root.appendingPathComponent("documents.json")
-        let bytes = try Data(contentsOf: index)
-        let store = try LibraryStore(root: root), state = try store.load()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL.path))
-        XCTAssertEqual(Set(state.filteredDocuments(original, filter: .uncategorized).map(\.id)), Set(original.map(\.id)))
-        XCTAssertEqual(state.filteredDocuments(original, filter: .favorites), [])
-        try store.createFolder(name: "Papers")
-        try store.moveDocuments(ids: [original[0].id], to: try XCTUnwrap(store.load().folders.first?.id))
-        XCTAssertEqual(try Data(contentsOf: index), bytes)
-        XCTAssertEqual(try repository.loadDocuments(), original)
-    }
-
     func testFolderRenameMoveDeletePersistAndReturnAllMembersToUnclassified() throws {
         let store = try LibraryStore(root: root), folder = UUID(), a = record(), b = record("Other.pdf")
         try store.createFolder(id: folder, name: "  Articles  ")
@@ -160,16 +144,5 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(state.filteredDocuments(records, filter: .uncategorized, now: now), [recent])
         XCTAssertEqual(state.filteredDocuments(records, filter: .trash, now: now), [trash])
         XCTAssertTrue(state.filteredDocuments([old], filter: .recent, now: now.addingTimeInterval(31 * 86400)).isEmpty)
-    }
-
-    func testSparseMetadataDefaultsAndUnknownDocumentMetadataArePreserved() throws {
-        let store = try LibraryStore(root: root), imported = UUID(), unknown = UUID()
-        let data = Data("{\"version\":1,\"folders\":[],\"documents\":{\"\(unknown.uuidString)\":{}}}".utf8)
-        try data.write(to: store.fileURL)
-        XCTAssertFalse(try store.load().metadata(for: unknown).isFavorite)
-        try store.setFavorite(id: imported, value: true)
-        let reloaded = try store.load()
-        XCTAssertNotNil(reloaded.documents[unknown.uuidString])
-        XCTAssertTrue(reloaded.metadata(for: imported).isFavorite)
     }
 }

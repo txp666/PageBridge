@@ -11,7 +11,7 @@ struct TranslationSheet: View {
     @State private var pages = ""
     @State private var pageError: String?
 
-    private let languages: [(String, String)] = [
+    static let languages: [(String, String)] = [
         ("en", "英语"), ("zh", "简体中文"), ("zh-TW", "繁体中文"),
         ("ja", "日语"), ("ko", "韩语"), ("fr", "法语"),
         ("de", "德语"), ("es", "西班牙语"), ("ru", "俄语")
@@ -39,12 +39,12 @@ struct TranslationSheet: View {
                 }
                 LabeledContent("源语言") {
                     Picker("源语言", selection: $sourceLanguage) {
-                        ForEach(languages, id: \.0) { Text($0.1).tag($0.0) }
+                        ForEach(Self.languages, id: \.0) { Text($0.1).tag($0.0) }
                     }.labelsHidden().frame(width: 175)
                 }
                 LabeledContent("目标语言") {
                     Picker("目标语言", selection: $targetLanguage) {
-                        ForEach(languages, id: \.0) { Text($0.1).tag($0.0) }
+                        ForEach(Self.languages, id: \.0) { Text($0.1).tag($0.0) }
                     }.labelsHidden().frame(width: 175)
                 }
                 LabeledContent("翻译范围") {

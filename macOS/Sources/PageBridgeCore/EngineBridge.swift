@@ -55,10 +55,6 @@ public struct WorkerEvent: Codable, Sendable {
     public var artifactType: String?
     public var readingPath: String?
     public var readingSHA256: String?
-    public var status: String?
-    public var translatedBlocks: Int?
-    public var failedBlocks: Int?
-    public var preservedBlocks: Int?
 }
 
 public struct EngineLocation: Sendable {

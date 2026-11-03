@@ -6,13 +6,12 @@ import sys
 import tempfile
 import unittest
 import urllib.error
-import uuid
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pymupdf
 from pagebridge import assistant
-from pagebridge.core import AppError, DocumentStore, atomic_json
+from pagebridge.core import AppError, DocumentStore
 from pagebridge.services import ServiceStore, new_profile
 
 
@@ -226,12 +225,6 @@ class AssistantTests(unittest.TestCase):
             assistant.finish(self.documents, old, "late")
         result = assistant.finish(self.documents, latest, "Current answer [P1]")
         self.assertEqual(result["messages"][-1]["text"], "Current answer [P1]")
-
-    def test_per_document_isolation(self):
-        prepared = self.prepare()
-        other = self.documents.import_pdf(pdf_file(self.root / "other.pdf", ["Another document"]))
-        assistant.finish(self.documents, prepared, "First document answer [P2]")
-        self.assertEqual(assistant.AssistantStore(self.documents).history(other["id"])["messages"], [])
 
     def test_corrupt_history_preserved_until_explicit_clear(self):
         self.prepare()

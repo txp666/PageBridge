@@ -15,8 +15,7 @@ permissions:
 
 # Serialize every version and rerun: only one workflow may replace the OTA feed.
 concurrency:
-  # Retain the original group so old tagged workflow reruns also serialize.
-  group: public-macos-release
+  group: public-release
   cancel-in-progress: false
 
 env:

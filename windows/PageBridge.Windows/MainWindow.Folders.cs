@@ -26,16 +26,11 @@ public sealed partial class MainWindow
                 DefaultButton = ContentDialogButton.Close
             };
             if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary) return;
-            bool wasSelected = (filter.SelectedItem as ComboBoxItem)?.Tag as string == id;
+            bool wasSelected = libraryFilter == id;
             await backend.CallAsync("delete_folder", new JsonObject { ["folder_id"] = id });
             // Change the selected metadata filter before reloading so the
             // existing selection is reconciled against the unfiled documents.
-            if (wasSelected)
-            {
-                loading = true;
-                try { filter.SelectedItem = filter.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag as string == "unfiled"); }
-                finally { loading = false; }
-            }
+            if (wasSelected) libraryFilter = "unfiled";
             await ReloadAsync();
             await ReconcileSelectionAsync();
         }));

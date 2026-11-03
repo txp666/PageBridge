@@ -130,8 +130,8 @@ def publish(report_path, notes_path):
     run(["gh", "release", "edit", tag, "--repo", repository, "--draft=false", "--latest"])
 
 
-def requirements(source_root):
-    packages = {item["name"]: item for item in tomllib.loads((source_root / "engine/uv.lock").read_text())["package"]}
+def requirements():
+    packages = {item["name"]: item for item in tomllib.loads((ROOT / "engine/uv.lock").read_text())["package"]}
     lines = []
     for name in ("cryptography", "cffi", "pycparser"):
         package = packages[name]
@@ -145,7 +145,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("identity", "publish", "requirements"))
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--source-root", type=Path, default=ROOT)
     parser.add_argument("--report", type=Path, default=ROOT / "validation/release/assets.json")
     parser.add_argument("--notes", type=Path, default=ROOT / "validation/release/notes.md")
     args = parser.parse_args()
@@ -153,7 +152,7 @@ def main():
         publish(args.report, args.notes)
         return
     if args.action == "requirements":
-        result = requirements(args.source_root)
+        result = requirements()
     else:
         checked = identity()
         result = json.dumps(checked, indent=2) + "\n"

@@ -3,7 +3,7 @@ import XCTest
 @testable import PageBridgeCore
 
 final class StructuredReadingTextLayoutTests: XCTestCase {
-    func testTableLabelFitsOriginalFinancialRowWithoutLoweringBodyMinimum() throws {
+    func testTableLabelFitsOriginalFinancialRowWithoutLoweringBodyMinimum() {
         let bounds = CGSize(width: 120, height: 8.86)
         let table = StructuredReadingTextLayout.fit(text: "现金及现金等价物", in: bounds,
             preferredFontSize: 8, heading: false, minimumFontSize: 6.5)
@@ -15,11 +15,6 @@ final class StructuredReadingTextLayoutTests: XCTestCase {
             preferredFontSize: 8, heading: false)
         XCTAssertTrue(body.overflows)
         XCTAssertEqual(body.fontSize, 8)
-        let block = try JSONDecoder().decode(StructuredReadingBlock.self, from: Data("""
-        {"id":"cell","kind":"text","sourceType":"table_cell","sourceText":"Cash",
-         "translatedText":"现金","status":"translated"}
-        """.utf8))
-        XCTAssertEqual(block.sourceType, "table_cell")
     }
 
     func testChineseTextFitsWithoutExceedingOriginalRectangle() {

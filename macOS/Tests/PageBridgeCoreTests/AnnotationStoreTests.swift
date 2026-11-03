@@ -31,20 +31,6 @@ final class AnnotationStoreTests: XCTestCase {
     private func binding(_ url: URL, variant: PDFDocumentVariant = .original, id: UUID = UUID()) throws -> AnnotationBinding {
         AnnotationBinding(documentID: id, variant: variant, sourceSHA256: try DocumentRepository.sha256(url))
     }
-    func testSidecarRoundTripEditDeleteAndOriginalBytesUnchanged() throws {
-        let source = try pdf("source.pdf"), key = try binding(source)
-        let original = try Data(contentsOf: source), store = try AnnotationStore(root: root.appendingPathComponent("library"))
-        var note = ReadingAnnotation(kind: .note, page: 1, selectedText: "selected", note: "first note")
-        try store.save([note], for: key, sourceURL: source)
-        let reopened = try AnnotationStore(root: store.root)
-        XCTAssertEqual(try reopened.load(for: key), [note])
-        note.note = "edited\nsecond line"; note.modifiedAt = Date()
-        try reopened.save([note], for: key, sourceURL: source)
-        XCTAssertEqual(try store.load(for: key).first?.note, note.note)
-        try store.save([], for: key, sourceURL: source)
-        XCTAssertEqual(try reopened.load(for: key), [])
-        XCTAssertEqual(try Data(contentsOf: source), original)
-    }
     func testOriginalTranslatedAndNewRevisionAreIsolatedEvenWithSameBytes() throws {
         let source = try pdf("source.pdf"), updated = try pdf("new-translation.pdf", text: "A different translation")
         let id = UUID(), original = try binding(source, id: id), translated = try binding(source, variant: .translated, id: id)

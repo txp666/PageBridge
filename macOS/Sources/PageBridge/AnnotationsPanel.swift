@@ -32,7 +32,7 @@ struct AnnotationsPanel: View {
                 List(workspace.currentAnnotations) { item in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Button { workspace.navigate(to: item); onNavigate(item.page) } label: {
+                            Button { onNavigate(item.page) } label: {
                                 Label("第 \(item.page) 页 · \(item.kind.title)", systemImage: icon(item.kind))
                             }.buttonStyle(.plain).foregroundStyle(.tint)
                             Spacer()

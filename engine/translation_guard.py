@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from collections import Counter, namedtuple
 from contextvars import ContextVar
+from dataclasses import dataclass
 import math
 import copy
 import hashlib
 import html
 import json
-from pathlib import Path
 import re
 import threading
 import unicodedata
@@ -108,8 +108,6 @@ def _source_prose_context_fragment(paragraph, *, tail):
     return fragment
 
 
-from dataclasses import dataclass as _regulator_dataclass
-
 _REGULATOR_ATTR = '_pagebridge_regulator_continuity'
 _regulator_bindings = {}
 _regulator_document_token = object()
@@ -118,7 +116,7 @@ _REGULATOR_OPENING = re.compile(r'^the effect of a linear regulation on (?P<targ
 _REGULATOR_FIELDS = ('pdf_line','pdf_same_style_characters','pdf_same_style_unicode_characters','pdf_formula','pdf_character')
 
 
-@_regulator_dataclass(frozen=True)
+@dataclass(frozen=True)
 class _RegulatorContext:
     document_token: object
     actor: str
@@ -326,7 +324,7 @@ _rule_title_bindings = {}
 _rule_title_document_token = object()
 
 
-@_regulator_dataclass(frozen=True)
+@dataclass(frozen=True)
 class _RuleTitleContext:
     document_token: object
     source: str
@@ -470,7 +468,7 @@ _WEATHER_SPEED = re.compile(r'\b(?:speed|speeds|velocity|velocities|magnitude|in
 _WEATHER_DIRECTIONS = {'N':'北','NE':'东北','E':'东','SE':'东南','S':'南','SW':'西南','W':'西','NW':'西北'}
 
 
-@_regulator_dataclass(frozen=True)
+@dataclass(frozen=True)
 class _WeatherParagraphContext:
     document_token: object
     cwt: bool
@@ -4907,7 +4905,7 @@ def _record_validated(paragraph):
         _states.setdefault(id(paragraph), {"reasons": set()})["validated"] = True
 
 
-def _retry_translation(translator, ti, tracker, attempt):
+def _retry_translation(translator, ti, tracker):
     repair_rules = ("Placeholder repair rules: The previous response did not preserve the source placeholders. "
                "Copy every {vN}, <style id='N'> and </style> token exactly once, "
                "in its original order. Do not change style to span or translate "
@@ -5378,6 +5376,9 @@ def _guard_pre(self, paragraph, tracker, *args, **kwargs):
         previous_validated = previous and previous["validated"]
     _record_pending(paragraph)
     try:
+        font_map = kwargs.get("page_font_map", args[0] if args else {})
+        xobj_maps = kwargs.get("xobj_font_map", args[1] if len(args) > 1 else {})
+        font_map = xobj_maps.get(getattr(paragraph, "xobj_id", None), font_map)
         if str(getattr(paragraph, "layout_label", "")).lower().replace(" ", "_") == "fallback_line":
             # Diagram/table fragments are not independent semantic sentences.
             # Preserve their original glyph coordinates instead of translating
@@ -5389,9 +5390,6 @@ def _guard_pre(self, paragraph, tracker, *args, **kwargs):
             result = _originals["pre"](self, paragraph, tracker, *args, **kwargs)
             if (result[0] is None and _short_prose_connector(paragraph) is not None
                     and str(getattr(self.translation_config, "lang_out", "")).lower().startswith("zh")):
-                font_map = kwargs.get("page_font_map", args[0] if args else {})
-                xobj_maps = kwargs.get("xobj_font_map", args[1] if len(args) > 1 else {})
-                font_map = xobj_maps.get(getattr(paragraph, "xobj_id", None), font_map)
                 short_input = self.get_translate_input(paragraph, font_map, True)
                 if (short_input is not None and not short_input.placeholders
                         and short_input.unicode.strip() == _short_prose_connector(paragraph)):
@@ -5413,9 +5411,6 @@ def _guard_pre(self, paragraph, tracker, *args, **kwargs):
                         _counters["preservedDescriptorRelations"] += 1
                 result = (None, None)
             else:
-                font_map = kwargs.get("page_font_map", args[0] if args else {})
-                xobj_maps = kwargs.get("xobj_font_map", args[1] if len(args) > 1 else {})
-                font_map = xobj_maps.get(getattr(paragraph, "xobj_id", None), font_map)
                 promoted, promoted_count = _promote_rich_scripts(result[1], paragraph, font_map)
                 normalized, removed = _without_rich_wrappers(promoted, whitespace_only=True)
                 if removed or promoted_count or normalized.unicode != result[0]:
@@ -5481,7 +5476,7 @@ def _guard_post(self, paragraph, tracker, ti, translated_text):
             _record_failure(paragraph, error)
             if attempt < 2:
                 try:
-                    candidate = _retry_translation(self, ti, tracker, attempt)
+                    candidate = _retry_translation(self, ti, tracker)
                     repaired = True
                 except Exception as request_error:
                     _record_failure(paragraph, request_error)
@@ -5608,13 +5603,3 @@ def snapshot():
                                           "layoutLabel": state.get("layoutLabel", "other"),
                                           "reasons": sorted(state["reasons"])} for state in unresolved],
                 "counters": dict(_counters), "rawDocumentTextStored": False}
-
-
-def write_report(path):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    report = snapshot()
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
-    return report

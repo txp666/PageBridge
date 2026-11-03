@@ -11,7 +11,6 @@ final class LibraryModel: ObservableObject {
     @Published var sortOrder: LibrarySortOrder = .recentActivity
     @Published var errorMessage: String?
     private var store: LibraryStore?
-    private let root: URL?
 
     var folders: [LibraryFolder] { state.folders.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
     var title: String {
@@ -19,11 +18,11 @@ final class LibraryModel: ObservableObject {
         return filter.title
     }
 
-    init(root: URL? = nil) { self.root = root; reload() }
+    init() { reload() }
 
     func reload() {
         do {
-            let store = try LibraryStore(root: root)
+            let store = try LibraryStore()
             let loaded = try store.load()
             self.store = store; state = loaded; isAvailable = true; errorMessage = nil
             if case .folder(let id) = filter, !loaded.folders.contains(where: { $0.id == id }) { filter = .uncategorized }

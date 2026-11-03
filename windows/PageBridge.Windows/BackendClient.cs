@@ -1,14 +1,10 @@
-using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Unicode;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace PageBridge.Windows;
 
@@ -43,13 +39,11 @@ public sealed class BackendClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         shutdown.Token.ThrowIfCancellationRequested();
-        if (action == "translate")
-            throw new BackendException("翻译任务需要通过流式接口启动。");
-        if (action is "list" or "recover" or "import" or "get" or "rename" or "folders"
+        if (action is "list" or "recover" or "import" or "rename" or "folders"
             or "create_folder" or "move" or "trash" or "favorite" or "reading"
-            or "export" or "render" or "page_info" or "reading_page" or "reading_block_image" or "document_navigation" or "page_text"
+            or "export" or "render" or "page_info" or "reading_page" or "document_navigation" or "page_text"
             or "annotations" or "save_annotation" or "delete_annotation" or "export_annotations"
-            or "export_notes" or "search_document" or "rename_folder" or "delete_folder" or "literature_cleanup" or "literature_settings" or "literature_save_settings" or "assistant_history" or "assistant_clear" or "assistant_preview"
+            or "export_notes" or "search_document" or "rename_folder" or "delete_folder" or "literature_cleanup" or "literature_settings" or "literature_save_settings" or "assistant_history" or "assistant_clear"
             or "update_check" or "update_download" or "update_status" or "update_cancel" or "update_prepare_install")
             return await CallLocalAsync(action, args, cancellationToken).ConfigureAwait(false);
         await rpcGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -378,7 +372,7 @@ public sealed class BackendClient : IDisposable
         info.ArgumentList.Add("-B");
         info.ArgumentList.Add("-u");
         info.ArgumentList.Add(bridge);
-        foreach (string key in new System.Collections.Generic.List<string>(info.Environment.Keys))
+        foreach (string key in info.Environment.Keys.ToArray())
             if (key.EndsWith("API_KEY", StringComparison.OrdinalIgnoreCase)
                 || key.EndsWith("API_TOKEN", StringComparison.OrdinalIgnoreCase)
                 || key is "PYTHONPATH" or "PYTHONHOME" or "VIRTUAL_ENV")

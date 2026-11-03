@@ -8,16 +8,15 @@ namespace PageBridge.Windows;
 /// <summary>A compact, baseline-aligned page field without NumberBox header/spinner layout.</summary>
 internal sealed class PageNumberInput : TextBox
 {
-    private double minimum = 1, maximum = 1, current = 1;
+    private double maximum = 1, current = 1;
     internal event EventHandler? ValueChanged;
-    internal double Minimum { get => minimum; set { minimum = value; Value = current; } }
     internal double Maximum { get => maximum; set { maximum = value; Width = Math.Clamp(12 + Math.Max(1, (int)maximum).ToString(CultureInfo.InvariantCulture).Length * 7, 32, 58); Value = current; } }
     internal double Value
     {
         get => current;
         set
         {
-            double next = Math.Clamp(double.IsFinite(value) ? Math.Truncate(value) : current, minimum, Math.Max(minimum, maximum));
+            double next = Math.Clamp(double.IsFinite(value) ? Math.Truncate(value) : current, 1, Math.Max(1, maximum));
             bool changed = next != current; current = next;
             string label = ((int)next).ToString(CultureInfo.InvariantCulture);
             if (Text != label) Text = label;

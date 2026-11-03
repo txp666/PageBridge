@@ -79,17 +79,16 @@ final class ReadingPageCanvasView: NSView {
         context.scaleBy(x: bounds.width / pageSize.width, y: bounds.height / pageSize.height)
         let pageRect = CGRect(origin: .zero, size: pageSize)
         NSBezierPath(rect: pageRect).addClip()
-        func drawSource() {
-            image.draw(in: pageRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true,
-                       hints: [.interpolation: NSImageInterpolation.high])
+        func drawSource(_ source: NSImage) {
+            source.draw(in: pageRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true,
+                        hints: [.interpolation: NSImageInterpolation.high])
         }
         if backgroundBlocks != nil {
             // The prepared page already retains photos, vector shapes and tables.
             // Only original text belonging to listed blocks was removed upstream.
-            (backgroundImage ?? image).draw(in: pageRect, from: .zero, operation: .sourceOver, fraction: 1,
-                respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+            drawSource(backgroundImage ?? image)
         } else {
-            drawSource()
+            drawSource(image)
             for placement in placements where layouts[placement.id] != nil {
                 let rgb = placement.block.backgroundColor ?? [255, 255, 255]
                 NSColor(calibratedRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1).setFill()
@@ -100,13 +99,13 @@ final class ReadingPageCanvasView: NSView {
             for placement in placements where placement.block.isSourceRegion {
                 NSGraphicsContext.saveGraphicsState()
                 NSBezierPath(rect: placement.rect).addClip()
-                drawSource()
+                drawSource(image)
                 NSGraphicsContext.restoreGraphicsState()
             }
             if let decorationMask {
                 context.saveGState()
                 StructuredReadingDecorations.clip(decorationMask, excluding: movedEquationRects, page: pageRect, context: context)
-                drawSource()
+                drawSource(image)
                 context.restoreGState()
             }
         }

@@ -15,13 +15,12 @@ final class ReaderWorkspace: ObservableObject {
             }
         }
     }
-    @Published private(set) var annotations: [ReadingAnnotation] = []
     @Published var errorMessage: String?
     @Published private(set) var document: DocumentRecord?
+    @Published private var items: [PDFDocumentVariant: [ReadingAnnotation]] = [:]
     private var store: AnnotationStore?
     private var sources: [PDFDocumentVariant: URL] = [:]
     private var bindings: [PDFDocumentVariant: AnnotationBinding] = [:]
-    private var items: [PDFDocumentVariant: [ReadingAnnotation]] = [:]
     private var selectionRegions: [AnnotationRegion] = []
     private var selectionVariant: PDFDocumentVariant = .original
     private var readers: [PDFDocumentVariant: WeakReader] = [:]
@@ -33,8 +32,8 @@ final class ReaderWorkspace: ObservableObject {
         init(_ view: PDFView, url: URL) { self.view = view; pdf = view.document; self.url = url }
     }
 
-    init(root: URL? = nil) {
-        do { store = try AnnotationStore(root: root) } catch { errorMessage = error.localizedDescription }
+    init() {
+        do { store = try AnnotationStore() } catch { errorMessage = error.localizedDescription }
     }
     var currentAnnotations: [ReadingAnnotation] {
         (items[selectedVariant] ?? []).sorted { $0.page == $1.page ? $0.createdAt < $1.createdAt : $0.page < $1.page }
@@ -53,7 +52,7 @@ final class ReaderWorkspace: ObservableObject {
         selectionText = ""; selectionRegions = []
         sources = [.original: record.originalURL]
         if let translated = record.translatedURL { sources[.translated] = translated }
-        bindings = [:]; items = [:]; annotations = []
+        bindings = [:]; items = [:]
         if sources[selectedVariant] == nil { selectedVariant = .original }
         currentPage = max(1, min(record.pageCount, currentPage))
         guard let store else { return }
@@ -66,7 +65,6 @@ final class ReaderWorkspace: ObservableObject {
                 bindings[variant] = binding; items[variant] = loaded
             } catch { errorMessage = error.localizedDescription }
         }
-        refresh()
         // Reader documents may still be from the previous selection. Registration
         // will apply overlays only after PDFReaderView opens the matching URL.
     }
@@ -148,7 +146,10 @@ final class ReaderWorkspace: ObservableObject {
         let binding = bindings[variant]
         guard let text = editText(title: "第 \(item.page) 页 · \(variant.title) · \(item.kind.title)", text: item.note, quote: item.selectedText),
               bindings[variant] == binding else { return }
-        updateNote(id: item.id, text: text, variant: variant)
+        var list = items[variant] ?? []
+        guard let index = list.firstIndex(where: { $0.id == item.id }) else { return }
+        list[index].note = text; list[index].modifiedAt = Date()
+        _ = save(list, variant: variant)
     }
     func edit(_ annotation: PDFAnnotation, in view: PDFView, documentID: UUID, variant: PDFDocumentVariant) {
         guard document?.id == documentID, readers[variant]?.view === view,
@@ -157,23 +158,14 @@ final class ReaderWorkspace: ObservableObject {
         selectedVariant = variant; currentPage = item.page
         edit(item)
     }
-    func updateNote(id: UUID, text: String, variant: PDFDocumentVariant? = nil) {
-        let variant = variant ?? selectedVariant
-        var list = items[variant] ?? []
-        guard let index = list.firstIndex(where: { $0.id == id }) else { return }
-        list[index].note = text; list[index].modifiedAt = Date()
-        _ = save(list, variant: variant)
-    }
-    func navigate(to item: ReadingAnnotation) { currentPage = item.page }
     func exportAnnotatedPDF() { export(isPDF: true) }
     func exportNotes() { export(isPDF: false) }
 
-    private func refresh() { annotations = PDFDocumentVariant.allCases.flatMap { items[$0] ?? [] } }
     @discardableResult private func save(_ list: [ReadingAnnotation], variant: PDFDocumentVariant) -> Bool {
         guard let store, let binding = bindings[variant], let source = sources[variant] else { return false }
         do {
             try store.save(list, for: binding, sourceURL: source)
-            items[variant] = list; refresh(); render(variant); return true
+            items[variant] = list; render(variant); return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
     private func render(_ variant: PDFDocumentVariant) {

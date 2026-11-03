@@ -1,11 +1,8 @@
 """Source-role request views and guards, with no external files or model calls."""
-import json,re,unittest
+import json,unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-try:
- from .test_guard_review_boundaries import g,ti,formula,translator,paragraph,ParagraphTranslateTracker
-except ImportError:
- from test_guard_review_boundaries import g,ti,formula,translator,paragraph,ParagraphTranslateTracker
+from test_guard_review_boundaries import g,ti,formula,translator,paragraph,ParagraphTranslateTracker
 
 class ReviewSourceRolesTests(unittest.TestCase):
  @classmethod

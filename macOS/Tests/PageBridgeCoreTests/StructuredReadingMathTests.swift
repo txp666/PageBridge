@@ -18,7 +18,7 @@ final class StructuredReadingMathTests: XCTestCase {
 
     func testCropUsesOriginalTopLeftPageCoordinates() throws {
         let block = StructuredReadingBlock(id: "b1", kind: "text", sourceText: "x", status: "translated",
-            inlineMath: [StructuredReadingInlineMath(token: "[[PBM0]]", latex: "x", bbox: [10, 20, 30, 40])])
+            inlineMath: [StructuredReadingInlineMath(token: "[[PBM0]]", bbox: [10, 20, 30, 40])])
         let crops = StructuredReadingMathImages.crops(for: block, image: try image(), pageSize: CGSize(width: 100, height: 100))
         let crop = try XCTUnwrap(crops["[[PBM0]]"])
         XCTAssertEqual(crop.size, CGSize(width: 21.5, height: 21.5))

@@ -20,7 +20,7 @@ final class AppModel: ObservableObject {
     @Published var page = 1 {
         didSet {
             if let document = selectedDocument, page > 0 && page <= document.pageCount {
-                UserDefaults.standard.set(page, forKey: "PageBridge.readingPage.\(document.id.uuidString)")
+                UserDefaults.standard.set(page, forKey: Self.pageKey(document.id))
             }
         }
     }
@@ -63,16 +63,12 @@ final class AppModel: ObservableObject {
             if let preferences = try repository.loadPreferences(), !preferences.services.isEmpty {
                 services = preferences.services; activeServiceID = preferences.activeServiceID
             } else {
-                let local = ServiceConfiguration.defaultOllama
+                let local = ServiceConfiguration.preset(.ollama)
                 services = [local]; activeServiceID = local.id
             }
             if activeService == nil { activeServiceID = services.first?.id }
             selectedID = documents.first(where: { !library.isTrashed(id: $0.id) })?.id
-            if let document = selectedDocument {
-                page = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: "PageBridge.readingPage.\(document.id.uuidString)")))
-                if document.hasTranslation { readingMode = .dual }
-                usesStructuredReading = document.readingPath != nil && document.preferredOutputMode != "pdf"
-            }
+            if let document = selectedDocument { restoreReadingState(document) }
         } catch {
             repository = nil
             errorMessage = "无法打开 PageBridge 数据目录：\(error.localizedDescription)"
@@ -83,13 +79,18 @@ final class AppModel: ObservableObject {
 
     func selectDocument(_ id: UUID) {
         guard let document = documents.first(where: { $0.id == id }), !library.isTrashed(id: id) else { return }
-        let savedPage = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: "PageBridge.readingPage.\(id.uuidString)")))
-        selectedID = id; page = savedPage; zoom = 1
+        selectedID = id; zoom = 1
+        restoreReadingState(document)
         library.markOpened(id: id)
-        readingMode = document.hasTranslation ? .dual : .original
-        usesStructuredReading = document.readingPath != nil && document.preferredOutputMode != "pdf"
         reloadStructuredReading()
         searchQuery = ""; searchHits = []; searchRevision += 1
+    }
+
+    private static func pageKey(_ id: UUID) -> String { "PageBridge.readingPage.\(id.uuidString)" }
+    private func restoreReadingState(_ document: DocumentRecord) {
+        page = max(1, min(document.pageCount, UserDefaults.standard.integer(forKey: Self.pageKey(document.id))))
+        readingMode = document.hasTranslation ? .dual : .original
+        usesStructuredReading = document.readingPath != nil && document.preferredOutputMode != "pdf"
     }
 
     func importPDFs() {
@@ -99,17 +100,13 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { importURLs(panel.urls) }
     }
     func importURLs(_ urls: [URL]) {
-        guard let repository else { return }
+        guard repository != nil else { return }
         var failures: [String] = []
         for url in urls {
             let scope = url.startAccessingSecurityScopedResource()
             defer { if scope { url.stopAccessingSecurityScopedResource() } }
             do {
-                let record = try repository.importPDF(url)
-                let updated = [record] + documents
-                try repository.saveDocuments(updated)
-                library.organizeImported(ids: [record.id])
-                documents = updated; selectDocument(record.id)
+                let record = try add(url)
                 statusMessage = "已添加 \(record.name)，原文件保持不变。"
             } catch { failures.append(error.localizedDescription) }
         }
@@ -119,7 +116,7 @@ final class AppModel: ObservableObject {
     /// Downloaded files are already validated; reuse identical local originals
     /// so opening a search result does not duplicate its notes or translations.
     func importLiteraturePDF(_ url: URL) throws {
-        guard let repository else { throw BridgeError.message("文档库不可用，请重新打开应用后重试。") }
+        guard repository != nil else { throw BridgeError.message("文档库不可用，请重新打开应用后重试。") }
         let hash = try DocumentRepository.sha256(url)
         if let existing = documents.first(where: {
             $0.inputSHA256 == hash && !library.isTrashed(id: $0.id)
@@ -130,6 +127,12 @@ final class AppModel: ObservableObject {
             statusMessage = "已打开文档库中的 \(existing.name)。"
             return
         }
+        let record = try add(url)
+        statusMessage = "已下载并添加 \(record.name)。"
+    }
+
+    private func add(_ url: URL) throws -> DocumentRecord {
+        guard let repository else { throw BridgeError.message("文档库不可用，请重新打开应用后重试。") }
         let record = try repository.importPDF(url)
         let updated = [record] + documents
         do { try repository.saveDocuments(updated) }
@@ -140,7 +143,7 @@ final class AppModel: ObservableObject {
         }
         library.organizeImported(ids: [record.id])
         documents = updated; selectDocument(record.id)
-        statusMessage = "已下载并添加 \(record.name)。"
+        return record
     }
 
     func refreshEngine() {
@@ -261,9 +264,7 @@ final class AppModel: ObservableObject {
 
     func exportSelected(_ kind: ExportKind) {
         guard let record = selectedDocument, let repository else { return }
-        let source: URL?
-        switch kind { case .original: source = record.originalURL; case .translated: source = record.translatedURL; case .bilingual: source = record.bilingualURL }
-        guard let source else { errorMessage = "请先完成翻译。"; return }
+        guard let source = record.url(for: kind) else { errorMessage = "请先完成翻译。"; return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = (record.name as NSString).deletingPathExtension + "-" + kind.title.replacingOccurrences(of: " PDF", with: "") + ".pdf"
         panel.title = "导出 \(kind.title)"; panel.prompt = "导出"
@@ -279,30 +280,17 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([usesStructuredReading ? (record.readingURL ?? record.originalURL) : (record.translatedURL ?? record.originalURL)])
     }
 
-    func renameDocument(id: UUID, name: String) {
-        guard id != activeJobDocumentID, var record = documents.first(where: { $0.id == id }) else { return }
+    func renameDocument(id: UUID, name: String) -> Bool {
+        guard id != activeJobDocumentID, var record = documents.first(where: { $0.id == id }) else { return false }
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.count <= 240, !clean.contains("/"), !clean.contains(":"),
               !clean.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             errorMessage = "文档名称应为 1–240 个字符，不能包含斜杠、冒号或换行。"
-            return
+            return false
         }
         record.name = clean.lowercased().hasSuffix(".pdf") ? clean : clean + ".pdf"
-        do { try replaceRecord(record) }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    func removeDocument(_ id: UUID) {
-        guard id != activeJobDocumentID, let repository else { return }
-        let alert = NSAlert(); alert.messageText = "从文档列表移除？"
-        alert.informativeText = "本地输入副本和翻译结果仍保留在 PageBridge 数据目录中。"
-        alert.addButton(withTitle: "移除记录"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            let updated = documents.filter { $0.id != id }
-            try repository.saveDocuments(updated); documents = updated
-            if selectedID == id { selectedID = updated.first?.id; page = 1; readingMode = .original }
-        } catch { errorMessage = error.localizedDescription }
+        do { try replaceRecord(record); return true }
+        catch { errorMessage = error.localizedDescription; return false }
     }
 
     func search() {
@@ -311,11 +299,7 @@ final class AppModel: ObservableObject {
         guard let selectedDocument, !query.isEmpty else { searchHits = []; return }
         if readingMode == .translated && usesStructuredReading, let reading = structuredReading {
             searchHits = reading.pages.compactMap { page in
-                let content = page.blocks.map(\.displayText).joined(separator: "\n")
-                guard let range = content.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
-                let start = content.index(range.lowerBound, offsetBy: -25, limitedBy: content.startIndex) ?? content.startIndex
-                let end = content.index(range.upperBound, offsetBy: 65, limitedBy: content.endIndex) ?? content.endIndex
-                return SearchHit(page: page.pageNumber, text: String(content[start..<end]).replacingOccurrences(of: "\n", with: " "))
+                Self.hit(page: page.pageNumber, content: page.blocks.map(\.displayText).joined(separator: "\n"), query: query)
             }
             return
         }
@@ -325,11 +309,8 @@ final class AppModel: ObservableObject {
                 guard let pdf = PDFDocument(url: url) else { return [] }
                 var hits: [SearchHit] = []
                 for index in 0..<pdf.pageCount {
-                    guard let content = pdf.page(at: index)?.string,
-                          let range = content.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
-                    let start = content.index(range.lowerBound, offsetBy: -25, limitedBy: content.startIndex) ?? content.startIndex
-                    let end = content.index(range.upperBound, offsetBy: 65, limitedBy: content.endIndex) ?? content.endIndex
-                    hits.append(SearchHit(page: index + 1, text: String(content[start..<end]).replacingOccurrences(of: "\n", with: " ")))
+                    guard let hit = Self.hit(page: index + 1, content: pdf.page(at: index)?.string ?? "", query: query) else { continue }
+                    hits.append(hit)
                     if hits.count >= 100 { break }
                 }
                 return hits
@@ -337,6 +318,13 @@ final class AppModel: ObservableObject {
             guard revision == searchRevision else { return }
             searchHits = hits
         }
+    }
+
+    private nonisolated static func hit(page: Int, content: String, query: String) -> SearchHit? {
+        guard let range = content.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
+        let start = content.index(range.lowerBound, offsetBy: -25, limitedBy: content.startIndex) ?? content.startIndex
+        let end = content.index(range.upperBound, offsetBy: 65, limitedBy: content.endIndex) ?? content.endIndex
+        return SearchHit(page: page, text: String(content[start..<end]).replacingOccurrences(of: "\n", with: " "))
     }
 
     func reloadStructuredReading(navigateToFirst: Bool = false) {
@@ -374,27 +362,17 @@ final class AppModel: ObservableObject {
         guard let repository else { throw BridgeError.message("本地存储不可用，无法保存服务。请先修复启动时报告的数据目录错误。") }
         let value = service.normalized(); try value.validate()
         let previous = try key(for: value.id)
-        if apiKey != previous {
-            if apiKey.isEmpty { try KeychainStore.delete(serviceID: value.id) }
-            else { try KeychainStore.save(key: apiKey, serviceID: value.id) }
-        }
+        // An empty key deletes the item.
+        if apiKey != previous { try KeychainStore.save(key: apiKey, serviceID: value.id) }
         var updated = services
         if let index = updated.firstIndex(where: { $0.id == value.id }) { updated[index] = value }
         else { updated.append(value) }
         do { try repository.savePreferences(AppPreferences(services: updated, activeServiceID: value.id)) }
         catch {
-            if apiKey != previous {
-                if previous.isEmpty { try? KeychainStore.delete(serviceID: value.id) }
-                else { try? KeychainStore.save(key: previous, serviceID: value.id) }
-            }
+            if apiKey != previous { try? KeychainStore.save(key: previous, serviceID: value.id) }
             throw error
         }
         services = updated; activeServiceID = value.id
-    }
-    func activateService(_ id: UUID) {
-        guard services.contains(where: { $0.id == id }), let repository else { return }
-        do { try repository.savePreferences(AppPreferences(services: services, activeServiceID: id)); activeServiceID = id }
-        catch { errorMessage = error.localizedDescription }
     }
     func deleteService(_ id: UUID) throws {
         guard let repository else { throw BridgeError.message("本地存储不可用，无法删除服务。") }

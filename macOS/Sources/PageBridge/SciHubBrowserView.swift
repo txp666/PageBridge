@@ -12,13 +12,11 @@ struct SciHubBrowserRequest: Identifiable {
 
 struct SciHubBrowserView: View {
     let request: SciHubBrowserRequest
-    let onPDF: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
     @StateObject private var browser: SciHubBrowserController
 
     init(request: SciHubBrowserRequest, onPDF: @escaping (URL) -> Void) {
         self.request = request
-        self.onPDF = onPDF
         _browser = StateObject(wrappedValue: SciHubBrowserController(request: request, onPDF: onPDF))
     }
 

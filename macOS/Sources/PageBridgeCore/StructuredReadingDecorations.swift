@@ -12,7 +12,7 @@ public enum StructuredReadingDecorations {
         }
     }
 
-    public static func strokeMask(_ decorations: [StructuredReadingDecoration], edgePadding: CGFloat = 0.5) -> CGPath {
+    public static func strokeMask(_ decorations: [StructuredReadingDecoration]) -> CGPath {
         let mask = CGMutablePath()
         for decoration in decorations where decoration.opacity > 0 {
             let path = CGMutablePath()
@@ -33,7 +33,7 @@ public enum StructuredReadingDecorations {
             let cap = CGLineCap(rawValue: Int32(decoration.lineCap)) ?? .butt
             let join = CGLineJoin(rawValue: Int32(decoration.lineJoin)) ?? .miter
             // Half a PDF point includes the original raster's antialiased edge.
-            let width = decoration.kind == "fill_boundary" ? 1 : max(0.1, decoration.width) + edgePadding
+            let width = decoration.kind == "fill_boundary" ? 1 : max(0.1, decoration.width) + 0.5
             mask.addPath(center.copy(strokingWithWidth: width,
                                      lineCap: cap, lineJoin: join, miterLimit: 10))
         }

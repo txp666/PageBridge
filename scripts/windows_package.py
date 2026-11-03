@@ -1,6 +1,4 @@
 """Stable Windows package metadata and read-only, cross-platform ZIP verification."""
-from __future__ import annotations
-
 import argparse
 import base64
 import hashlib
@@ -16,7 +14,6 @@ import zipfile
 
 MANIFEST = 'BUNDLE_MANIFEST.json'
 UI_FILES = ('PageBridge.Windows.exe', 'PageBridge.Windows.dll', 'PageBridge.Windows.pri', 'App.xbf')
-ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 REQUIRED = (*UI_FILES, 'WINDOWS_BUILD.json', 'README.md', 'README-Windows.md', 'docs/USER_GUIDE.md',
             'resources/VERSION.json', 'resources/update-config.json', 'resources/windows/app.manifest', 'resources/windows/packages.lock.json',
             'resources/desktop/bridge.py', 'resources/engine/tools/uv.exe', 'resources/engine/runtime/python.exe', 'resources/engine/uv.lock')
@@ -58,16 +55,20 @@ def package_name(root):
     return 'PageBridge-'+load_version(root)['version']+'-windows-x64'
 
 
+def engine_files(root):
+    return read_json((Path(root)/'scripts/bundle-profile.json').read_text(encoding='utf-8'))['engineFiles']
+
+
 def safe_name(name):
     if not isinstance(name, str): raise ValueError('Package path must be text.')
     path = PurePosixPath(name)
-    if (not isinstance(name, str) or not name or path.is_absolute() or '..' in path.parts
+    if (not name or path.is_absolute() or '..' in path.parts
             or '\\' in name or ':' in name or str(path) != name):
         raise ValueError('Unsafe package path: '+str(name))
 
 
 def ordinary(path):
-    if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+    if path.is_symlink() or path.is_junction():
         raise ValueError('Linked package/source path: '+str(path))
 
 
@@ -79,7 +80,7 @@ def source_inputs(root):
         'scripts/build-windows.ps1', 'scripts/windows_package.py', 'scripts/build-windows-engine.py',
         'scripts/verify-windows-engine.py', 'scripts/bundle-profile.json',
         'scripts/setup-inno.ps1', 'scripts/windows-installer.iss')}
-    paths.update(root/'engine'/name for name in ENGINE_FILES)
+    paths.update(root/'engine'/name for name in engine_files(root))
     for base in ('windows', 'desktop', 'docs', 'demos'):
         for path in (root/base).rglob('*'):
             if not path.is_file() or any(part in ('bin', 'obj', '.vs', '__pycache__') for part in path.parts): continue
@@ -95,7 +96,7 @@ def source_inputs(root):
 
 def payload_sources(root):
     root = Path(root)
-    result = {f'resources/engine/{name}': f'engine/{name}' for name in ENGINE_FILES}
+    result = {f'resources/engine/{name}': f'engine/{name}' for name in engine_files(root)}
     result.update({f'resources/{name}': name for name in ('VERSION.json', 'update-config.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md')})
     result.update({'resources/desktop/bridge.py': 'desktop/bridge.py', 'README.md': 'README.md',
                    'resources/assets/PageBridge-icon.png': 'assets/PageBridge-icon.png',

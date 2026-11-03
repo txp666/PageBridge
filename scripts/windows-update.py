@@ -36,7 +36,7 @@ def load_module(name, path):
 def contract():
     # Use the exact client parser and canonical signature bytes; this module is
     # intentionally independent of PDF libraries and imports cryptography lazily.
-    return load_module("pagebridge_update_contract", Path(__file__).resolve().parents[1] / "desktop/pagebridge/updates.py")
+    return load_module("pagebridge_update_contract", ROOT / "desktop/pagebridge/updates.py")
 
 
 def verify_manifest(raw, public_key):

@@ -1,8 +1,6 @@
 """Portable source-structure tests; no private documents or model requests."""
-import re
 import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from test_translation_guard import (

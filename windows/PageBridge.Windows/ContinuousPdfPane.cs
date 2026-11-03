@@ -42,7 +42,6 @@ internal sealed partial class ContinuousPdfPane
     private double zoom = 1, paperWidth = 500;
     private Anchor? pending;
     internal ScrollViewer Scroll { get; }
-    internal string DocumentId => documentId;
     internal int CurrentPage => views.Count > 0 && Scroll.ScrollableHeight > 0 && Scroll.VerticalOffset >= Scroll.ScrollableHeight - 1 ? views.Count : Position.Page + 1;
     internal event Action<ContinuousPdfPane>? PositionChanged;
     internal event Action<ContinuousPdfPane>? Activated;
@@ -104,9 +103,8 @@ internal sealed partial class ContinuousPdfPane
         foreach (var view in views) { view.Image.Source = null; view.Overlay.Child = null; }
         sizes.Clear(); views.Clear(); stack.Children.Clear(); offsets = []; pageHeights = []; cache.Clear(); failed.Clear();
     }
-    internal void SetActive(bool value) { active = value; if (active) Refresh(); }
+    internal void SetActive(bool value) { active = value; if (active) { failed.Clear(); ArrangePages(); RefreshVisible(); } }
     internal void SetZoom(double value) { if (Math.Abs(zoom - value) < .001) return; zoom = value; ArrangePages(); }
-    internal void Refresh() { failed.Clear(); ArrangePages(); RefreshVisible(); }
     internal void Jump(int page) { failed.Clear(); MoveTo(new Anchor(Math.Max(0, page - 1), 0)); }
     internal void MoveTo(Anchor anchor)
     {

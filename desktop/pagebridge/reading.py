@@ -12,14 +12,13 @@ import json
 import math
 import os
 from pathlib import Path
-import tempfile
 import time
 import uuid
 from urllib.parse import urlsplit
 
 import pymupdf
 
-from .core import AppError, atomic_json, sha256
+from .core import AppError, atomic_file, atomic_json, sha256, variant_path
 
 READING_ACTIONS = frozenset({"document_navigation", "page_text", "annotations", "save_annotation",
                             "delete_annotation", "export_annotations", "export_notes", "search_document"})
@@ -76,13 +75,8 @@ def _display_rect(value, page):
 @contextmanager
 def _source(store, request, require_revision=False):
     variant = request.get("variant", "original")
-    if not isinstance(variant, str) or variant not in {"original", "translated"}:
-        raise AppError("不支持的 PDF 变体。")
     record = store.get(request.get("document_id"))
-    path = record["input_path" if variant == "original" else "translated_path"]
-    if not path:
-        raise AppError("尚未生成译文。")
-    source = Path(path).resolve()
+    source = Path(variant_path(record, variant)).resolve()
     if not source.is_relative_to(store.root / "documents"):
         raise AppError("PDF 存储路径无效。")
     try:
@@ -189,39 +183,36 @@ def _save(store, binding, source, items):
     atomic_json(_annotation_file(store, binding), data)
 
 
+def _characters(page):
+    raw = page.get_text("rawdict", sort=True, flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
+    lines = (line for block in raw.get("blocks", []) for line in block.get("lines", []))
+    for number, line in enumerate(lines):
+        for span in line.get("spans", []):
+            for char in span.get("chars", []):
+                yield number, char
+
+
 def _page_text(pdf, binding, request):
     number = _integer(request.get("page", 0), "页码超出文档范围。", high=pdf.page_count - 1)
     page = pdf[number]
     tokens = []
     budget = 0
     truncated = False
-    line_number = 0
-    raw = page.get_text("rawdict", sort=True, flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
-    for block in raw.get("blocks", []):
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                for char in span.get("chars", []):
-                    text = char.get("c", "")
-                    if not text or "bbox" not in char:
-                        continue
-                    rect = pymupdf.Rect(char["bbox"]) * page.rotation_matrix
-                    rect &= page.rect
-                    if rect.is_empty or not all(math.isfinite(v) for v in rect):
-                        continue
-                    token = {"text": text, "rect": _rect_json(rect), "line": line_number}
-                    size = len(json.dumps(token, ensure_ascii=False).encode("utf-8")) + 2
-                    if len(tokens) >= MAX_TOKENS or budget + size > MAX_TEXT_BYTES:
-                        truncated = True
-                        break
-                    tokens.append(token)
-                    budget += size
-                if truncated:
-                    break
-            line_number += 1
-            if truncated:
-                break
-        if truncated:
+    for line_number, char in _characters(page):
+        text = char.get("c", "")
+        if not text or "bbox" not in char:
+            continue
+        rect = pymupdf.Rect(char["bbox"]) * page.rotation_matrix
+        rect &= page.rect
+        if rect.is_empty or not all(math.isfinite(v) for v in rect):
+            continue
+        token = {"text": text, "rect": _rect_json(rect), "line": line_number}
+        size = len(json.dumps(token, ensure_ascii=False).encode("utf-8")) + 2
+        if len(tokens) >= MAX_TOKENS or budget + size > MAX_TEXT_BYTES:
+            truncated = True
             break
+        tokens.append(token)
+        budget += size
     return {"source_sha256": binding["source_sha256"], "page": number,
             "width": page.rect.width, "height": page.rect.height,
             "tokens": tokens, "links": _page_links(page, pdf.page_count), "truncated": truncated}
@@ -372,9 +363,8 @@ def _annotate_pdf(pdf, items):
 def _export(store, record, source, pdf, binding, items, request):
     as_pdf = request["action"] == "export_annotations"
     target = _destination(store, source, request.get("destination"), ".pdf" if as_pdf else ".md")
-    fd, temporary = tempfile.mkstemp(prefix=".pagebridge-annotations-", suffix=target.suffix, dir=target.parent)
-    os.close(fd)
-    try:
+
+    def write(temporary):
         if as_pdf:
             _annotate_pdf(pdf, items)
             pdf.save(temporary, garbage=3, deflate=True)
@@ -382,17 +372,14 @@ def _export(store, record, source, pdf, binding, items, request):
             Path(temporary).write_text(_markdown(record, binding, items), encoding="utf-8")
         if sha256(source) != binding["source_sha256"]:
             raise AppError("PDF 内容已变化，未导出其他版本的批注。")
-        os.replace(temporary, target)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+
+    atomic_file(target, write)
     return {"path": str(target), "count": len(items), "source_sha256": binding["source_sha256"]}
 
 
 def dispatch_reading(store, request):
     """Called under bridge.library_lock, including atomic annotation mutations."""
-    action = request.get("action")
-    if not isinstance(action, str) or action not in READING_ACTIONS:
-        raise AppError("不支持的阅读操作。")
+    action = request["action"]
     mutable = action in {"save_annotation", "delete_annotation", "export_annotations", "export_notes"}
     with _source(store, request, require_revision=mutable) as (record, source, pdf, binding):
         if action == "document_navigation":

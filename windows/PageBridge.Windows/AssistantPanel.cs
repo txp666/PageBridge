@@ -18,12 +18,11 @@ internal sealed class AssistantPanel : Grid, IDisposable
     private readonly Func<int> selectionPage;
     private readonly Func<string> currentVariant, selectedText;
     private readonly Func<string> selectionVariant;
-    private readonly Func<string, Task>? saveNote;
+    private readonly Func<string, Task> saveNote;
     private readonly Func<ContentDialog, Task<ContentDialogResult>> showDialog;
     private readonly TextBlock documentName = Text("", 11, .6);
     private readonly ComboBox scope = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12, MinWidth = 0 };
     private readonly ComboBox models = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12, MinWidth = 0 };
-    private string modelDescription = "", destinationHint = "", contextHint = "";
     private readonly TextBlock selectionPreview = Text("", 10, .6);
     private readonly TextBlock error = Text("", 11);
     private readonly TextBlock progress = Text("", 11, .65);
@@ -49,14 +48,12 @@ internal sealed class AssistantPanel : Grid, IDisposable
     internal bool HasDraft => !string.IsNullOrWhiteSpace(question.Text);
 
     internal AssistantPanel(BackendClient backend, Action<int, string> navigate, Func<int> currentPage,
-        Func<string> currentVariant, Func<string> selectedText, Func<string, Task>? saveNote = null,
-        Func<ContentDialog, Task<ContentDialogResult>>? showDialog = null,
-        Func<int>? selectionPage = null, Func<string>? selectionVariant = null)
+        Func<string> currentVariant, Func<string> selectedText, Func<string, Task> saveNote,
+        Func<ContentDialog, Task<ContentDialogResult>> showDialog, Func<int> selectionPage, Func<string> selectionVariant)
     {
         this.backend = backend; this.navigate = navigate; this.currentPage = currentPage;
         this.currentVariant = currentVariant; this.selectedText = selectedText; this.saveNote = saveNote;
-        this.selectionPage = selectionPage ?? currentPage; this.selectionVariant = selectionVariant ?? currentVariant;
-        this.showDialog = showDialog ?? (async dialog => await dialog.ShowAsync());
+        this.selectionPage = selectionPage; this.selectionVariant = selectionVariant; this.showDialog = showDialog;
         HorizontalAlignment = HorizontalAlignment.Stretch; VerticalAlignment = VerticalAlignment.Stretch;
         RowDefinitions.Add(new() { Height = GridLength.Auto });
         RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -166,7 +163,7 @@ internal sealed class AssistantPanel : Grid, IDisposable
         await RefreshAsync();
     }
 
-    internal async Task RefreshAsync()
+    private async Task RefreshAsync()
     {
         if (disposed || documentId.Length == 0) return;
         int version = generation; string id = documentId;
@@ -203,7 +200,7 @@ internal sealed class AssistantPanel : Grid, IDisposable
 
     internal void RefreshContext()
     {
-        contextHint = Mode switch
+        string contextHint = Mode switch
         {
             "currentPage" => $"发送当前第 {currentPage() + 1} 页的有界片段（最多 2,400 字符），附带最近对话。",
             "selection" => "只发送选中文字（最多 6,000 字符）与最近对话，不附带整页。",
@@ -235,11 +232,9 @@ internal sealed class AssistantPanel : Grid, IDisposable
     private void UpdateModelDescription()
     {
         var profile = SelectedProfile;
-        modelDescription = profile is null ? "请在翻译服务设置中添加模型。" : String(profile, "name") + " · " + String(profile, "model");
-        if (profile is null) destinationHint = "";
-        else if (String(profile, "kind") == "ollama") destinationHint = "使用本机 Ollama；模型不随应用打包。";
-        else destinationHint = Uri.TryCreate(String(profile, "baseURL"), UriKind.Absolute, out var address)
-            ? $"点击发送时，所选片段将发送至 {address.Host}。" : "";
+        string modelDescription = profile is null ? "请在翻译服务设置中添加模型。" : String(profile, "name") + " · " + String(profile, "model");
+        string destinationHint = profile is null ? "" : String(profile, "kind") == "ollama" ? "使用本机 Ollama；模型不随应用打包。"
+            : Uri.TryCreate(String(profile, "baseURL"), UriKind.Absolute, out var address) ? $"点击发送时，所选片段将发送至 {address.Host}。" : "";
         string detail = modelDescription + (destinationHint.Length > 0 ? "\n" + destinationHint : "");
         ToolTipService.SetToolTip(models, detail); AutomationProperties.SetHelpText(models, detail);
     }
@@ -282,7 +277,7 @@ internal sealed class AssistantPanel : Grid, IDisposable
             messages = answer?["messages"]?.DeepClone() as JsonArray ?? [];
             if (answer?["context"] is JsonObject context)
             {
-                contextHint = String(context, "scope");
+                string contextHint = String(context, "scope");
                 ToolTipService.SetToolTip(scope, "提问范围\n" + contextHint); AutomationProperties.SetHelpText(scope, contextHint);
             }
             progress.Text = ""; RenderMessages();
@@ -341,7 +336,7 @@ internal sealed class AssistantPanel : Grid, IDisposable
             {
                 var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
                 tools.Children.Add(IconButton("copy", "复制回答", () => { var data = new DataPackage(); data.SetText(body); Clipboard.SetContent(data); progress.Text = "回答已复制"; return Task.CompletedTask; }));
-                if (saveNote is not null) tools.Children.Add(IconButton("note", "保存到阅读笔记", async () =>
+                tools.Children.Add(IconButton("note", "保存到阅读笔记", async () =>
                 {
                     string noteText = body.Length > 7800 ? body[..7800] + "\n\n（回答超过笔记长度上限，仅截取前 7,800 字符；完整回答可在助手中复制。）" : body;
                     await saveNote("AI 文档助手\n\n" + noteText + "\n\nAI 生成，请对照原文核实。"); progress.Text = "已交给阅读笔记";

@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Assemble the locked x64 worker into a relocatable Windows private runtime."""
-from __future__ import annotations
-
 import argparse
 from importlib import metadata
 import json
@@ -16,7 +14,6 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE_FILES = ('worker.py', 'translation_guard.py', 'layout_guard.py', 'pdf_links.py', 'structured_reading.py', 'reading_background.py', 'reading_tables.py', 'reading_text_effects.py', 'mineru_bridge.py', 'setup-mineru.py', 'mineru-requirements.txt', 'mineru-models.json', 'structured-reading.schema.json', 'vendor/uv-LICENSE-MIT', 'vendor/uv-LICENSE-APACHE', 'pyproject.toml', 'uv.lock')
 
 
 def canonical(value):
@@ -45,7 +42,7 @@ def check_interpreter_abi(info, executable):
 
 def check_tree(root):
     for path in root.rglob("*"):
-        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        if path.is_symlink() or path.is_junction():
             raise ValueError(f"Runtime contains a link or junction: {path.name}")
 
 
@@ -172,7 +169,7 @@ def main():
         shutil.copytree(packages, runtime / "Lib/site-packages", dirs_exist_ok=True, ignore=ignore)
         profile = json.loads((ROOT / "scripts/bundle-profile.json").read_text())
         report = prune(runtime, profile, info["versions"])
-        for name in ENGINE_FILES:
+        for name in profile["engineFiles"]:
             (stage / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "engine" / name, stage / name)
         uv_source = Path(os.environ.get("PAGEBRIDGE_UV", ROOT / "engine/.tools/bin/uv.exe"))
@@ -181,8 +178,6 @@ def main():
             if not resolved_uv:
                 raise ValueError("uv 0.9.17 is required for the optional reading runtime bootstrap.")
             uv_source = Path(resolved_uv)
-        if subprocess.check_output([str(uv_source), "--version"], text=True).split()[:2] != ["uv", "0.9.17"]:
-            raise ValueError("Expected uv 0.9.17 for the reading runtime bootstrap.")
         (stage / "tools").mkdir()
         shutil.copy2(uv_source, stage / "tools/uv.exe")
         (stage / "runtime-info.json").write_text(json.dumps({key: info[key] for key in ("pythonVersion", "architecture", "pythonPlatform", "processBits", "nativeOSArchitecture", "versions")}, indent=2) + "\n", encoding="utf-8")

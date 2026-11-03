@@ -56,7 +56,7 @@ final class ServiceProviderTests: XCTestCase {
         var renamed = existing
         renamed.name = "新名字"; renamed.model = "deepseek-v4-pro"; renamed.baseURL += "/"
         XCTAssertTrue(existing.hasSameCredentialDestination(as: renamed))
-        var custom = ServiceConfiguration.defaultOpenAI
+        var custom = ServiceConfiguration.preset(.custom)
         custom.baseURL = "https://gateway.example/team-a/v1"
         var otherTenant = custom
         otherTenant.baseURL = "https://gateway.example/team-b/v1"

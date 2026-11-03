@@ -31,8 +31,6 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     private int currentPage, generation;
     private bool translatedAvailable, selectionAvailable, disposed, busy, editing;
 
-    internal string SelectedVariant => variant;
-    internal string SourceSHA => sourceSHA;
     internal bool IsBusy => busy || editing;
     internal event Action<string>? VariantChanged;
     internal event Action<string, string, JsonArray>? AnnotationsChanged;
@@ -130,16 +128,13 @@ internal sealed class AnnotationsPanel : Grid, IDisposable
     }
 
     /// <summary>Root supplies the captured page, regions and quote before the editor takes focus.</summary>
-    internal async Task CreateNoteAsync(JsonObject draft, string? sourceVariant = null)
+    internal async Task CreateNoteAsync(JsonObject draft, string sourceVariant)
     {
         if (disposed || editing || documentId.Length == 0) return;
         string id = documentId;
-        if (sourceVariant is not null && sourceVariant != variant) await SetVariantAsync(sourceVariant);
+        if (sourceVariant != variant) await SetVariantAsync(sourceVariant);
         if (documentId != id || sourceSHA.Length == 0) return;
-        var note = (JsonObject)draft.DeepClone(); note["kind"] = "note";
-        if (note["page"] is null) note["page"] = currentPage;
-        if (note["regions"] is null) note["regions"] = new JsonArray();
-        await EditAsync(note, true);
+        await EditAsync(draft, true);
     }
 
     internal async Task EditAnnotationAsync(string id)

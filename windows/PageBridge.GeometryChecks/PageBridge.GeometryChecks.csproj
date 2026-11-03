@@ -9,6 +9,5 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../PageBridge.Windows/PageScrollGeometry.cs" Link="PageScrollGeometry.cs" />
-    <Compile Include="../PageBridge.Windows/ReadingInlineMath.cs" Link="ReadingInlineMath.cs" />
   </ItemGroup>
 </Project>

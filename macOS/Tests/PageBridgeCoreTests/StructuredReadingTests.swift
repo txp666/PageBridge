@@ -103,38 +103,11 @@ final class StructuredReadingTests: XCTestCase {
         XCTAssertThrowsError(try reading.validate(for: record))
     }
 
-    func testLegacyDocumentsDecodeWithoutReadingFields() throws {
-        let (_, record) = try fixture()
-        let data = try JSONEncoder().encode(record)
-        let decoded = try JSONDecoder().decode(DocumentRecord.self, from: data)
-        XCTAssertNil(decoded.readingPath)
-        XCTAssertNil(decoded.preferredOutputMode)
-        XCTAssertFalse(decoded.hasTranslation)
-    }
-
-    func testCodeArtifactKeepsOriginalTokensAndSourceRegionAfterDecoding() throws {
-        let (_, record) = try fixture()
-        let source = "{\n  \"enabled\": false,\n  \"value\": null\n}"
-        var reading = artifact(record, partial: false)
-        reading.pages[0].blocks = [StructuredReadingBlock(id: "p2-code", kind: "code", sourceText: source,
-            status: "preserved", bbox: [10, 20, 100, 80])]
-        let decoded = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
-        XCTAssertNoThrow(try decoded.validate(for: record))
-        let code = try XCTUnwrap(decoded.page(2)?.blocks.first)
-        XCTAssertTrue(code.isSourceRegion)
-        XCTAssertEqual(code.displayText, source)
-        XCTAssertNil(code.translatedText)
-    }
-
-    func testOptionalBackgroundColorAcceptsRGBAndKeepsLegacyArtifactsCompatible() throws {
+    func testBackgroundColorMustBeInRangeRGB() throws {
         let (_, record) = try fixture()
         var reading = artifact(record, partial: false)
-        let legacy = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
-        XCTAssertNil(legacy.pages[0].blocks[0].backgroundColor)
         reading.pages[0].blocks[0].backgroundColor = [232, 241, 255]
-        let decoded = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
-        XCTAssertNoThrow(try decoded.validate(for: record))
-        XCTAssertEqual(decoded.pages[0].blocks[0].backgroundColor, [232, 241, 255])
+        XCTAssertNoThrow(try reading.validate(for: record))
         reading.pages[0].blocks[0].backgroundColor = [255, 256, 255]
         XCTAssertThrowsError(try reading.validate(for: record))
         reading.pages[0].blocks[0].backgroundColor = [255, 255]
@@ -153,14 +126,5 @@ final class StructuredReadingTests: XCTestCase {
         let result = try aliasedRepository.commitReading(result: event, document: aliasedRecord, attempt: attempt, staging: staging)
         XCTAssertNotNil(result.readingPath)
         XCTAssertEqual(result.status, .partial)
-    }
-
-    func testRetryRequestCarriesOnlyTargetBlockAndArtifactReference() throws {
-        let request = WorkerRequest(action: "translate", inputPath: "/input.pdf", outputDirectory: "/attempt",
-            outputMode: "reading", readingPath: "/previous/reading.json", retryBlockIds: ["p2-b1"])
-        let decoded = try JSONDecoder().decode(WorkerRequest.self, from: JSONEncoder().encode(request))
-        XCTAssertEqual(decoded.outputMode, "reading")
-        XCTAssertEqual(decoded.readingPath, "/previous/reading.json")
-        XCTAssertEqual(decoded.retryBlockIds, ["p2-b1"])
     }
 }

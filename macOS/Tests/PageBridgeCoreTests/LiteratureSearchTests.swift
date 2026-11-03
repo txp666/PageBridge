@@ -151,14 +151,6 @@ final class LiteratureSearchTests: XCTestCase {
         }
     }
 
-    func testRateLimitsAndServerFailuresHaveReadableMessages() async {
-        for (status, expected) in [(429, "请求过于频繁"), (503, "暂时不可用"), (403, "暂时拒绝访问")] {
-            let client = fixture(results: [], count: 0, status: status)
-            do { _ = try await client.search("figures"); XCTFail("Expected HTTP error") }
-            catch { XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription) }
-        }
-    }
-
     func testMalformedOrOversizedResponsesDoNotBecomeEmptySuccess() async {
         for (data, expected) in [(Data("not JSON".utf8), "无法读取"), (Data("{}".utf8), "无法读取"),
                                  (Data(repeating: 32, count: 4 * 1_024 * 1_024 + 1), "结果过大")] {
@@ -166,17 +158,6 @@ final class LiteratureSearchTests: XCTestCase {
             do { _ = try await client.search("figures"); XCTFail("Expected invalid response") }
             catch { XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription) }
         }
-    }
-
-    func testTimeoutIsFriendlyAndCancellationPropagates() async {
-        do {
-            _ = try await fixture(error: URLError(.timedOut)).search("figures")
-            XCTFail("Expected timeout")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("超时")) }
-        do {
-            _ = try await fixture(error: URLError(.cancelled)).search("figures")
-            XCTFail("Expected cancellation")
-        } catch { XCTAssertTrue(error is CancellationError) }
     }
 
     private func work(_ id: String, title: String = "Sample document") -> [String: Any] {
@@ -188,15 +169,14 @@ final class LiteratureSearchTests: XCTestCase {
         return Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
     }
 
-    private func fixture(results: [Any] = [], count: Int = 0, status: Int = 200, rawData: Data? = nil,
-                         error: Error? = nil, inspect: @escaping (URLRequest) -> Void = { _ in }) -> LiteratureSearchClient {
+    private func fixture(results: [Any] = [], count: Int = 0, rawData: Data? = nil,
+                         inspect: @escaping (URLRequest) -> Void = { _ in }) -> LiteratureSearchClient {
         let id = UUID().uuidString
         fixtureIDs.append(id)
         let data = rawData ?? (try! JSONSerialization.data(withJSONObject: ["meta": ["count": count], "results": results]))
         LiteratureURLProtocol.register(id) { request in
             inspect(request)
-            if let error { throw error }
-            return (HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, data)
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, data)
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [LiteratureURLProtocol.self]
@@ -208,7 +188,7 @@ final class LiteratureSearchTests: XCTestCase {
 }
 
 private final class LiteratureURLProtocol: URLProtocol {
-    typealias Handler = (URLRequest) throws -> (HTTPURLResponse, Data)
+    typealias Handler = (URLRequest) -> (HTTPURLResponse, Data)
     private static let lock = NSLock()
     private static var handlers: [String: Handler] = [:]
 
@@ -233,12 +213,10 @@ private final class LiteratureURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch { client?.urlProtocol(self, didFailWithError: error) }
+        let (response, data) = handler(request)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}

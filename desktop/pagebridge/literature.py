@@ -37,13 +37,7 @@ MAX_PDF = 100 * 1024 * 1024
 PAGE_SIZE = 20
 
 
-class Cancelled(AppError):
-    pass
-
-
-def _check(cancel, deadline):
-    if cancel is not None and cancel.is_set():
-        raise Cancelled('已取消文献操作。')
+def _check(deadline):
     if time.monotonic() > deadline:
         raise AppError('文献请求超时，请稍后重试或打开来源网页。')
 
@@ -213,14 +207,14 @@ class LiteratureSettings:
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
-    def __init__(self, cancel, deadline, api_key):
-        self.cancel, self.deadline, self.api_key, self.count = cancel, deadline, api_key, 0
+    def __init__(self, deadline, api_key):
+        self.deadline, self.api_key, self.count = deadline, api_key, 0
 
     def redirect_request(self, request, fp, code, message, headers, new_url):
         self.count += 1
         if self.count > 5:
             raise AppError('文献地址重定向过多，请打开来源网页。')
-        _check(self.cancel, self.deadline)
+        _check(self.deadline)
         clean = public_url(new_url)
         validate_addresses(clean)
         if self.api_key is not None and urllib.parse.urlsplit(clean).hostname != 'api.openalex.org':
@@ -240,13 +234,12 @@ def _request(url, accept, api_key=None):
 
 
 @contextmanager
-def response_for(url, *, accept, api_key=None, cancel=None, deadline=None):
-    deadline = deadline or (time.monotonic() + 45)
-    _check(cancel, deadline)
+def response_for(url, *, accept, deadline, api_key=None):
+    _check(deadline)
     clean = public_url(url)
     validate_addresses(clean)
-    _check(cancel, deadline)
-    opener = urllib.request.build_opener(_Redirects(cancel, deadline, api_key))
+    _check(deadline)
+    opener = urllib.request.build_opener(_Redirects(deadline, api_key))
     try:
         with opener.open(_request(clean, accept, api_key), timeout=min(25, max(0.1, deadline-time.monotonic()))) as response:
             if response.status != 200:
@@ -254,7 +247,7 @@ def response_for(url, *, accept, api_key=None, cancel=None, deadline=None):
             final = public_url(response.geturl())
             if response.headers.get('Content-Encoding', 'identity').lower() not in ('', 'identity'):
                 raise AppError('文献服务器返回了不受支持的压缩格式，请打开来源网页。')
-            _check(cancel, deadline)
+            _check(deadline)
             yield response, final
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
@@ -269,13 +262,13 @@ def response_for(url, *, accept, api_key=None, cancel=None, deadline=None):
     except (TimeoutError, socket.timeout):
         raise AppError('文献连接超时，请稍后重试或打开来源网页。') from None
     except (urllib.error.URLError, OSError):
-        _check(cancel, deadline)
+        _check(deadline)
         raise AppError('无法连接文献来源，请检查网络和站点地址。') from None
     except http.client.HTTPException:
         raise AppError('文献响应不完整，请重新下载或打开来源网页。') from None
 
 
-def _chunks(response, limit, cancel, deadline):
+def _chunks(response, limit, deadline):
     declared = response.headers.get('Content-Length')
     if declared is not None:
         try:
@@ -287,7 +280,7 @@ def _chunks(response, limit, cancel, deadline):
     received = 0
     reader = getattr(response, 'read1', response.read)
     while True:
-        _check(cancel, deadline)
+        _check(deadline)
         block = reader(min(64 * 1024, limit - received + 1))
         if not block:
             break
@@ -295,7 +288,7 @@ def _chunks(response, limit, cancel, deadline):
         if received > limit:
             raise AppError('文献内容超过大小上限。PDF 最多支持 100 MB。')
         yield block
-    _check(cancel, deadline)
+    _check(deadline)
     if declared is not None and received != declared:
         raise AppError('文献下载不完整，请重新下载。')
 
@@ -328,7 +321,7 @@ def _work(raw):
                 publication=publication, doi=doi, landing_url=landing, pdf_url=pdf)
 
 
-def search(request, api_key='', cancel=None):
+def search(request, api_key=''):
     query, page, oa = request.get('query'), request.get('page', 1), request.get('open_access_only', False)
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 1024:
         raise AppError('请输入不超过 1024 字符的标题、关键词或 DOI。')
@@ -349,8 +342,8 @@ def search(request, api_key='', cancel=None):
         params['filter'] = ','.join(filters)
     url = OPENALEX + '?' + urllib.parse.urlencode(params)
     deadline = time.monotonic() + 45
-    with response_for(url, accept='application/json', api_key=api_key, cancel=cancel, deadline=deadline) as (response, _):
-        data = b''.join(_chunks(response, MAX_METADATA, cancel, deadline))
+    with response_for(url, accept='application/json', api_key=api_key, deadline=deadline) as (response, _):
+        data = b''.join(_chunks(response, MAX_METADATA, deadline))
     try:
         result = json.loads(data)
         rows = result['results']
@@ -423,13 +416,13 @@ def pdf_url_from_html(html, page_url, expected_doi):
     raise AppError('Sci-Hub 暂未提供可直接打开的 PDF，请打开网页查看或选择公开 PDF 来源。')
 
 
-def resolve_scihub(doi, base, cancel=None):
+def resolve_scihub(doi, base):
     page_url = article_url(doi, base)
     deadline = time.monotonic() + 45
-    with response_for(page_url, accept='text/html, application/pdf;q=0.9', cancel=cancel, deadline=deadline) as (response, final):
+    with response_for(page_url, accept='text/html, application/pdf;q=0.9', deadline=deadline) as (response, final):
         if response.headers.get('Content-Type', '').split(';')[0].strip().lower() == 'application/pdf':
             return final
-        raw = b''.join(_chunks(response, MAX_HTML, cancel, deadline))
+        raw = b''.join(_chunks(response, MAX_HTML, deadline))
     try:
         html = raw.decode('utf-8')
     except UnicodeDecodeError:
@@ -486,15 +479,15 @@ def _prune(root):
             pass
 
 
-def download_pdf(url, destination, cancel=None):
+def download_pdf(url, destination):
     deadline = time.monotonic() + 180
     prefix = bytearray()
-    with response_for(url, accept='application/pdf, application/octet-stream;q=0.8', cancel=cancel, deadline=deadline) as (response, final):
+    with response_for(url, accept='application/pdf, application/octet-stream;q=0.8', deadline=deadline) as (response, _):
         mime = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
         if mime in ('text/html', 'application/xhtml+xml', 'application/json', 'text/plain'):
             raise AppError('来源返回了网页而非 PDF；可能需要验证，请打开来源网页。')
         with destination.open('xb') as stream:
-            for block in _chunks(response, MAX_PDF, cancel, deadline):
+            for block in _chunks(response, MAX_PDF, deadline):
                 if len(prefix) < 1024:
                     prefix.extend(block[:1024-len(prefix)])
                 stream.write(block)
@@ -503,19 +496,17 @@ def download_pdf(url, destination, cancel=None):
     if b'%PDF-' not in prefix:
         raise AppError('下载内容不是可识别的 PDF，请打开来源网页。')
     checked_pdf(destination)
-    _check(cancel, deadline)
-    return final
+    _check(deadline)
 
 
 @dataclass
 class DownloadedPDF:
     path: Path
     source: str
-    url: str
 
 
 @contextmanager
-def open_document(root, request, settings, cancel=None):
+def open_document(root, request, settings):
     work = request.get('work')
     if not isinstance(work, dict) or not _clean(work.get('title'), 800):
         raise AppError('文献条目无效，请重新搜索。')
@@ -524,8 +515,7 @@ def open_document(root, request, settings, cancel=None):
         raise AppError('请选择 Sci-Hub 或公开 PDF 来源。')
     doi = normalized_doi(work.get('doi'))
     open_access = _optional_url(work.get('pdf_url'))
-    landing = _optional_url(work.get('landing_url'))
-    fallback = landing
+    fallback = _optional_url(work.get('landing_url'))
     job = _operation_id(request.get('operation_id', str(uuid.uuid4())))
     directory = None
     try:
@@ -534,7 +524,7 @@ def open_document(root, request, settings, cancel=None):
         if request.get('resolved_url') is not None:
             target = public_url(request['resolved_url'])
         elif source == 'sciHub':
-            target = resolve_scihub(doi, request.get('scihub_base_url', settings['scihub_base_url']), cancel)
+            target = resolve_scihub(doi, request.get('scihub_base_url', settings['scihub_base_url']))
         elif open_access:
             target = open_access
         else:
@@ -547,16 +537,14 @@ def open_document(root, request, settings, cancel=None):
             raise AppError('这项下载任务已存在，请等待完成后重试。') from None
         directory = candidate
         path = directory / filename(work['title'])
-        final = download_pdf(target, path, cancel)
-    except Cancelled:
-        raise
+        download_pdf(target, path)
     except AppError as error:
         yield dict(document=None, requires_browser=bool(fallback), page_url=fallback, message=str(error),
                    can_try_open_access=source != 'openAccess' and open_access is not None)
     else:
         # Import exceptions belong to the caller, not a network fallback. This
         # yield stays outside the try/except to avoid yielding twice on failure.
-        yield DownloadedPDF(path, source, final)
+        yield DownloadedPDF(path, source)
     finally:
         if directory is not None:
             try:
