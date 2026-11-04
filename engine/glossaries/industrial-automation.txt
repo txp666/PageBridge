@@ -1,0 +1,86 @@
+# 工业自动化与电气传动：PLC、伺服、变频器、现场总线和电气元件。英文 → 简体中文。
+# 只写英文的行保留不译。
+PLC
+HMI
+SCADA
+DCS
+VFD
+PID
+STO
+I/O
+EtherCAT
+PROFINET
+PROFIBUS
+Modbus
+CANopen
+EtherNet/IP
+OPC UA
+IO-Link
+programmable logic controller = 可编程逻辑控制器
+human-machine interface = 人机界面
+servo drive = 伺服驱动器
+servo motor = 伺服电机
+stepper motor = 步进电机
+induction motor = 感应电机
+frequency inverter = 变频器
+inverter = 变频器
+encoder = 编码器
+absolute encoder = 绝对值编码器
+incremental encoder = 增量式编码器
+resolver = 旋转变压器
+torque = 转矩
+rated torque = 额定转矩
+rated current = 额定电流
+rated speed = 额定转速
+rated power = 额定功率
+setpoint = 设定值
+feedback = 反馈
+parameter = 参数
+alarm = 报警
+fault = 故障
+warning = 警告
+emergency stop = 急停
+safe torque off = 安全转矩关断
+limit switch = 限位开关
+proximity sensor = 接近传感器
+photoelectric sensor = 光电传感器
+relay = 继电器
+contactor = 接触器
+circuit breaker = 断路器
+fuse = 熔断器
+terminal block = 端子排
+shielded cable = 屏蔽电缆
+grounding = 接地
+wiring diagram = 接线图
+control cabinet = 控制柜
+fieldbus = 现场总线
+digital input = 数字量输入
+digital output = 数字量输出
+analog input = 模拟量输入
+analog output = 模拟量输出
+ladder diagram = 梯形图
+function block = 功能块
+structured text = 结构化文本
+scan cycle = 扫描周期
+proportional gain = 比例增益
+integral time = 积分时间
+derivative time = 微分时间
+position loop = 位置环
+speed loop = 速度环
+current loop = 电流环
+electronic gear ratio = 电子齿轮比
+homing = 回原点
+home position = 原点
+jog = 点动
+acceleration time = 加速时间
+deceleration time = 减速时间
+overload = 过载
+overcurrent = 过电流
+overvoltage = 过电压
+undervoltage = 欠电压
+overheating = 过热
+regenerative braking = 再生制动
+braking resistor = 制动电阻
+holding brake = 抱闸
+commissioning = 调试
+firmware = 固件

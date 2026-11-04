@@ -49,12 +49,19 @@ Start one worker process per request and write one UTF-8 JSON line to stdin. API
 | `prepare_reading` | Installs the MinerU runtime if needed; no service required |
 | `translate` | Validates input and pages, parses and translates a reading draft and publishes a result directory atomically |
 | `export_reading` | Writes a translated or bilingual PDF from a committed reading draft; no service or network |
+| `suggest_terms` | Counts candidate terms in a PDF or reading draft and asks the service to pick and translate domain terms; nothing is saved |
 
 `kind` is `ollama` or `openai`. Ollama accepts only loopback hosts and uses its OpenAI-compatible `/v1` endpoint. Remote services require HTTPS and a key; supply the Base URL, not a `/chat/completions` URL. Timeouts are 10–600 seconds and concurrency 1–8. Optional `provider` names a preset (`deepSeek`, `alibaba`, `siliconFlow`, `openAI`, `ollama`, `custom`); known online presets must match their official endpoint, and other regions or gateways use `custom`. Known provider/model pairs receive matching request options; arbitrary model IDs carry no compatibility claim. Model-list discovery is a host request, not a worker action.
 
 The local Ollama preset disables presence penalties and caps each translation response at 8192 tokens (probes: 1024). Length-truncated or content-filtered responses are rejected.
 
 `pages` is null (all pages) or a range such as `1,3-5`.
+
+With `readingPath`, a translate request builds on a committed draft: `retryBlockIds` re-translates those blocks, `retryTerms` (1–200 strings) re-translates every block whose source contains one of the terms, and `appendPages: true` with `pages` parses only the pages not yet in the draft and merges them in. Only pages that changed get a new background. A `retryTerms` result also reports `retranslatedBlocks`.
+
+`suggest_terms` takes `inputPath`, optional `readingPath` (its block text is used, which covers scanned pages), `sourceLanguage`, `targetLanguage`, `service`, optional `glossary` (entries to leave out) and `limit` (1–150, default 60). Phrases, acronyms of three or more capitals and long lowercase words are counted locally; the top 150 and the first 4,000 characters are sent in one request. Its `result` carries `terms`, each `{source, target|null, count}`, limited to terms that occur in the document.
+
+Optional `glossary` is the user's terminology text (at most 100,000 characters), one entry per line: `source = target` (also `=>`, `→` or a tab) fixes a rendering, a bare `source` keeps the term as written, and `#` lines are comments. `glossary.py` parses it; each passage's prompt lists only the entries that occur in it (Latin terms match whole words with common inflections: -s/-es, -y/-ies and -ics/-ic; terms with a capital after the first letter, such as `CAN` or `mRNA`, match case-sensitively, others ignore case; at most 40, longest first). If the answer lacks a listed rendering, one follow-up request names the missed terms, and the revision is kept only when it misses fewer terms and keeps every formula marker.
 
 Every stdout line includes `protocolVersion`, `jobId`, `attemptId`, a monotonic `sequence` and `type` (`ready`, `stage`, `progress`, `result`, `error`). Progress stays below 1 until verification, and exactly one terminal `result` or `error` is emitted; results carry `engineVersion`. Fixed messages replace upstream diagnostic strings. Retries need a new attempt ID; earlier successful attempts are never overwritten.
 

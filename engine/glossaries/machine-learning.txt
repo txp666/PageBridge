@@ -1,0 +1,115 @@
+# 机器学习与人工智能：模型、训练、评测和常见架构。英文 → 简体中文。
+# 只写英文的行保留不译。
+Transformer
+LLM
+GPT
+BERT
+CNN
+RNN
+LSTM
+GAN
+VAE
+ViT
+GNN
+MoE
+RAG
+RLHF
+NLP
+SGD
+Adam
+ReLU
+softmax
+dropout
+token
+AUC
+machine learning = 机器学习
+deep learning = 深度学习
+neural network = 神经网络
+convolutional neural network = 卷积神经网络
+recurrent neural network = 循环神经网络
+graph neural network = 图神经网络
+generative adversarial network = 生成对抗网络
+variational autoencoder = 变分自编码器
+autoencoder = 自编码器
+diffusion model = 扩散模型
+large language model = 大语言模型
+foundation model = 基础模型
+vision transformer = 视觉 Transformer
+mixture of experts = 混合专家
+attention mechanism = 注意力机制
+self-attention = 自注意力
+multi-head attention = 多头注意力
+attention head = 注意力头
+positional encoding = 位置编码
+residual connection = 残差连接
+layer normalization = 层归一化
+batch normalization = 批归一化
+activation function = 激活函数
+embedding = 嵌入
+encoder = 编码器
+decoder = 解码器
+latent space = 隐空间
+latent variable = 隐变量
+tokenizer = 分词器
+context window = 上下文窗口
+prompt = 提示词
+chain-of-thought = 思维链
+retrieval-augmented generation = 检索增强生成
+zero-shot = 零样本
+few-shot = 少样本
+pre-training = 预训练
+pretraining = 预训练
+fine-tuning = 微调
+knowledge distillation = 知识蒸馏
+quantization = 量化
+inference = 推理
+hallucination = 幻觉
+reinforcement learning = 强化学习
+supervised learning = 监督学习
+unsupervised learning = 无监督学习
+self-supervised learning = 自监督学习
+reward model = 奖励模型
+policy network = 策略网络
+agent = 智能体
+training set = 训练集
+validation set = 验证集
+test set = 测试集
+data augmentation = 数据增强
+annotation = 标注
+ground truth = 真实标签
+loss function = 损失函数
+objective function = 目标函数
+cross-entropy = 交叉熵
+gradient descent = 梯度下降
+stochastic gradient descent = 随机梯度下降
+backpropagation = 反向传播
+optimizer = 优化器
+learning rate = 学习率
+batch size = 批大小
+epoch = 轮次
+hyperparameter = 超参数
+weight decay = 权重衰减
+regularization = 正则化
+overfitting = 过拟合
+underfitting = 欠拟合
+generalization = 泛化
+convergence = 收敛
+classifier = 分类器
+feature map = 特征图
+feature extraction = 特征提取
+accuracy = 准确率
+F1 score = F1 分数
+confusion matrix = 混淆矩阵
+ROC curve = ROC 曲线
+perplexity = 困惑度
+cross-validation = 交叉验证
+ablation study = 消融实验
+baseline = 基线
+benchmark = 基准
+object detection = 目标检测
+image classification = 图像分类
+semantic segmentation = 语义分割
+natural language processing = 自然语言处理
+computer vision = 计算机视觉
+precision-recall curve = 精确率-召回率曲线
+mixed precision = 混合精度

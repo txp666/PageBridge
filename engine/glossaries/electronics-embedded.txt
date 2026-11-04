@@ -1,0 +1,97 @@
+# 电子与嵌入式：芯片数据手册、单片机外设、电源和 PCB 设计。英文 → 简体中文。
+# 只写英文的行保留不译。
+MCU
+SoC
+FPGA
+GPIO
+UART
+SPI
+I2C
+USB
+ADC
+DAC
+PWM
+DMA
+RTOS
+JTAG
+SWD
+EEPROM
+SRAM
+DRAM
+LDO
+PLL
+MOSFET
+IGBT
+ESD
+EMC
+EMI
+ISR
+microcontroller = 微控制器
+peripheral = 外设
+register = 寄存器
+interrupt = 中断
+interrupt service routine = 中断服务程序
+clock = 时钟
+timer = 定时器
+prescaler = 预分频器
+watchdog timer = 看门狗定时器
+watchdog = 看门狗
+bootloader = 引导加载程序
+firmware = 固件
+flash memory = 闪存
+reset = 复位
+power-on reset = 上电复位
+brown-out reset = 欠压复位
+low-power mode = 低功耗模式
+sleep mode = 睡眠模式
+deep sleep = 深度睡眠
+datasheet = 数据手册
+application note = 应用笔记
+errata = 勘误表
+reference manual = 参考手册
+evaluation board = 评估板
+development board = 开发板
+schematic = 原理图
+pinout = 引脚定义
+pin = 引脚
+power supply = 电源
+voltage regulator = 稳压器
+switching regulator = 开关稳压器
+buck converter = 降压转换器
+boost converter = 升压转换器
+ripple = 纹波
+decoupling capacitor = 去耦电容
+bypass capacitor = 旁路电容
+pull-up resistor = 上拉电阻
+pull-down resistor = 下拉电阻
+open-drain = 开漏
+push-pull = 推挽
+tri-state = 三态
+high impedance = 高阻态
+logic level = 逻辑电平
+level shifter = 电平转换器
+rising edge = 上升沿
+falling edge = 下降沿
+duty cycle = 占空比
+baud rate = 波特率
+crystal oscillator = 晶体振荡器
+oscillator = 振荡器
+phase-locked loop = 锁相环
+operational amplifier = 运算放大器
+op amp = 运放
+comparator = 比较器
+ground plane = 地平面
+signal integrity = 信号完整性
+impedance matching = 阻抗匹配
+differential pair = 差分对
+crosstalk = 串扰
+reflow soldering = 回流焊
+absolute maximum ratings = 绝对最大额定值
+electrical characteristics = 电气特性
+operating temperature = 工作温度
+quiescent current = 静态电流
+leakage current = 漏电流
+propagation delay = 传播延迟
+setup time = 建立时间
+hold time = 保持时间
+debouncing = 消抖

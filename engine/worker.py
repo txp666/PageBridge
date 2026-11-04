@@ -15,8 +15,10 @@ import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+import glossary
+
 PROTOCOL_VERSION = 1
-MAX_REQUEST_BYTES = 65536
+MAX_REQUEST_BYTES = 1_048_576
 EXPECTED = {"PyMuPDF": "1.25.2", "httpx": "0.28.1", "psutil": "7.2.2"}
 
 
@@ -228,11 +230,12 @@ def parse_request(raw):
         value = require_text(request, key, 128)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise WorkerError(f"{key} 格式无效。")
-    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading"):
+    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading", "suggest_terms"):
         raise WorkerError("不支持此操作。")
-    if request["action"] in ("probe", "translate"):
+    if request["action"] in ("probe", "translate", "suggest_terms"):
         request["service"] = normalized_service(request.get("service"))
     paths = {"translate": ("inputPath", "outputDirectory"),
+             "suggest_terms": ("inputPath",) + (("readingPath",) if request.get("readingPath") is not None else ()),
              "export_reading": ("inputPath", "readingPath", "outputPath")}.get(request["action"], ())
     for key in paths:
         path = Path(require_text(request, key, 8192)).expanduser()
@@ -241,18 +244,40 @@ def parse_request(raw):
         request[key] = str(path.resolve())
     if request["action"] == "export_reading" and request.get("kind") not in ("translated", "bilingual"):
         raise WorkerError("不支持此导出形式。")
+    if request["action"] == "suggest_terms":
+        for key, default in (("sourceLanguage", "en"), ("targetLanguage", "zh")):
+            request.setdefault(key, default)
+            if not isinstance(request[key], str) or not re.fullmatch(r"[a-zA-Z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?", request[key]):
+                raise WorkerError(f"{key} 格式无效。")
+        terms = request.get("glossary")
+        if terms is not None and (not isinstance(terms, str) or len(terms) > glossary.MAX_TEXT):
+            raise WorkerError("术语表格式无效或超过 100,000 字符。")
+        limit = request.setdefault("limit", 60)
+        if type(limit) is not int or not 1 <= limit <= 150:
+            raise WorkerError("术语数量上限无效。")
     if request["action"] == "translate":
         for key, default in (("sourceLanguage", "en"), ("targetLanguage", "zh")):
             request.setdefault(key, default)
             if not isinstance(request[key], str) or not re.fullmatch(r"[a-zA-Z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?", request[key]):
                 raise WorkerError(f"{key} 格式无效。")
+        terms = request.get("glossary")
+        if terms is not None and (not isinstance(terms, str) or len(terms) > glossary.MAX_TEXT):
+            raise WorkerError("术语表格式无效或超过 100,000 字符。")
         pages = request.get("pages")
         if pages is not None and (not isinstance(pages, str) or len(pages) > 2048):
             raise WorkerError("页码范围格式无效。")
         retry = request.get("retryBlockIds")
+        retry_terms = request.get("retryTerms")
+        append = request.get("appendPages")
         reading_path = request.get("readingPath")
-        if retry is not None or reading_path is not None:
-            if (not isinstance(retry, list) or not 1 <= len(retry) <= 1000
+        if append is not None and (append is not True or pages is None or retry is not None or retry_terms is not None):
+            raise WorkerError("追加翻译需要指定页码。")
+        if retry_terms is not None and (retry is not None or not isinstance(retry_terms, list) or not 1 <= len(retry_terms) <= 200
+                                        or any(not isinstance(t, str) or not t.strip() or len(t) > 200 for t in retry_terms)):
+            raise WorkerError("请提供有效的重译术语。")
+        if retry is not None or retry_terms is not None or append or reading_path is not None:
+            if retry_terms is None and not append and (
+                    not isinstance(retry, list) or not 1 <= len(retry) <= 1000
                     or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) for value in retry)
                     or len(set(retry)) != len(retry)):
                 raise WorkerError("请选择有效的译文块重试。")
@@ -300,7 +325,8 @@ def safe_error(error):
     # This module defines fixed user-facing errors; arbitrary parser/provider
     # exception text must still stay out of the protocol.
     from structured_reading import ReadingError
-    if isinstance(error, ReadingError):
+    from term_suggestions import SuggestionError
+    if isinstance(error, (ReadingError, SuggestionError)):
         return str(error)
     # Classify privately; never echo upstream exceptions, request content or keys.
     message = str(error).lower()
@@ -388,6 +414,9 @@ async def run(request, events, control_input=None):
     elif request["action"] == "export_reading":
         from reading_export import export
         await export(request, events)
+    elif request["action"] == "suggest_terms":
+        from term_suggestions import suggest
+        await suggest(request, events)
     else:
         from structured_reading import translate
         await translate(request, events)

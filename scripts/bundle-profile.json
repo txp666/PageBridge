@@ -1,7 +1,7 @@
 {
   "profile": "native-ollama-openai-v1",
   "auditedEngineVersions": {"PyMuPDF": "1.25.2", "httpx": "0.28.1", "psutil": "7.2.2", "cryptography": "50.0.2"},
-  "engineFiles": ["worker.py", "structured_reading.py", "reading_background.py", "reading_tables.py", "reading_export.py", "mineru_bridge.py", "mineru-requirements.txt", "mineru-models.json", "structured-reading.schema.json", "vendor/uv-LICENSE-MIT", "vendor/uv-LICENSE-APACHE", "pyproject.toml", "uv.lock"],
+  "engineFiles": ["worker.py", "structured_reading.py", "reading_background.py", "reading_tables.py", "reading_export.py", "glossary.py", "term_suggestions.py", "glossaries/index.json", "glossaries/industrial-automation.txt", "glossaries/electronics-embedded.txt", "glossaries/mechanical.txt", "glossaries/machine-learning.txt", "glossaries/statistics.txt", "glossaries/academic-writing.txt", "glossaries/telecom-networking.txt", "glossaries/automotive-electronics.txt", "glossaries/medicine-life-sciences.txt", "mineru_bridge.py", "mineru-requirements.txt", "mineru-models.json", "structured-reading.schema.json", "vendor/uv-LICENSE-MIT", "vendor/uv-LICENSE-APACHE", "pyproject.toml", "uv.lock"],
   "excludedDistributions": {
     "development-tool": ["pip"]
   },

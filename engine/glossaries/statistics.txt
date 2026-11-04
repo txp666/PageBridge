@@ -1,0 +1,73 @@
+# 统计与实验方法：检验、回归、分布和研究设计。英文 → 简体中文。
+# 只写英文的行保留不译。
+ANOVA
+MCMC
+MLE
+RCT
+FDR
+p-value = p 值
+null hypothesis = 零假设
+alternative hypothesis = 备择假设
+significance level = 显著性水平
+statistically significant = 具有统计学意义
+statistical significance = 统计学意义
+type I error = 第一类错误
+type II error = 第二类错误
+statistical power = 统计功效
+confidence interval = 置信区间
+effect size = 效应量
+sample size = 样本量
+standard deviation = 标准差
+standard error = 标准误
+variance = 方差
+covariance = 协方差
+correlation coefficient = 相关系数
+median = 中位数
+interquartile range = 四分位距
+outlier = 离群值
+normal distribution = 正态分布
+Gaussian distribution = 高斯分布
+Poisson distribution = 泊松分布
+binomial distribution = 二项分布
+uniform distribution = 均匀分布
+t-test = t 检验
+chi-square test = 卡方检验
+analysis of variance = 方差分析
+nonparametric = 非参数
+multiple comparisons = 多重比较
+Bonferroni correction = Bonferroni 校正
+false discovery rate = 错误发现率
+linear regression = 线性回归
+logistic regression = 逻辑回归
+regression coefficient = 回归系数
+residual = 残差
+least squares = 最小二乘法
+maximum likelihood estimation = 最大似然估计
+likelihood function = 似然函数
+prior distribution = 先验分布
+posterior distribution = 后验分布
+Bayesian inference = 贝叶斯推断
+Markov chain Monte Carlo = 马尔可夫链蒙特卡洛
+bootstrap resampling = 自助重抽样
+kernel density estimation = 核密度估计
+goodness of fit = 拟合优度
+coefficient of determination = 决定系数
+heteroscedasticity = 异方差
+multicollinearity = 多重共线性
+time series = 时间序列
+autocorrelation = 自相关
+independent variable = 自变量
+dependent variable = 因变量
+covariate = 协变量
+confounder = 混杂因素
+confounding = 混杂
+control group = 对照组
+treatment group = 实验组
+randomized controlled trial = 随机对照试验
+double-blind = 双盲
+placebo = 安慰剂
+cohort study = 队列研究
+cross-sectional study = 横断面研究
+longitudinal study = 纵向研究
+meta-analysis = 荟萃分析
+systematic review = 系统综述
