@@ -1,5 +1,23 @@
 # 版本记录
 
+## 0.7.0 / build 18 — 术语表、边读边加术语、追加页和全库搜索
+
+- 术语表：内置九个英文→简体中文领域术语表（工业自动化、电子与嵌入式、机械、通信、汽车电子、机器学习、统计、医学、学术论文）；可新建、复制、修改、导入导出（TXT／CSV），设置语言对，翻译时可同时选用多个。同一术语在整份阅读稿中译法一致。
+- 边读边加术语：在段落详情或原文选区把词加入术语表，只重译阅读稿中含这个词的段落。
+- 提取术语：从当前文档统计候选术语，由所选模型给出常用译法，核对后加入术语表。
+- 追加页：已有阅读稿时选择“指定页面”，只翻译尚未翻译的页并合并进去，长手册可以分章翻译。
+- 全库搜索：在所有文档的原文和译文中查找文字，点击结果打开到对应页。
+- 用中文问英文文档时，文档助手借术语表找到相关的原文页。
+
+**English**
+
+- Glossaries: nine built-in English→Simplified Chinese glossaries (industrial automation, electronics and embedded, mechanical, communications, automotive electronics, machine learning, statistics, medicine, academic writing); create, copy, edit, import and export (TXT/CSV), set language pairs, and combine several in one translation. A term is rendered the same way across the whole reading draft.
+- Add terms while reading: add a word from a paragraph's details or a source selection, and only the paragraphs containing it are re-translated.
+- Term extraction: candidate terms are counted in the current document and the selected model suggests their usual translation for review.
+- Append pages: with an existing reading draft, choosing specific pages translates only the pages not yet translated and merges them in, so long manuals can be translated chapter by chapter.
+- Library search: find text in the originals and translations of every document and open a hit at its page.
+- For a Chinese question about an English document, the assistant uses the glossaries to find the relevant source pages.
+
 ## 0.6.1 / build 17 — 批注可右键删除和撤销
 
 - 在原文的高亮、下划线或笔记上右键即可“删除批注”，不必再打开笔记面板。
