@@ -33,6 +33,8 @@ import pymupdf
 from pagebridge.core import AppError, DocumentStore, atomic_file, sha256
 from pagebridge.reading import READING_ACTIONS, _destination, dispatch_reading
 from pagebridge import assistant
+from pagebridge.glossaries import GlossaryStore
+from pagebridge import library_search
 from pagebridge import literature
 from pagebridge import updates
 from pagebridge import structured
@@ -40,12 +42,23 @@ from pagebridge.services import ServiceStore, list_models, new_profile, probe_se
 from pagebridge.worker import WorkerTask
 
 
+GLOSSARY_ACTIONS = {
+    "glossaries": lambda store, r: store.snapshot(),
+    "glossary_get": lambda store, r: store.get(r.get("glossary_id")),
+    "glossary_create": lambda store, r: store.create(r.get("name"), r.get("text", ""), r.get("source_language"), r.get("target_language")),
+    "glossary_duplicate": lambda store, r: store.duplicate(r.get("glossary_id")),
+    "glossary_update": lambda store, r: store.update(r.get("glossary_id"), r.get("name"), r.get("text"), r.get("source_language"), r.get("target_language")),
+    "glossary_delete": lambda store, r: store.delete(r.get("glossary_id")),
+    "glossary_import": lambda store, r: store.import_file(r.get("path")),
+    "glossary_export": lambda store, r: store.export_file(r.get("glossary_id"), r.get("destination")),
+}
+DOCUMENT_GLOSSARY_ACTIONS = frozenset({"glossary_add_terms", "glossary_link"})
 WRITE_LOCK = threading.Lock()
 MAX_RESPONSE_BYTES = 1048576
 LOCAL_ACTIONS = frozenset({"list", "recover", "import", "rename", "folders", "create_folder", "rename_folder",
                            "delete_folder", "move", "trash", "favorite", "reading", "export", "render", "page_info",
-                           "reading_page", "assistant_history", "assistant_clear"}) | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
-STREAMING_ACTIONS = frozenset({"translate", "export_reading"})
+                           "reading_page", "assistant_history", "assistant_clear", "library_search"}) | frozenset(GLOSSARY_ACTIONS) | DOCUMENT_GLOSSARY_ACTIONS | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
+STREAMING_ACTIONS = frozenset({"translate", "export_reading", "suggest_terms"})
 ENGINE_ROOT = Path(__file__).resolve().parent.parent / "engine"
 
 
@@ -221,6 +234,8 @@ def assistant_request(request, root):
     # Reopen storage after the network call so a clear or another question can
     # invalidate this answer without blocking PDF reading or annotation edits.
     with library_lock(root):
+        # Glossary renderings in the question add source-language search terms.
+        request = dict(request, extra_terms=GlossaryStore(root, ENGINE_ROOT / "glossaries").expansion_terms(request.get("question")))
         prepared = assistant.prepare(DocumentStore(root), ServiceStore(root), request)
     answer = assistant.request_answer(prepared)
     with library_lock(root):
@@ -263,6 +278,9 @@ def dispatch(request, root):
     if action == "export_reading":
         export_reading(request, root)
         return
+    if action == "suggest_terms":
+        suggest_terms(request, root)
+        return
     if action in {"list_models", "probe"}:
         return network_request(request, root)
     if action == "assistant_ask":
@@ -295,6 +313,9 @@ def dispatch(request, root):
         elif action in READING_ACTIONS: result = dispatch_reading(store, request)
         elif action == "assistant_history": result = assistant.AssistantStore(store).history(identifier)
         elif action == "assistant_clear": result = assistant.AssistantStore(store).clear(identifier)
+        elif action in GLOSSARY_ACTIONS: result = GLOSSARY_ACTIONS[action](GlossaryStore(root, ENGINE_ROOT / "glossaries"), request)
+        elif action in DOCUMENT_GLOSSARY_ACTIONS: result = document_glossary(store, GlossaryStore(root, ENGINE_ROOT / "glossaries"), request)
+        elif action == "library_search": result = library_search.search(store.documents(), request.get("query"))
         elif action == "literature_settings": result = literature.LiteratureSettings(root).snapshot()
         elif action == "literature_save_settings": result = literature.LiteratureSettings(root).save(request)
         elif action == "literature_cleanup": result = literature.cleanup(root, request.get("operation_id"))
@@ -364,6 +385,8 @@ def translate(request, root):
             profile = services.get(service_id)
             service = worker_service(profile, services.key(service_id))
             retry_ids = request.get("retryBlockIds")
+            retry_terms = request.get("retry_terms")
+            append = request.get("append") is True
             previous_reading = None
             if retry_ids is not None:
                 if not isinstance(retry_ids, list) or not retry_ids or any(not isinstance(i, str) for i in retry_ids):
@@ -373,13 +396,36 @@ def translate(request, root):
                 if len(retry_ids) != len(set(retry_ids)) or not set(retry_ids) <= available:
                     raise AppError("需要重试的阅读块已变化，请刷新后重试。")
                 previous_reading = doc["reading_path"]
+            elif retry_terms is not None or append:
+                if retry_terms is not None and (not isinstance(retry_terms, list) or not retry_terms or any(not isinstance(t, str) or not t.strip() for t in retry_terms)):
+                    raise AppError("请提供需要重译的术语。")
+                if append and not request.get("pages"):
+                    raise AppError("追加翻译需要指定页码。")
+                _, artifact = structured.committed_artifact(store, identifier)
+                previous_reading = doc["reading_path"]
+            retrying = retry_ids is not None or retry_terms is not None
+            # Retries reuse the draft's glossaries; deleted ones are simply skipped.
+            glossaries = GlossaryStore(root, ENGINE_ROOT / "glossaries")
+            glossary_ids = doc.get("glossary_ids") or [] if retrying else [i for i in request.get("glossary_ids") or [] if isinstance(i, str)]
+            terms = glossaries.combined_text(glossary_ids)
             events.attempt_id, directory = store.new_attempt(identifier)
+            if not retrying:
+                glossaries.set_last_used(glossary_ids)
         envelope = dict(protocolVersion=1, jobId=events.job_id, attemptId=events.attempt_id, action="translate", inputPath=doc["input_path"],
                         outputDirectory=str(directory), sourceLanguage=request.get("sourceLanguage", "en"),
                         targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service)
+        if terms:
+            envelope["glossary"] = terms
         if previous_reading:
-            envelope.update(readingPath=previous_reading, retryBlockIds=retry_ids,
+            # Retries and appended pages keep the draft's languages.
+            envelope.update(readingPath=previous_reading,
                             sourceLanguage=artifact.get("sourceLanguage", "en"), targetLanguage=artifact.get("targetLanguage", "zh"))
+            if retry_ids is not None:
+                envelope["retryBlockIds"] = retry_ids
+            elif retry_terms is not None:
+                envelope.update(retryTerms=retry_terms, pages=None)
+            else:
+                envelope["appendPages"] = True
         task = start_task(envelope, events)
         task.join()
         with library_lock(root):
@@ -389,7 +435,11 @@ def translate(request, root):
                 events.finish("error", stage="cancelled" if task.cancelled else "failed", message=document["last_error"], document=document)
             else:
                 document = store.commit_result(identifier, events.attempt_id, task.result)
-                events.finish("result", progress=1.0, message="部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。", document=document,
+                if not retrying:
+                    # The glossaries belong to the new draft; a failed run keeps the old pairing.
+                    document = store.set_glossaries(identifier, glossary_ids)
+                message = (task.result.get("message") or "已按术语重译。") if retry_terms is not None else "部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。"
+                events.finish("result", progress=1.0, message=message, document=document,
                               artifactType=task.result.get("artifactType"), readingPath=document.get("reading_path"))
     except BaseException as error:
         if task and task.running:
@@ -445,6 +495,66 @@ def export_reading(request, root):
         events.finish("error", message=str(error) if isinstance(error, AppError) else "无法导出 PDF，请重试。")
 
 
+def document_glossary(store, glossaries, request):
+    """Add terms to an own glossary (or a new one for the document) and link it to the document."""
+    identifier = request.get("document_id")
+    doc = store.get(identifier)
+    glossary_id = request.get("glossary_id") or None
+    if request["action"] == "glossary_add_terms":
+        terms = request.get("terms")
+        if not isinstance(terms, list) or not 1 <= len(terms) <= 500 or any(not isinstance(t, dict) for t in terms):
+            raise AppError("请提供要加入的术语。")
+        if glossary_id is None:
+            name = Path(doc["name"]).stem + " 术语"
+            glossary_id = glossaries.create(name, "", doc.get("reading_source_language") or doc.get("source_language"),
+                                            doc.get("reading_target_language") or doc.get("target_language"))["id"]
+        for term in terms:
+            glossaries.add_entry(glossary_id, term.get("source"), term.get("target") or "")
+    elif glossaries.find(glossary_id) is None:
+        raise AppError("术语表已不存在。")
+    linked = list(doc.get("glossary_ids") or [])
+    if glossary_id not in linked:
+        store.set_glossaries(identifier, linked + [glossary_id])
+    return dict(glossary_id=glossary_id)
+
+
+def suggest_terms(request, root):
+    """Ask the engine for candidate terms of one document; nothing is saved here."""
+    identifier = request.get("document_id")
+    events = JobEvents()
+    task = None
+    try:
+        with library_lock(root):
+            store = DocumentStore(root)
+            doc = store.get(identifier)
+            services = ServiceStore(root)
+            service_id = request.get("service_id") or services.active_id
+            profile = services.get(service_id)
+            service = worker_service(profile, services.key(service_id))
+            glossaries = GlossaryStore(root, ENGINE_ROOT / "glossaries")
+            existing = "\n".join([glossaries.combined_text(doc.get("glossary_ids") or []), glossaries.combined_text([request.get("glossary_id")])])
+        envelope = dict(protocolVersion=1, jobId=events.job_id, attemptId=events.attempt_id, action="suggest_terms", inputPath=doc["input_path"],
+                        sourceLanguage=doc.get("reading_source_language") or doc.get("source_language") or "en",
+                        targetLanguage=doc.get("reading_target_language") or doc.get("target_language") or "zh", service=service)
+        if doc.get("reading_path"):
+            envelope["readingPath"] = doc["reading_path"]
+        if existing.strip():
+            envelope["glossary"] = existing[:100_000]
+        task = start_task(envelope, events)
+        task.join()
+        if task.cancelled:
+            events.finish("error", stage="cancelled", message="已取消提取术语。")
+        elif task.error or not task.result:
+            events.finish("error", stage="failed", message=task.error or "未能提取术语，请重试。")
+        else:
+            events.finish("result", progress=1.0, terms=task.result.get("terms") or [], message=task.result.get("message", ""))
+    except BaseException as error:
+        if task and task.running:
+            task.cancel()
+            task.join(12)
+        events.finish("error", message=str(error) if isinstance(error, AppError) else "未能提取术语，请重试。")
+
+
 def checked_request(raw):
     # Decode explicitly: the wire accepts UTF-8, not json.loads' UTF-16 auto-detect.
     request = json.loads(raw.decode("utf-8"))
@@ -472,7 +582,8 @@ def serve(handshake, root):
     while True:
         identifier = None
         try:
-            raw = read_line(require_newline=True)
+            # A saved glossary may be up to 100,000 escaped characters.
+            raw = read_line(limit=MAX_RESPONSE_BYTES, require_newline=True)
             if not raw:
                 return 0
             request = checked_request(raw)

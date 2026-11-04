@@ -26,6 +26,8 @@ internal sealed partial class StructuredReadingPane
     internal event Action<string>? PreviewError;
     internal event Action<int, JsonArray?>? LocateRequested;
     internal event Func<string, Task>? RetryRequested;
+    /// Asks to add a term from this paragraph (its source text is passed for reference).
+    internal event Action<string>? AddTermRequested;
 
     internal StructuredReadingPane(BackendClient backend)
     {
@@ -269,6 +271,10 @@ internal sealed partial class StructuredReadingPane
         var locate = new Button { Content = "定位原文", FontSize = 12 };
         locate.Click += (_, _) => { if (current != generation) return; flyout.Hide(); LocateRequested?.Invoke(pageNumber, bbox?.DeepClone() as JsonArray); };
         actions.Children.Add(locate);
+        var addTerm = new Button { Content = "加入术语…", FontSize = 12 };
+        ToolTipService.SetToolTip(addTerm, "把这段里的某个词加入术语表，并重译含该词的段落");
+        addTerm.Click += (_, _) => { if (current != generation) return; flyout.Hide(); AddTermRequested?.Invoke(source); };
+        actions.Children.Add(addTerm);
         if (status == "source_fallback")
         {
             var retry = new Button { Content = "重试此段", FontSize = 12 };

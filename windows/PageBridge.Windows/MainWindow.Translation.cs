@@ -6,12 +6,12 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
-    private sealed record TranslationChoice(string Source, string Target, string? Pages);
+    private sealed record TranslationChoice(string Source, string Target, string? Pages, IReadOnlyList<string>? GlossaryIds = null, bool Append = false);
     private readonly Button exportCancel = new() { Content = "取消导出", FontSize = 11, MinHeight = 0, Height = 24, Padding = new Thickness(8, 1, 8, 1), Visibility = Visibility.Collapsed };
     private CancellationTokenSource? exportCancellation;
     private bool ReadingExportAvailable => selected is not null && HasReading && translationCancellation is null && !translationPreparing && exportCancellation is null;
 
-    private async Task<TranslationChoice?> TranslationDialogAsync(string name, JsonNode? services)
+    private async Task<TranslationChoice?> TranslationDialogAsync(string name, JsonNode? services, TranslationChoice? initial = null)
     {
         ComboBox LanguagesPicker(string initial)
         {
@@ -20,11 +20,11 @@ public sealed partial class MainWindow
             picker.SelectedItem = picker.Items.OfType<ComboBoxItem>().FirstOrDefault(x => (string)x.Tag == initial) ?? picker.Items[0];
             return picker;
         }
-        var source = LanguagesPicker(Text(selected, "source_language"));
-        var target = LanguagesPicker(Text(selected, "target_language"));
+        var source = LanguagesPicker(initial?.Source ?? Text(selected, "source_language"));
+        var target = LanguagesPicker(initial?.Target ?? Text(selected, "target_language"));
         var range = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
-        range.Items.Add("全部页面"); range.Items.Add("指定页面"); range.SelectedIndex = 0;
-        var pages = new TextBox { PlaceholderText = "例如 1-5, 8, 12-16", Width = 235 };
+        range.Items.Add("全部页面"); range.Items.Add("指定页面"); range.SelectedIndex = initial?.Pages is null ? 0 : 1;
+        var pages = new TextBox { PlaceholderText = "例如 1-5, 8, 12-16", Width = 235, Text = initial?.Pages ?? "" };
         var panel = new StackPanel { Spacing = 18, Width = 440 };
         panel.Children.Add(new TextBlock { Text = name, FontSize = 13, Opacity = .65, TextTrimming = TextTrimming.CharacterEllipsis });
         Grid Field(string caption, FrameworkElement control)
@@ -32,8 +32,70 @@ public sealed partial class MainWindow
             var row = new Grid(); row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); row.Children.Add(new TextBlock { Text = caption, FontSize = 13, VerticalAlignment = VerticalAlignment.Center }); Grid.SetColumn(control, 1); row.Children.Add(control); return row;
         }
         panel.Children.Add(Field("源语言", source)); panel.Children.Add(Field("目标语言", target)); panel.Children.Add(Field("翻译范围", range));
-        var pageRow = Field("页码", pages); pageRow.Visibility = Visibility.Collapsed; panel.Children.Add(pageRow);
+        var pageRow = Field("页码", pages); pageRow.Visibility = range.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed; panel.Children.Add(pageRow);
         range.SelectionChanged += (_, _) => pageRow.Visibility = range.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        // Appending keeps the draft and its languages; only pages not yet translated are added.
+        var draftPages = selected?["reading_pages"]?.AsArray().Select(n => n?.GetValue<int>() ?? 0).ToHashSet() ?? new HashSet<int>();
+        var append = new CheckBox { Content = $"追加到现有阅读稿（保留已译的 {draftPages.Count} 页）", IsChecked = initial?.Append ?? true, FontSize = 13 };
+        var appendRow = new StackPanel { Children = { append } };
+        void UpdateAppend()
+        {
+            bool canAppend = HasReading && range.SelectedIndex == 1;
+            appendRow.Visibility = canAppend ? Visibility.Visible : Visibility.Collapsed;
+            bool appending = canAppend && append.IsChecked == true;
+            source.IsEnabled = target.IsEnabled = !appending;
+            if (appending)
+            {
+                source.SelectedItem = source.Items.OfType<ComboBoxItem>().FirstOrDefault(x => (string)x.Tag == Text(selected, "reading_source_language")) ?? source.SelectedItem;
+                target.SelectedItem = target.Items.OfType<ComboBoxItem>().FirstOrDefault(x => (string)x.Tag == Text(selected, "reading_target_language")) ?? target.SelectedItem;
+            }
+        }
+        panel.Children.Add(appendRow);
+        range.SelectionChanged += (_, _) => UpdateAppend(); append.Click += (_, _) => UpdateAppend();
+
+        // Several glossaries can be combined; only those whose language pair fits are listed.
+        var glossaries = await backend.CallAsync("glossaries");
+        var all = glossaries?["glossaries"]?.AsArray().OfType<JsonObject>().ToList() ?? new();
+        var chosenIds = new List<string>(initial?.GlossaryIds ?? (selected?["glossary_ids"] is JsonArray linked ? linked.Select(n => n?.GetValue<string>() ?? "") : glossaries?["last_used"]?.AsArray().Select(n => n?.GetValue<string>() ?? "") ?? Enumerable.Empty<string>()));
+        string Code(ComboBox picker) => (string)((ComboBoxItem)picker.SelectedItem).Tag;
+        bool Fits(JsonObject g) => (Text(g, "source_language") is not { Length: > 0 } s || s == Code(source)) && (Text(g, "target_language") is not { Length: > 0 } t || t == Code(target));
+        var glossaryButton = new DropDownButton { Width = 235, HorizontalContentAlignment = HorizontalAlignment.Left };
+        var glossaryList = new StackPanel { Spacing = 2, Padding = new Thickness(4) };
+        var glossaryFlyout = new Flyout { Content = new ScrollViewer { Content = glossaryList, MaxHeight = 360, Width = 300 } };
+        glossaryButton.Flyout = glossaryFlyout;
+        var glossaryNote = new TextBlock { FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap };
+        void RefreshGlossaries()
+        {
+            var fitting = all.Where(Fits).ToList();
+            chosenIds.RemoveAll(id => !fitting.Any(g => Text(g, "id") == id));
+            glossaryList.Children.Clear();
+            foreach (var (title, builtin) in new[] { ("我的术语表", false), ("内置", true) })
+            {
+                var group = fitting.Where(g => Flag(g, "builtin") == builtin).ToList();
+                if (group.Count == 0) continue;
+                glossaryList.Children.Add(new TextBlock { Text = title, FontSize = 11, Opacity = .6, Margin = new Thickness(4, 6, 0, 2) });
+                foreach (var item in group)
+                {
+                    string id = Text(item, "id");
+                    var box = new CheckBox { Content = $"{Text(item, "name")}（{item["entries"]?.GetValue<int>() ?? 0} 条）", IsChecked = chosenIds.Contains(id), FontSize = 13 };
+                    box.Click += (_, _) => { chosenIds.Remove(id); if (box.IsChecked == true) chosenIds.Add(id); Summarize(); };
+                    glossaryList.Children.Add(box);
+                }
+            }
+            int hidden = all.Count - fitting.Count;
+            glossaryNote.Text = "可选多个，同一术语以“我的术语表”为准。" + (hidden > 0 ? $"{hidden} 个术语表的语言对不适用于当前语言，已隐藏。" : "");
+            Summarize();
+        }
+        void Summarize()
+        {
+            var names = chosenIds.Select(id => Text(all.FirstOrDefault(g => Text(g, "id") == id), "name")).Where(n => n != "").ToList();
+            glossaryButton.Content = names.Count == 0 ? "不使用术语表" : names.Count == 1 ? names[0] : $"{names[0]} 等 {names.Count} 个";
+        }
+        source.SelectionChanged += (_, _) => RefreshGlossaries(); target.SelectionChanged += (_, _) => RefreshGlossaries();
+        UpdateAppend(); RefreshGlossaries();
+        var manage = new HyperlinkButton { Content = "管理…", Padding = new Thickness(6, 2, 6, 2) };
+        panel.Children.Add(Field("术语表", Row(glossaryButton, manage)));
+        panel.Children.Add(glossaryNote);
         var profile = services?["profiles"]?.AsArray().FirstOrDefault(p => Text(p, "id") == Text(services, "active_id"));
         var service = new StackPanel { Spacing = 9 };
         service.Children.Add(Row(ReaderIcons.Make("globe"), new TextBlock { Text = "翻译服务", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 13 }));
@@ -57,10 +119,27 @@ public sealed partial class MainWindow
                     if (bounds.Length is < 1 or > 2 || !int.TryParse(bounds[0], out int first) || !int.TryParse(bounds[^1], out int last) || first < 1 || last < first || last > page.Maximum) { error.Text = $"请输入 1 至 {(int)page.Maximum} 之间的页码，例如 1-3, 5。"; break; }
                 }
             }
+            bool appending = HasReading && range.SelectedIndex == 1 && append.IsChecked == true;
+            if (error.Text == "" && appending)
+            {
+                var wanted = pages.Text.Split(',').SelectMany(part => part.Trim().Split('-') is var b && int.TryParse(b[0], out int a) && int.TryParse(b[^1], out int z) ? Enumerable.Range(a, Math.Max(0, z - a + 1)) : Enumerable.Empty<int>());
+                if (!wanted.Any(n => !draftPages.Contains(n))) error.Text = "这些页已在阅读稿中，请选择尚未翻译的页。";
+            }
             args.Cancel = error.Text != "";
         };
-        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary) return null;
-        return new TranslationChoice((string)((ComboBoxItem)source.SelectedItem).Tag, (string)((ComboBoxItem)target.SelectedItem).Tag, range.SelectedIndex == 1 ? pages.Text.Trim() : null);
+        TranslationChoice Current() => new(Code(source), Code(target), range.SelectedIndex == 1 ? pages.Text.Trim() : null,
+            chosenIds.ToList(), HasReading && range.SelectedIndex == 1 && append.IsChecked == true);
+        // Dialogs cannot stack: managing closes this one, then reopens it with the same choices.
+        bool managing = false;
+        manage.Click += (_, _) => { managing = true; dialog.Hide(); };
+        var result = await ShowDialogAsync(dialog);
+        if (managing)
+        {
+            var state = Current();
+            await GlossaryManagerAsync(state.GlossaryIds?.FirstOrDefault());
+            return await TranslationDialogAsync(name, services, state);
+        }
+        return result == ContentDialogResult.Primary ? Current() : null;
     }
 
     // The engine rebuilds the PDF from the current reading draft; the save dialog comes first.

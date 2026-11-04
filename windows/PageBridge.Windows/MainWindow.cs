@@ -278,12 +278,12 @@ public sealed partial class MainWindow : Window
         return await ShowDialogAsync(dialog) == ContentDialogResult.Primary ? input.Text.Trim() : null;
     }
     private async Task CreateFolderAsync() { if (await PromptAsync("新建文件夹") is { Length: > 0 } name) { await backend.CallAsync("create_folder", new JsonObject { ["name"] = name }); await ReloadAsync(); } }
-    private async Task RunTranslationAsync(string? retryBlockId)
+    private async Task RunTranslationAsync(string? retryBlockId, IReadOnlyList<string>? retryTerms = null)
     {
         if (translationCancellation is not null)
         {
-            if (retryBlockId is null) { translationCancellation.Cancel(); status.Text = "正在取消并清理任务…"; }
-            else status.Text = "已有翻译正在进行，请完成后再重试此段。";
+            if (retryBlockId is null && retryTerms is null) { translationCancellation.Cancel(); status.Text = "正在取消并清理任务…"; }
+            else status.Text = "已有翻译正在进行，请完成后再重试。";
             return;
         }
         if (translationPreparing || selected is null) return;
@@ -295,7 +295,7 @@ public sealed partial class MainWindow : Window
             var services = await backend.CallAsync("profiles"); var serviceId = Text(services, "active_id");
             if (serviceId == "") { await SettingsAsync(); return; }
             var docId = Text(selected, "id"); var name = Text(selected, "name");
-            var choice = retryBlockId is null ? await TranslationDialogAsync(name, services)
+            var choice = retryBlockId is null && retryTerms is null ? await TranslationDialogAsync(name, services)
                 : new TranslationChoice(Text(selected, "source_language"), Text(selected, "target_language"), null);
             if (choice is null) return;
             using var cancellation = new CancellationTokenSource();
@@ -311,8 +311,8 @@ public sealed partial class MainWindow : Window
                     if (!ReferenceEquals(translationCancellation, cancellation)) return;
                     if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
                     var message = Text(evt, "message"); if (message != "") status.Text = message;
-                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId });
-                status.Text = cancellation.IsCancellationRequested ? "已取消，保留上次译文" : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成";
+                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId }, choice.GlossaryIds, retryTerms, choice.Append);
+                status.Text = cancellation.IsCancellationRequested ? "已取消，保留上次译文" : retryTerms is not null ? "已按术语重译相关段落" : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成";
             }
             catch (OperationCanceledException) { status.Text = "已取消，保留上次译文"; }
             finally

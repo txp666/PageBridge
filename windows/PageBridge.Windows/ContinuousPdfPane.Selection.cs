@@ -49,7 +49,7 @@ internal sealed partial class ContinuousPdfPane
     private void AttachSelection(PageView view, int index)
     {
         var menu = new MenuFlyout();
-        foreach (var (label, action) in new[] { ("复制选中文字", "copy"), ("高亮", "highlight"), ("下划线", "underline"), ("添加笔记", "note"), ("询问助手", "assistant") })
+        foreach (var (label, action) in new[] { ("复制选中文字", "copy"), ("高亮", "highlight"), ("下划线", "underline"), ("添加笔记", "note"), ("询问助手", "assistant"), ("加入术语表…", "glossary") })
         {
             var item = new MenuFlyoutItem { Text = label };
             item.Click += (_, _) => { Activated?.Invoke(this); if (action == "copy") CopySelection(); else SelectionAction?.Invoke(this, action); };

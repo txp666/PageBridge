@@ -171,7 +171,7 @@ def build_context(documents, request):
         raise AppError("无法提取文档文字，请检查 PDF 是否可读。") from None
     if not pages:
         raise AppError("当前范围没有可提取的文字。扫描件需要先进行 OCR。")
-    terms = _terms(request["question"])
+    terms = sorted(set(_terms(request["question"])) | {t.lower() for t in request.get("extra_terms") or [] if isinstance(t, str)})
     ranked = sorted(pages, key=lambda p: (-sum(term in pages[p].lower() for term in terms), p))
     overview = [p for p in pages if _OVERVIEW.search(pages[p])]
     conclusions = sorted(p for p in pages if _CONCLUSION.search(pages[p]))
