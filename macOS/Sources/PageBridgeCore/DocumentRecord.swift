@@ -29,6 +29,8 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
     public var lastError: String?
     public var attemptID: UUID?
     public var inputSHA256: String
+    /// The glossaries chosen for the current reading draft; its retries and appended pages use them again.
+    public var glossaryIDs: [String]?
 
     public init(id: UUID = UUID(), name: String, pageCount: Int, inputPath: String, inputSHA256: String) {
         self.id = id; self.name = name; self.pageCount = pageCount

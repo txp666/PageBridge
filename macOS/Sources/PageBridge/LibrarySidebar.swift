@@ -51,6 +51,13 @@ struct LibrarySidebar: View {
             }.buttonStyle(.plain).padding(.horizontal, 12).padding(.bottom, 6)
             .help("按标题、关键词或 DOI 搜索，选择来源打开全文")
 
+            Button { model.librarySearchPresented = true } label: {
+                Label("搜索全部文档内容", systemImage: "doc.text.magnifyingglass")
+                    .font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8).padding(.vertical, 7).contentShape(Rectangle())
+            }.buttonStyle(.plain).padding(.horizontal, 12).padding(.bottom, 6)
+            .help("在所有文档的原文和译文中查找文字（⇧⌘F）")
+
             if !library.isAvailable {
                 VStack(alignment: .leading, spacing: 5) {
                     Label("分类数据暂不可用", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)

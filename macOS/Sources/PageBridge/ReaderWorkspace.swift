@@ -9,6 +9,8 @@ final class ReaderWorkspace: ObservableObject {
     @Published private(set) var selectionText = ""
     @Published var currentPage = 1
     @Published var errorMessage: String?
+    /// Set by the window: puts selected source text into the add-term sheet.
+    var onAddTerm: ((String) -> Void)?
     @Published private(set) var document: DocumentRecord?
     @Published private var items: [ReadingAnnotation] = []
     private var store: AnnotationStore?

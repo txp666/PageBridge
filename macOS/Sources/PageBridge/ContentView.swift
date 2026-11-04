@@ -59,6 +59,9 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1000, minHeight: 680)
         .sheet(isPresented: $model.translationPresented) { TranslationSheet(model: model) }
+        .sheet(isPresented: $model.glossaryManagerPresented) { GlossaryManagerView(model: model) }
+        .sheet(item: $model.addTermRequest) { AddTermSheet(model: model, request: $0) }
+        .sheet(isPresented: $model.librarySearchPresented) { LibrarySearchView(model: model) }
         .sheet(isPresented: $showsDemos) { DemoLibraryView(model: model) }
         .sheet(isPresented: $showsLiteratureSearch) { LiteratureSearchView(model: model, search: literatureSearch) }
         .alert("无法完成操作", isPresented: Binding(
@@ -67,7 +70,10 @@ struct ContentView: View {
         )) {
             Button("好", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
-        .onAppear { openReadingWorkspace() }
+        .onAppear {
+            openReadingWorkspace()
+            workspace.onAddTerm = { [weak model] text in model?.addTermRequest = .init(source: text) }
+        }
         .onChange(of: undoManager, initial: true) { _, value in workspace.undoManager = value }
         .onChange(of: model.selectedID) { _, _ in
             scrollSynchronizer.reset()
@@ -427,7 +433,7 @@ struct ContentView: View {
                                     ), apiKey: { try model.key(for: $0) },
                                     onNavigate: { navigate(to: $0, inOriginal: true) }, onSaveNote: { text in
                     workspace.addNote(text: text); inspector = .notes
-                })
+                }, expansionTerms: { model.glossaries.expansionTerms(for: $0) })
             } else {
                 AnnotationsPanel(workspace: workspace) { navigate(to: $0, inOriginal: true) }
             }

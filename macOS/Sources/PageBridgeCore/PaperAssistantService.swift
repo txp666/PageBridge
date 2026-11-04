@@ -63,7 +63,7 @@ public struct PaperAssistantContext: Equatable, Sendable {
 public enum PaperAssistantContextBuilder {
     /// PDF text is extracted locally; only buildContext's bounded evidence is sent.
     public static func prepare(document: DocumentRecord, mode: PaperAssistantMode, currentPage: Int,
-                               selection: String, question: String) throws -> PaperAssistantContext {
+                               selection: String, question: String, extraTerms: [String] = []) throws -> PaperAssistantContext {
         if mode == .freeQuestion { return buildContext(mode: mode, totalPages: document.pageCount, pages: [:], currentPage: currentPage, selection: "", question: question) }
         guard (1...max(1, document.pageCount)).contains(currentPage) else { throw PaperAssistantError.invalidPage }
         if mode == .selection {
@@ -83,14 +83,15 @@ public enum PaperAssistantContextBuilder {
             let text = String(raw.prefix(min(12_000, remaining)))
             pages[page] = text; remaining -= text.count
         }
-        let result = buildContext(mode: mode, totalPages: n, pages: pages, currentPage: currentPage, selection: "", question: question)
+        let result = buildContext(mode: mode, totalPages: n, pages: pages, currentPage: currentPage, selection: "", question: question, extraTerms: extraTerms)
         guard !result.evidence.isEmpty else { throw PaperAssistantError.noText }
         return PaperAssistantContext(mode: mode, totalPages: n, scannedPages: scanned.sorted(), evidence: result.evidence,
                                      extractionLimited: scanned.count < (mode == .currentPage ? 1 : n) || remaining <= 0)
     }
 
+    /// extraTerms are source-language glossary terms for a question asked in another language.
     public static func buildContext(mode: PaperAssistantMode, totalPages: Int, pages: [Int: String], currentPage: Int,
-                                    selection: String, question: String) -> PaperAssistantContext {
+                                    selection: String, question: String, extraTerms: [String] = []) -> PaperAssistantContext {
         if mode == .freeQuestion { return .init(mode: mode, totalPages: totalPages, scannedPages: [], evidence: []) }
         if mode == .selection {
             let raw = selection.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,7 +99,7 @@ public enum PaperAssistantContextBuilder {
             return .init(mode: mode, totalPages: totalPages, scannedPages: [], evidence: text.isEmpty ? [] : [.init(page: currentPage, text: text, origin: .selection, truncated: raw.count > text.count)])
         }
         let valid = pages.filter { (1...max(1, totalPages)).contains($0.key) && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let terms = queryTerms(String(question.prefix(PaperAssistantLimits.questionCharacters)))
+        let terms = Array(Set(queryTerms(String(question.prefix(PaperAssistantLimits.questionCharacters))) + extraTerms.map { $0.lowercased() })).sorted()
         let conclusionPages = valid.keys.filter { hasConclusion(valid[$0] ?? "") }.sorted()
         let overviewPages = valid.keys.filter { headingRange(in: valid[$0] ?? "", pattern: overviewHeading) != nil }.sorted()
         let guidancePages = valid.keys.filter { headingRange(in: valid[$0] ?? "", pattern: guidanceHeading) != nil }.sorted()

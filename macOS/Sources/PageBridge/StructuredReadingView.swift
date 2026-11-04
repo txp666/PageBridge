@@ -66,9 +66,9 @@ struct StructuredReadingView: View {
                             ForEach(unlocated) { block in
                                 StructuredReadingBlockDetails(model: model, block: block, pageNumber: pageNumber,
                                     source: sourcePages.page(pageNumber, metadata: readingPage),
-                                    preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? 12) {
-                                        showsUnlocated = false; onLocate(pageNumber, block.bbox)
-                                    }
+                                    preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? 12,
+                                    onLocate: { showsUnlocated = false; onLocate(pageNumber, block.bbox) },
+                                    onAddTerm: { showsUnlocated = false; model.addTermRequest = .init(source: "", context: block.sourceText) })
                                 Divider()
                             }
                         }.padding(18)
@@ -123,9 +123,12 @@ private struct StructuredReadingPageContent: View {
                                              set: { if !$0 { selectedBlockID = nil } })) {
                     ScrollView {
                         StructuredReadingBlockDetails(model: model, block: placement.block, pageNumber: pageNumber,
-                            source: source, preferredFontSize: placement.preferredFontSize) {
+                            source: source, preferredFontSize: placement.preferredFontSize, onLocate: {
                                 selectedBlockID = nil; onLocate(pageNumber, placement.block.bbox)
-                            }.padding(18)
+                            }, onAddTerm: {
+                                selectedBlockID = nil
+                                model.addTermRequest = .init(source: "", context: placement.block.sourceText)
+                            }).padding(18)
                     }.frame(width: 490, height: 420)
                 }
             }
@@ -143,12 +146,15 @@ private struct StructuredReadingBlockDetails: View {
     let source: ReadingSourcePage?
     let preferredFontSize: CGFloat
     let onLocate: () -> Void
+    let onAddTerm: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(readingKindTitle(block.kind)).font(.headline)
                 Spacer()
+                Button("加入术语…", action: onAddTerm).buttonStyle(.link)
+                    .help("把这段里的某个词加入术语表，并重译含该词的段落")
                 Button("定位原文", action: onLocate).buttonStyle(.link)
                 if block.status == "source_fallback" {
                     Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isWorkerBusy)
