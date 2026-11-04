@@ -10,15 +10,15 @@
 
 ## 下载
 
-当前版本 **0.6.1 / build 17**：
+当前版本 **0.7.0 / build 18**：
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
-| Mac（Apple Silicon） | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-macOS-arm64.zip)（约 60 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
-| Windows x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
-| Windows x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-windows-x64.zip)（约 130 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.6.1/PageBridge-0.6.1-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
+| Mac（Apple Silicon） | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-macOS-arm64.zip)（约 60 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
+| Windows x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
+| Windows x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-windows-x64.zip)（约 130 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.0/PageBridge-0.7.0-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.6.1)还提供项目源码和第三方对应源码。
+同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.0)还提供项目源码和第三方对应源码。
 
 Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Windows 安装器和程序 **没有 Authenticode 签名**。首次打开时系统可能提示风险，请核对下载来源和 SHA-256 后再确认。
 
