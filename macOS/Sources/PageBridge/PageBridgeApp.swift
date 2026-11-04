@@ -34,9 +34,12 @@ struct PageBridgeApp: App {
             }
             CommandGroup(replacing: .appSettings) {
                 Button("翻译服务…") { model.settingsPresented = true }.keyboardShortcut(",")
+                Button("术语表…") { model.glossaryManagerPresented = true }
             }
             CommandGroup(after: .textEditing) {
                 Button("搜索文档") { model.searchPresented = true }.keyboardShortcut("f").disabled(model.selectedDocument == nil)
+                Button("搜索全部文档…") { model.librarySearchPresented = true }.keyboardShortcut("f", modifiers: [.command, .shift])
+                Button("加入术语…") { model.addTermRequest = .init(source: "") }.disabled(model.selectedDocument == nil)
             }
         }
     }

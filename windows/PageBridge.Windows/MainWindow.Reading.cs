@@ -68,7 +68,7 @@ public sealed partial class MainWindow
         inspectorContent.Children.Add(assistantPanel); inspectorContent.Children.Add(annotationsPanel);
         readerArea.SizeChanged += (_, _) => UpdateReadingVisibility();
         originalPages.SelectionChanged += _ => { UpdateSelectionTools(); assistantPanel.RefreshContext(); };
-        originalPages.SelectionAction += async (_, action) => await Attempt(async () => { ActivateOriginal(); if (action == "assistant") { await ShowInspectorAsync("assistant"); assistantPanel.UseSelectionContext(); } else if (action == "note") await AddNoteAsync(); else await AddMarkupAsync(action); });
+        originalPages.SelectionAction += async (_, action) => await Attempt(async () => { ActivateOriginal(); if (action == "assistant") { await ShowInspectorAsync("assistant"); assistantPanel.UseSelectionContext(); } else if (action == "glossary") await AddTermDialogAsync(originalPages.Selection?.Text.Trim() ?? "", ""); else if (action == "note") await AddNoteAsync(); else await AddMarkupAsync(action); });
         originalPages.AnnotationInvoked += async (_, id) => await Attempt(async () => { ActivateOriginal(); await ShowInspectorAsync("notes"); await annotationsPanel.EditAnnotationAsync(id); });
         originalPages.AnnotationDeleteRequested += async (_, id) => await Attempt(async () => { ActivateOriginal(); if (await annotationsPanel.DeleteAnnotationAsync(id)) status.Text = "批注已删除"; });
         UpdateReadingTheme(); UpdateReadingVisibility(); UpdateSelectionTools();

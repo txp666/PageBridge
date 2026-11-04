@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "glossaries": [
+    {
+      "id": "industrial-automation",
+      "name": "工业自动化与电气传动（英→简中）",
+      "file": "industrial-automation.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "electronics-embedded",
+      "name": "电子与嵌入式（英→简中）",
+      "file": "electronics-embedded.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "mechanical",
+      "name": "机械设计与制造（英→简中）",
+      "file": "mechanical.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "machine-learning",
+      "name": "机器学习与人工智能（英→简中）",
+      "file": "machine-learning.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "statistics",
+      "name": "统计与实验方法（英→简中）",
+      "file": "statistics.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "academic-writing",
+      "name": "学术论文通用（英→简中）",
+      "file": "academic-writing.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "telecom-networking",
+      "name": "通信与网络（英→简中）",
+      "file": "telecom-networking.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "automotive-electronics",
+      "name": "汽车电子（英→简中）",
+      "file": "automotive-electronics.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    },
+    {
+      "id": "medicine-life-sciences",
+      "name": "医学与生命科学（英→简中）",
+      "file": "medicine-life-sciences.txt",
+      "sourceLanguage": "en",
+      "targetLanguage": "zh"
+    }
+  ]
+}

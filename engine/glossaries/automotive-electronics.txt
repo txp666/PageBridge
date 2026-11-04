@@ -1,0 +1,65 @@
+# 汽车电子：车载网络、电控单元、电驱动和功能安全。英文 → 简体中文。
+# 只写英文的行保留不译。
+ECU
+VCU
+BMS
+MCU
+OBD
+UDS
+DTC
+AUTOSAR
+CAN FD
+LIN
+FlexRay
+ADAS
+ASIL
+ISO 26262
+HIL
+SOC
+SOH
+electronic control unit = 电子控制单元
+vehicle control unit = 整车控制器
+battery management system = 电池管理系统
+motor controller = 电机控制器
+on-board charger = 车载充电机
+DC-DC converter = DC-DC 变换器
+traction motor = 驱动电机
+traction inverter = 牵引逆变器
+high-voltage battery = 高压电池
+battery pack = 电池包
+battery cell = 电芯
+state of charge = 荷电状态
+state of health = 健康状态
+thermal runaway = 热失控
+thermal management = 热管理
+charging pile = 充电桩
+diagnostic trouble code = 故障码
+fault code = 故障码
+on-board diagnostics = 车载诊断
+functional safety = 功能安全
+safety goal = 安全目标
+hazard analysis = 危害分析
+fail-safe = 失效安全
+limp-home mode = 跛行模式
+wiring harness = 线束
+connector = 连接器
+ignition = 点火
+crankshaft position sensor = 曲轴位置传感器
+camshaft position sensor = 凸轮轴位置传感器
+throttle = 节气门
+fuel injector = 喷油器
+exhaust gas recirculation = 废气再循环
+anti-lock braking system = 防抱死制动系统
+electronic stability control = 电子稳定控制
+electric power steering = 电动助力转向
+adaptive cruise control = 自适应巡航
+lane keeping assist = 车道保持辅助
+automatic emergency braking = 自动紧急制动
+instrument cluster = 仪表盘
+infotainment system = 信息娱乐系统
+body control module = 车身控制模块
+gateway module = 网关模块
+over-the-air update = 远程升级
+calibration = 标定
+bench test = 台架试验
+road test = 道路试验

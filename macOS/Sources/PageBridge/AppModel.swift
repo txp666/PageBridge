@@ -29,6 +29,10 @@ final class AppModel: ObservableObject {
     @Published var searchHits: [SearchHit] = []
     @Published var searchPresented = false
     @Published var translationPresented = false
+    @Published var glossaryManagerPresented = false
+    @Published var addTermRequest: AddTermRequest?
+    @Published var librarySearchPresented = false
+    @Published private(set) var glossaries = GlossaryLibrary()
     @Published var errorMessage: String?
     @Published var statusMessage = "正在检查翻译引擎…"
     @Published var progress: Double?
@@ -71,6 +75,7 @@ final class AppModel: ObservableObject {
             if activeService == nil { activeServiceID = services.first?.id }
             selectedID = documents.first(where: { !library.isTrashed(id: $0.id) })?.id
             if let document = selectedDocument { restoreReadingState(document) }
+            reloadGlossaries()
         } catch {
             repository = nil
             errorMessage = "无法打开 PageBridge 数据目录：\(error.localizedDescription)"
@@ -166,7 +171,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, retryBlockIds: [String]? = nil) {
+    enum TranslationScope { case full, append, retryBlocks([String]), retryTerms([String]) }
+
+    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, glossaryIDs: [String] = [], scope: TranslationScope = .full) {
         guard !isWorkerBusy, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
         do {
             guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
@@ -179,12 +186,28 @@ final class AppModel: ObservableObject {
             let staging = try repository.attemptDirectory(document: document, attempt: attempt)
             let location = try EngineLocation.find()
             let process = EngineRunner(location: location)
+            var retryBlockIds: [String]?, retryTerms: [String]?, building = false
+            switch scope {
+            case .full: break
+            case .append: building = true
+            case .retryBlocks(let ids): retryBlockIds = ids
+            case .retryTerms(let terms): retryTerms = terms
+            }
+            // Retries reuse the draft's glossaries; deleted ones are simply skipped.
+            let chosen = retryBlockIds != nil || retryTerms != nil ? (document.glossaryIDs ?? []) : glossaryIDs
+            let terms = glossaries.combinedText(chosen)
             let request = WorkerRequest(action: "translate", jobID: document.id, attemptID: attempt,
                 inputPath: document.inputPath, outputDirectory: staging.path, sourceLanguage: sourceLanguage,
                 targetLanguage: targetLanguage, pages: pages, service: EngineService(configuration: service, apiKey: apiKey),
-                readingPath: retryBlockIds == nil ? nil : document.readingPath, retryBlockIds: retryBlockIds)
+                readingPath: retryBlockIds != nil || retryTerms != nil || building ? document.readingPath : nil, retryBlockIds: retryBlockIds,
+                glossary: terms.isEmpty ? nil : terms, retryTerms: retryTerms, appendPages: building ? true : nil)
             var record = document; record.status = .running; record.attemptID = attempt; record.lastError = nil
+            let retry = retryBlockIds != nil || retryTerms != nil
+            if !retry { try? changeGlossaries { $0.lastUsedIDs = glossaryIDs } }
             try replaceRecord(record)
+            // The glossaries belong to the new draft once it is committed; a failed run keeps the old pairing.
+            var finished = document
+            if !retry { finished.glossaryIDs = glossaryIDs }
             runner = process; activeAttempt = attempt; activeJobDocumentID = document.id
             cancelRequested = false; isTranslating = true; progress = nil
             statusMessage = "正在准备对照阅读；首次使用会下载本地识别模型…"
@@ -200,14 +223,14 @@ final class AppModel: ObservableObject {
                     }
                     guard !cancelRequested else { throw BridgeError.cancelled }
                     statusMessage = "正在验证输出并保存…"
-                    let completed = try repository.commitReading(result: result, document: document, attempt: attempt, staging: staging)
+                    let completed = try repository.commitReading(result: result, document: finished, attempt: attempt, staging: staging)
                     try replaceRecord(completed)
                     if selectedID == document.id {
                         readingMode = .dual
-                        if retryBlockIds == nil { syncScrolling = true }
-                        reloadStructuredReading(navigateToFirst: retryBlockIds == nil)
+                        if !retry && !building { syncScrolling = true }
+                        reloadStructuredReading(navigateToFirst: !retry && !building)
                     }
-                    statusMessage = completed.status == .partial
+                    statusMessage = retryTerms != nil ? (result.message ?? "已按术语重译。") : completed.status == .partial
                         ? "原页译文已保存，未完成的段落保留原文，可单独重试。"
                         : "\(document.name) 原页译文已保存。点击文字或图表可查看完整内容。"
                     // Only disposable scratch output; committed results are in a different directory.
@@ -390,9 +413,92 @@ final class AppModel: ObservableObject {
     func retryReadingBlock(_ block: StructuredReadingBlock) {
         guard let document = selectedDocument, let reading = structuredReading, document.readingPath != nil, block.status == "source_fallback" else { return }
         startTranslation(sourceLanguage: reading.sourceLanguage, targetLanguage: reading.targetLanguage,
-                         pages: nil, retryBlockIds: [block.id])
+                         pages: nil, scope: .retryBlocks([block.id]))
     }
 
+    struct AddTermRequest: Identifiable { let id = UUID(); var source: String; var context = "" }
+
+    /// Own glossaries that suit the current draft's languages, for adding a term while reading.
+    var writableGlossaries: [Glossary] {
+        let source = structuredReading?.sourceLanguage ?? selectedDocument?.sourceLanguage ?? "en"
+        let target = structuredReading?.targetLanguage ?? selectedDocument?.targetLanguage ?? "zh"
+        return glossaries.user.filter { $0.applies(source: source, target: target) }
+    }
+
+    /// Adds a term to an own glossary (or a new one for this document), links it to the
+    /// document's draft, and optionally re-translates the paragraphs that contain it.
+    func addTerm(source: String, target: String, glossaryID: String?, retranslate: Bool) throws {
+        guard let document = selectedDocument else { throw BridgeError.message("请先选择文档。") }
+        let term = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty, term.count <= 200, target.count <= 200 else { throw BridgeError.message("原文不能为空，原文和译文各最多 200 字符。") }
+        let languages = (structuredReading?.sourceLanguage ?? document.sourceLanguage, structuredReading?.targetLanguage ?? document.targetLanguage)
+        var chosen = glossaryID
+        try changeGlossaries { library in
+            if chosen == nil {
+                let name = ((document.name as NSString).deletingPathExtension + " 术语")
+                chosen = try library.create(name: name, sourceLanguage: languages.0, targetLanguage: languages.1).id
+            }
+            try library.addEntry(chosen!, source: term, target: target)
+        }
+        var record = document
+        var ids = record.glossaryIDs ?? []
+        if let chosen, !ids.contains(chosen) { ids.append(chosen) }
+        record.glossaryIDs = ids
+        try replaceRecord(record)
+        if retranslate, record.readingPath != nil {
+            startTranslation(sourceLanguage: languages.0, targetLanguage: languages.1, pages: nil, scope: .retryTerms([term]))
+        }
+    }
+
+    /// Links an own glossary to the selected document's draft, for its retries and later runs.
+    func linkGlossaryToSelectedDocument(_ id: String) {
+        guard var record = selectedDocument else { return }
+        var ids = record.glossaryIDs ?? []
+        guard !ids.contains(id) else { return }
+        ids.append(id); record.glossaryIDs = ids
+        do { try replaceRecord(record) } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// Asks the engine for candidate terms of the selected document; nothing is saved here.
+    func suggestTerms(excluding text: String) async throws -> [TermSuggestion] {
+        guard let document = selectedDocument else { throw BridgeError.message("请先选择文档。") }
+        guard let service = activeService else { throw BridgeError.message("请先配置翻译服务。") }
+        try service.validate()
+        let apiKey = try key(for: service.id)
+        if service.kind == .openAI && apiKey.isEmpty { throw BridgeError.message("请在翻译服务设置中填写 API Key。") }
+        let reading = structuredReading
+        let request = WorkerRequest(action: "suggest_terms", inputPath: document.inputPath,
+                                    sourceLanguage: reading?.sourceLanguage ?? document.sourceLanguage,
+                                    targetLanguage: reading?.targetLanguage ?? document.targetLanguage,
+                                    service: EngineService(configuration: service, apiKey: apiKey),
+                                    readingPath: document.readingPath, glossary: text.isEmpty ? nil : text)
+        let result = try await EngineRunner(location: try EngineLocation.find()).run(request) { _ in }
+        return result.terms ?? []
+    }
+
+    /// Opens a document at a page, from a library search hit.
+    func openDocument(_ id: UUID, page target: Int, translation: Bool) {
+        selectDocument(id)
+        guard let document = selectedDocument, document.id == id else { return }
+        page = max(1, min(document.pageCount, target))
+        readingMode = translation && document.hasTranslation ? .dual : readingMode
+        readingNavigationRequest = PDFPageNavigation(page: page)
+    }
+
+    func reloadGlossaries() {
+        guard let repository else { return }
+        let builtIn = (try? EngineLocation.find())?.worker.deletingLastPathComponent().appendingPathComponent("glossaries")
+        do { glossaries = try GlossaryLibrary.load(root: repository.root, builtInDirectory: builtIn) }
+        catch { errorMessage = error.localizedDescription }
+    }
+    /// Saves a changed copy first, so a failed write leaves the shown glossaries unchanged.
+    func changeGlossaries(_ change: (inout GlossaryLibrary) throws -> Void) throws {
+        guard let repository else { throw BridgeError.message("文档库不可用。") }
+        var copy = glossaries
+        try change(&copy)
+        try copy.save(root: repository.root)
+        glossaries = copy
+    }
     func key(for id: UUID) throws -> String { try KeychainStore.read(serviceID: id) ?? "" }
     func saveService(_ service: ServiceConfiguration, apiKey: String) throws {
         guard let repository else { throw BridgeError.message("本地存储不可用，无法保存服务。请先修复启动时报告的数据目录错误。") }

@@ -324,6 +324,20 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         result = events.items[-1]
         return result, json.loads(Path(result["readingPath"]).read_text()), events
 
+    async def test_ignored_glossary_term_gets_one_revision_request(self):
+        # A local model translated a keep-as-written title term anyway.
+        calls = []
+        def handler(request):
+            payload = json.loads(request.content); calls.append(payload)
+            if payload["messages"][-1]["role"] == "user" and payload["messages"][-1]["content"].startswith("Your translation"):
+                return self.response(request, "第一段 complete 中文。")
+            return self.response(request, "第一段完整中文。")
+        page = blocks_page(); page["blocks"] = page["blocks"][:1]
+        _, document, _ = await self.run_fixture(handler, pages=[page], request=dict(self.request, glossary="complete\n"))
+        self.assertIn("complete → complete (keep", calls[0]["messages"][0]["content"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(document["pages"][0]["blocks"][0]["translatedText"], "第一段 complete 中文。")
+
     async def test_one_failed_block_keeps_other_translation_formula_and_code(self):
         calls = []
         def handler(request):

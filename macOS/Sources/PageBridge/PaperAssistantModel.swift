@@ -55,7 +55,7 @@ final class PaperAssistantModel: ObservableObject {
     }
     @discardableResult
     func send(question: String, document: DocumentRecord, mode: PaperAssistantMode, page: Int, selection: String,
-              service: ServiceConfiguration, apiKey: () throws -> String) -> Bool {
+              service: ServiceConfiguration, extraTerms: [String] = [], apiKey: () throws -> String) -> Bool {
         guard !isBusy else { return false }
         load(document: document)
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,7 +75,7 @@ final class PaperAssistantModel: ObservableObject {
                     if self.requestGate.active == token { self.requestGate.cancel(); self.activeDocumentID = nil; self.status = ""; self.task = nil }
                 }
                 do {
-                    let context = try await Self.context(document: document, mode: mode, page: page, selection: selection, question: question)
+                    let context = try await Self.context(document: document, mode: mode, page: page, selection: selection, question: question, extraTerms: extraTerms)
                     try Task.checkCancellation()
                     guard self.requestGate.accepts(token, sourceSHA256: self.sourceHashes[document.id]) else { return }
                     self.contexts[document.id] = context
@@ -120,9 +120,9 @@ final class PaperAssistantModel: ObservableObject {
             try store.save(conversations[document.id] ?? [], document: document)
         } catch { errors[document.id] = "回答仍在当前窗口，但保存到本机失败。\(error.localizedDescription)" }
     }
-    private static func context(document: DocumentRecord, mode: PaperAssistantMode, page: Int, selection: String, question: String) async throws -> PaperAssistantContext {
+    private static func context(document: DocumentRecord, mode: PaperAssistantMode, page: Int, selection: String, question: String, extraTerms: [String] = []) async throws -> PaperAssistantContext {
         let worker = Task.detached(priority: .userInitiated) {
-            try PaperAssistantContextBuilder.prepare(document: document, mode: mode, currentPage: page, selection: selection, question: question)
+            try PaperAssistantContextBuilder.prepare(document: document, mode: mode, currentPage: page, selection: selection, question: question, extraTerms: extraTerms)
         }
         return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
     }

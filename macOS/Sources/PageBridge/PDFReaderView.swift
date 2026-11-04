@@ -126,6 +126,7 @@ struct PDFReaderView: NSViewRepresentable {
                 guard let self, let view = self.container?.pdfView, let id = self.parent.documentID else { return }
                 self.parent.workspace?.delete(annotation, in: view, documentID: id)
             }
+            pdf.onAddTerm = { [weak self] text in self?.parent.workspace?.onAddTerm?(text) }
         }
 
         func detach() {
@@ -474,6 +475,7 @@ final class AnnotationPDFView: PDFView {
     var onActivate: (() -> Void)?
     var onScrollFocus: (() -> Void)?
     var onOpenAnnotation: ((PDFAnnotation) -> Void)?
+    var onAddTerm: ((String) -> Void)?
     var onDeleteAnnotation: ((PDFAnnotation) -> Void)?
 
     private func managedAnnotation(at point: NSPoint, notesOnly: Bool = true) -> PDFAnnotation? {
@@ -508,7 +510,16 @@ final class AnnotationPDFView: PDFView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let annotation = managedAnnotation(at: convert(event.locationInWindow, from: nil), notesOnly: false) else { return super.menu(for: event) }
+        guard let annotation = managedAnnotation(at: convert(event.locationInWindow, from: nil), notesOnly: false) else {
+            let menu = super.menu(for: event)
+            let selected = currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let menu, onAddTerm != nil, !selected.isEmpty, selected.count <= 200 {
+                let item = NSMenuItem(title: "将选中文字加入术语表…", action: #selector(addSelectionToGlossary(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = selected
+                menu.insertItem(item, at: 0); menu.insertItem(.separator(), at: 1)
+            }
+            return menu
+        }
         // PDFKit's Remove Highlight/Add Note actions bypass our persistence and
         // can reopen the broken native popup. Offer only the managed operations.
         let result = NSMenu()
@@ -518,6 +529,10 @@ final class AnnotationPDFView: PDFView {
             result.addItem(item)
         }
         return result
+    }
+
+    @objc private func addSelectionToGlossary(_ sender: NSMenuItem) {
+        if let text = sender.representedObject as? String { onAddTerm?(text) }
     }
 
     @objc private func editManagedAnnotation(_ sender: NSMenuItem) {

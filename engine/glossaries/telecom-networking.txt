@@ -1,0 +1,77 @@
+# 通信与网络：无线通信、射频、协议栈和网络设备。英文 → 简体中文。
+# 只写英文的行保留不译。
+TCP
+UDP
+IP
+HTTP
+MQTT
+DHCP
+DNS
+VLAN
+MAC
+OFDM
+MIMO
+LTE
+5G NR
+RF
+SNR
+BER
+QoS
+Wi-Fi
+Bluetooth
+Zigbee
+LoRa
+NB-IoT
+base station = 基站
+user equipment = 用户设备
+access point = 接入点
+router = 路由器
+switch = 交换机
+gateway = 网关
+firewall = 防火墙
+subnet mask = 子网掩码
+default gateway = 默认网关
+IP address = IP 地址
+MAC address = MAC 地址
+port number = 端口号
+packet = 数据包
+frame = 帧
+payload = 有效载荷
+header = 报头
+checksum = 校验和
+handshake = 握手
+latency = 时延
+throughput = 吞吐量
+bandwidth = 带宽
+jitter = 抖动
+packet loss = 丢包
+retransmission = 重传
+protocol stack = 协议栈
+physical layer = 物理层
+data link layer = 数据链路层
+network layer = 网络层
+transport layer = 传输层
+application layer = 应用层
+carrier frequency = 载波频率
+modulation = 调制
+demodulation = 解调
+channel coding = 信道编码
+spectrum = 频谱
+antenna = 天线
+antenna gain = 天线增益
+transmit power = 发射功率
+receiver sensitivity = 接收灵敏度
+path loss = 路径损耗
+fading = 衰落
+multipath = 多径
+interference = 干扰
+noise figure = 噪声系数
+signal-to-noise ratio = 信噪比
+bit error rate = 误码率
+uplink = 上行链路
+downlink = 下行链路
+handover = 切换
+beamforming = 波束赋形
+roaming = 漫游
+encryption = 加密
+authentication = 认证

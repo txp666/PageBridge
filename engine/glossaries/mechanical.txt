@@ -1,0 +1,80 @@
+# 机械设计与制造：零件、传动、公差、材料和加工工艺。英文 → 简体中文。
+# 只写英文的行保留不译。
+CAD
+CAM
+CNC
+FEA
+GD&T
+BOM
+bill of materials = 物料清单
+assembly drawing = 装配图
+exploded view = 爆炸图
+finite element analysis = 有限元分析
+tolerance = 公差
+tolerance stack-up = 公差累积
+interference fit = 过盈配合
+clearance fit = 间隙配合
+transition fit = 过渡配合
+datum = 基准
+surface roughness = 表面粗糙度
+chamfer = 倒角
+fillet = 圆角
+keyway = 键槽
+spline = 花键
+shaft = 轴
+bearing = 轴承
+coupling = 联轴器
+gear = 齿轮
+gearbox = 齿轮箱
+reducer = 减速器
+gear ratio = 传动比
+backlash = 反向间隙
+ball screw = 滚珠丝杠
+lead screw = 丝杠
+linear guide = 直线导轨
+timing belt = 同步带
+fastener = 紧固件
+bolt = 螺栓
+washer = 垫圈
+thread = 螺纹
+spring = 弹簧
+lubrication = 润滑
+torque = 扭矩
+moment of inertia = 转动惯量
+stiffness = 刚度
+deflection = 挠度
+buckling = 屈曲
+stress = 应力
+strain = 应变
+yield strength = 屈服强度
+tensile strength = 抗拉强度
+Young's modulus = 杨氏模量
+hardness = 硬度
+fatigue = 疲劳
+creep = 蠕变
+vibration = 振动
+resonance = 共振
+damping = 阻尼
+safety factor = 安全系数
+load capacity = 承载能力
+corrosion = 腐蚀
+heat treatment = 热处理
+quenching = 淬火
+tempering = 回火
+annealing = 退火
+stainless steel = 不锈钢
+carbon steel = 碳钢
+aluminum alloy = 铝合金
+aluminium alloy = 铝合金
+machining = 机加工
+milling = 铣削
+drilling = 钻削
+grinding = 磨削
+casting = 铸造
+die casting = 压铸
+forging = 锻造
+stamping = 冲压
+welding = 焊接
+sheet metal = 钣金
+injection molding = 注塑成型
+deburring = 去毛刺

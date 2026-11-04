@@ -295,6 +295,10 @@ class DocumentStore:
         self._change(document_id, lambda d: d.update(status="running", attempt_id=attempt, last_error=None))
         return attempt, directory
 
+    def set_glossaries(self, document_id, glossary_ids):
+        """Remember the glossaries of the reading draft, for its retries and appended pages."""
+        return self._change(document_id, lambda d: d.update(glossary_ids=list(glossary_ids or [])), allow_busy=True)
+
     def finish_failure(self, document_id, message, cancelled=False):
         message = str(message or "翻译未完成。")[:2000]
         return self._change(document_id, lambda d: d.update(status="cancelled" if cancelled else "failed", last_error="翻译已取消。" if cancelled else message), allow_busy=True)

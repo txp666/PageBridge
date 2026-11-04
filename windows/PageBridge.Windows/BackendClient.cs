@@ -44,6 +44,8 @@ public sealed class BackendClient : IDisposable
             or "export" or "render" or "page_info" or "reading_page" or "document_navigation" or "page_text"
             or "annotations" or "save_annotation" or "delete_annotation" or "export_annotations"
             or "export_notes" or "search_document" or "rename_folder" or "delete_folder" or "literature_cleanup" or "literature_settings" or "literature_save_settings" or "assistant_history" or "assistant_clear"
+            or "glossaries" or "glossary_get" or "glossary_create" or "glossary_duplicate" or "glossary_update"
+            or "glossary_delete" or "glossary_import" or "glossary_export" or "glossary_add_terms" or "glossary_link" or "library_search"
             or "update_check" or "update_download" or "update_status" or "update_cancel" or "update_prepare_install")
             return await CallLocalAsync(action, args, cancellationToken).ConfigureAwait(false);
         await rpcGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -229,7 +231,8 @@ public sealed class BackendClient : IDisposable
 
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Action<JsonObject> onEvent,
-        CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null)
+        CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
+        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false)
     {
         // Only the profile ID crosses this interface. The bridge resolves
         // its saved credential privately through Windows Credential Manager.
@@ -239,6 +242,9 @@ public sealed class BackendClient : IDisposable
             ["document_id"] = documentId, ["service_id"] = serviceId,
             ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
             ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
+            ["glossary_ids"] = glossaryIds is null ? null : new JsonArray(glossaryIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()),
+            ["retry_terms"] = retryTerms is null ? null : new JsonArray(retryTerms.Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()),
+            ["append"] = append ? true : null,
             ["retryBlockIds"] = retryBlockIds is null ? null : new JsonArray(retryBlockIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray())
         };
         JsonObject result = await RunJobAsync(request, "翻译", onEvent, cancellationToken).ConfigureAwait(false);
@@ -261,6 +267,19 @@ public sealed class BackendClient : IDisposable
         if (StringValue(result["outputPath"]) is not { Length: > 0 })
             throw new BackendException("导出结果无效，请检查保存位置后重试。");
         return result;
+    }
+
+    /// Asks the engine for candidate glossary terms of one document; nothing is saved.
+    public async Task<JsonArray> SuggestTermsAsync(string documentId, string serviceId, string? glossaryId,
+        Action<JsonObject> onEvent, CancellationToken cancellationToken = default)
+    {
+        var request = new JsonObject
+        {
+            ["action"] = "suggest_terms", ["dataRoot"] = DataRoot,
+            ["document_id"] = documentId, ["service_id"] = serviceId, ["glossary_id"] = glossaryId
+        };
+        JsonObject result = await RunJobAsync(request, "提取术语", onEvent, cancellationToken).ConfigureAwait(false);
+        return result["terms"] as JsonArray is { } terms ? (JsonArray)terms.DeepClone() : new JsonArray();
     }
 
     // One translation or export at a time; each runs in its own bridge process.

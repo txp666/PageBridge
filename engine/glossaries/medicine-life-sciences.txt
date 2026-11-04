@@ -1,0 +1,73 @@
+# 医学与生命科学：临床研究、分子生物学和常见医学术语。英文 → 简体中文。
+# 只写英文的行保留不译。
+DNA
+RNA
+mRNA
+PCR
+qPCR
+CRISPR
+ELISA
+MRI
+CT
+PET
+ICU
+HbA1c
+BMI
+gene expression = 基因表达
+genome = 基因组
+transcriptome = 转录组
+proteome = 蛋白质组
+single-cell sequencing = 单细胞测序
+next-generation sequencing = 二代测序
+whole-genome sequencing = 全基因组测序
+mutation = 突变
+single nucleotide polymorphism = 单核苷酸多态性
+knockout = 敲除
+knockdown = 敲低
+transfection = 转染
+cell line = 细胞系
+cell culture = 细胞培养
+stem cell = 干细胞
+signaling pathway = 信号通路
+receptor = 受体
+ligand = 配体
+antibody = 抗体
+antigen = 抗原
+cytokine = 细胞因子
+inflammation = 炎症
+apoptosis = 细胞凋亡
+proliferation = 增殖
+metabolism = 代谢
+biomarker = 生物标志物
+in vitro = 体外
+in vivo = 体内
+mouse model = 小鼠模型
+wild-type = 野生型
+pathogenesis = 发病机制
+etiology = 病因
+diagnosis = 诊断
+prognosis = 预后
+incidence = 发病率
+prevalence = 患病率
+mortality = 死亡率
+morbidity = 发病率
+comorbidity = 合并症
+adverse event = 不良事件
+side effect = 副作用
+dose = 剂量
+efficacy = 疗效
+clinical trial = 临床试验
+informed consent = 知情同意
+inclusion criteria = 纳入标准
+exclusion criteria = 排除标准
+follow-up = 随访
+baseline characteristics = 基线特征
+hazard ratio = 风险比
+odds ratio = 比值比
+relative risk = 相对风险
+overall survival = 总生存期
+progression-free survival = 无进展生存期
+tumor = 肿瘤
+metastasis = 转移
+chemotherapy = 化疗
+immunotherapy = 免疫疗法

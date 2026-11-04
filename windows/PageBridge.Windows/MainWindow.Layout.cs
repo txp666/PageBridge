@@ -81,6 +81,8 @@ public sealed partial class MainWindow
         addMenu.Items.Add(MenuItem("添加 PDF", ImportAsync));
         addMenu.Items.Add(MenuItem("搜索在线文献…", LiteratureSearchAsync));
         addMenu.Items.Add(MenuItem("新建文件夹", CreateFolderAsync));
+        addMenu.Items.Add(MenuItem("术语表…", () => GlossaryManagerAsync(null)));
+        addMenu.Items.Add(MenuItem("搜索全部文档…", LibrarySearchAsync));
         addMenu.Items.Add(new MenuFlyoutSeparator());
         var updates = MenuItem("检查更新…", ShowUpdatesAsync);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(updates, "MenuCheckUpdates");

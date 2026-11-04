@@ -61,6 +61,7 @@ public sealed partial class MainWindow
             }
         };
         structuredReading.RetryRequested += id => Attempt(() => RunTranslationAsync(id));
+        structuredReading.AddTermRequested += context => _ = Attempt(() => AddTermDialogAsync("", context));
         ApplyStructuredVisibility();
     }
 
