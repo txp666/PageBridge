@@ -6,7 +6,7 @@
 
 适用于手册、报告、教材、合同和论文等 PDF。Mac 使用 SwiftUI / AppKit / PDFKit，Windows 使用 WinUI 3。由 [MinerU](https://github.com/opendatalab/MinerU) 在本机解析并生成原页版式阅读稿，可导出为译文 PDF 和双语 PDF。翻译使用本机 Ollama 或 OpenAI 兼容 API。
 
-[使用指南](docs/USER_GUIDE.md) · [Windows 说明](docs/WINDOWS.md) · [版本记录](CHANGELOG.md) · [Releases](https://github.com/txp666/PageBridge/releases)
+[官网](https://pagebridge.modusignal.cn/) · [使用指南](docs/USER_GUIDE.md) · [Windows 说明](docs/WINDOWS.md) · [版本记录](CHANGELOG.md) · [Releases](https://github.com/txp666/PageBridge/releases)
 
 ## 下载
 
@@ -46,6 +46,7 @@ Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Wind
 
 - **文档库：** 文件夹、名称搜索、排序、收藏、最近阅读、回收站和首页预览；全库搜索所有文档的原文和译文，点击结果打开到对应页。
 - **原页版式阅读：** 整篇或指定页生成阅读稿，之后可追加尚未翻译的页，保持原页数、分栏、照片、色块、细边框和表格数字；正文与表格标签在原位置显示译文，行内公式随正文排列，放不下的段落点击查看全文。扫描页由 MinerU 本机识别。
+- **翻译语言：** 英语、简体中文、繁体中文、日语、韩语、法语、德语、西班牙语、俄语，任意两种互译；应用界面为简体中文。
 - **术语表：** 内置九个英文→简体中文领域术语表（工业自动化、电子与嵌入式、机械、通信、汽车电子、机器学习、统计、医学、学术论文），可新建、复制、修改、导入导出（TXT／CSV），按语言对筛选，翻译时可同时选用多个；阅读时可把词加入术语表并只重译含该词的段落，也可从文档提取候选术语。助手用术语表把中文问题里的术语换成原文词检索。
 - **对照与重试：** 原文／对照／译文三种视图，左右页双向连续同步滚动、统一缩放；失败段落保留原文，可单独重试。
 - **导出 PDF：** 阅读稿导出为译文 PDF 或双语 PDF，译文是可选择、可搜索的文字。
