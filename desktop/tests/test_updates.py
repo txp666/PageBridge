@@ -90,8 +90,14 @@ class UpdateTests(unittest.TestCase):
             status = 206
 
             def read(self, count):
-                if self.tell() == 0 and self.start in range(0, 4 * segment, segment):
+                position = self.tell()
+                if position == 0 and self.start in range(0, 4 * segment, segment):
                     first_wave.wait()
+                if self.start == 0 and position == ota_transfer.READ_BYTES:
+                    # The native progress UI must receive the prefix while this
+                    # range is still downloading.
+                    if not wrote_prefix.wait(3):
+                        raise AssertionError("The first range was buffered in full")
                 return super().read(count)
 
         def open_range(url, byte_range):
@@ -106,8 +112,15 @@ class UpdateTests(unittest.TestCase):
             return response
 
         manager.opener = open_range
-        manager.download()
-        self.assertEqual(self.finish(manager)["state"], "ready")
+        wrote_prefix = threading.Event()
+        set_status = manager._set
+        def observe_progress(**values):
+            set_status(**values)
+            if values.get("received") == ota_transfer.READ_BYTES:
+                wrote_prefix.set()
+        with patch.object(manager, "_set", side_effect=observe_progress):
+            manager.download()
+            self.assertEqual(self.finish(manager)["state"], "ready")
         self.assertEqual(Path(manager.prepare_install()["path"]).read_bytes(), self.binary)
         self.assertCountEqual(requests, [(n, min(n + segment, size) - 1) for n in range(0, size, segment)]
                               + [(segment + ota_transfer.READ_BYTES, 2 * segment - 1)])

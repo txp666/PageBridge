@@ -2,6 +2,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
+from queue import SimpleQueue
 import sys
 from threading import Event
 from urllib.error import HTTPError
@@ -63,37 +64,39 @@ def download(url, size, write, *, opener=open_response, checkpoint=lambda: None)
     segment = min(SEGMENT_BYTES, (size + LANES - 1) // LANES)
     stopped = Event()
 
-    def read_segment(start, first=None):
+    def read_segment(start, first, blocks):
         end = min(start + segment, size) - 1
-        data = bytearray()
-        for attempt in range(3):
-            checkpoint()
-            if stopped.is_set():
-                return
-            offset = start + len(data)
-            try:
-                response = first if first is not None and attempt == 0 else opener(url, (offset, end))
-                with response as part:
-                    if part.status != 206 or part.headers.get("Content-Range") != f"bytes {offset}-{end}/{size}":
-                        raise UpdateError("更新服务返回的分段与请求不一致。")
-                    _check_length(part, end - offset + 1)
-                    while start + len(data) <= end:
-                        checkpoint()
-                        if stopped.is_set():
-                            return
-                        block = part.read(min(READ_BYTES, end - start + 1 - len(data)))
-                        if not block:
-                            raise EOFError("Incomplete update range")
-                        data.extend(block)
-                    if part.read(1):
-                        raise UpdateError("安装包超出签名指定的大小。")
-                    return data
-            except (OSError, HTTPException, EOFError) as error:
-                if isinstance(error, HTTPError):
-                    error.close()
-                if (attempt == 2 or start + len(data) > end
-                        or isinstance(error, HTTPError) and error.code < 500):
-                    raise
+        offset = start
+        try:
+            for attempt in range(3):
+                checkpoint()
+                if stopped.is_set():
+                    return
+                try:
+                    response = first if first is not None and attempt == 0 else opener(url, (offset, end))
+                    with response as part:
+                        if part.status != 206 or part.headers.get("Content-Range") != f"bytes {offset}-{end}/{size}":
+                            raise UpdateError("更新服务返回的分段与请求不一致。")
+                        _check_length(part, end - offset + 1)
+                        while offset <= end:
+                            checkpoint()
+                            if stopped.is_set():
+                                return
+                            block = part.read(min(READ_BYTES, end - offset + 1))
+                            if not block:
+                                raise EOFError("Incomplete update range")
+                            offset += len(block)
+                            if offset > end and part.read(1):
+                                raise UpdateError("安装包超出签名指定的大小。")
+                            blocks.put(block)
+                        return
+                except (OSError, HTTPException, EOFError) as error:
+                    if isinstance(error, HTTPError):
+                        error.close()
+                    if attempt == 2 or offset > end or isinstance(error, HTTPError) and error.code < 500:
+                        raise
+        finally:
+            blocks.put(None)
 
     for attempt in range(3):
         checkpoint()
@@ -127,17 +130,23 @@ def download(url, size, write, *, opener=open_response, checkpoint=lambda: None)
 
         pool = ThreadPoolExecutor(max_workers=LANES, thread_name_prefix="PageBridge-range")
         pending = deque()
-        try:
-            for start in range(0, size, segment):
-                pending.append(pool.submit(read_segment, start, first if start == 0 else None))
-                if len(pending) == 2 * LANES:
-                    block = pending.popleft().result()
-                    checkpoint()
-                    write(block)
-            for future in pending:
-                block = future.result()
+
+        def write_next():
+            blocks, task = pending.popleft()
+            while (block := blocks.get()) is not None:
                 checkpoint()
                 write(block)
+            task.result()
+
+        try:
+            for start in range(0, size, segment):
+                blocks = SimpleQueue()
+                task = pool.submit(read_segment, start, first if start == 0 else None, blocks)
+                pending.append((blocks, task))
+                if len(pending) == 2 * LANES:
+                    write_next()
+            while pending:
+                write_next()
         finally:
             stopped.set()
             pool.shutdown(wait=True, cancel_futures=True)

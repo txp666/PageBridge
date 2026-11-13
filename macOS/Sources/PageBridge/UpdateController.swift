@@ -102,6 +102,8 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         if let local = try? helper.start(source: source, size: item.contentLength) {
             download = helper
             request.url = local
+            // A slow first range can hold back already downloaded later ranges.
+            request.timeoutInterval = 300
         }
     }
 
