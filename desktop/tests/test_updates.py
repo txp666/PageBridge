@@ -15,10 +15,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pagebridge import updates
+from pagebridge import ota_transfer, updates
 
 
 class Response(io.BytesIO):
+    status = 200
+
     def __init__(self, content, length=None):
         super().__init__(content)
         self.headers = {} if length is None else {"Content-Length": str(length)}
@@ -48,7 +50,7 @@ class UpdateTests(unittest.TestCase):
     def manager(self, binary=None, manifest=None, windows_build=22631, length=None):
         raw = self.signed() if manifest is None else manifest
         binary = self.binary if binary is None else binary
-        def opener(url):
+        def opener(url, byte_range=None):
             return Response(raw if url == updates.FEED_URL else binary, None if url == updates.FEED_URL else length)
         manager = updates.UpdateManager(self.root / "data", self.root, opener=opener, windows_build=windows_build)
         self.addCleanup(lambda: manager.thread and manager.thread.join(5))
@@ -73,6 +75,70 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(Path(result["path"]).read_bytes(), self.binary)
         self.assertEqual(result["sha256"], self.payload["sha256"])
         self.assertFalse(list((manager.root / "updates").glob("*.part")))
+
+    def test_concurrent_ranges_resume_interrupted_data_and_verify_in_order(self):
+        self.binary = bytes(range(251)) * 50000
+        size = len(self.binary)
+        self.payload.update(bytes=size, sha256=hashlib.sha256(self.binary).hexdigest())
+        manager = self.manager()
+        self.available(manager)
+        segment = ota_transfer.SEGMENT_BYTES
+        first_wave = threading.Barrier(4, timeout=3)
+        requests = []
+
+        class Partial(Response):
+            status = 206
+
+            def read(self, count):
+                position = self.tell()
+                if position == 0 and self.start in range(0, 4 * segment, segment):
+                    first_wave.wait()
+                if self.start == 0 and position == ota_transfer.READ_BYTES:
+                    # The native progress UI must receive the prefix while this
+                    # range is still downloading.
+                    if not wrote_prefix.wait(3):
+                        raise AssertionError("The first range was buffered in full")
+                return super().read(count)
+
+        def open_range(url, byte_range):
+            start, end = byte_range
+            requests.append(byte_range)
+            # The second connection drops after its first read. Its retry must
+            # request just the missing suffix, even if other ranges finish first.
+            stop = start + ota_transfer.READ_BYTES if start == segment else end + 1
+            response = Partial(self.binary[start:stop], end - start + 1)
+            response.start = start
+            response.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            return response
+
+        manager.opener = open_range
+        wrote_prefix = threading.Event()
+        set_status = manager._set
+        def observe_progress(**values):
+            set_status(**values)
+            if values.get("received") == ota_transfer.READ_BYTES:
+                wrote_prefix.set()
+        with patch.object(manager, "_set", side_effect=observe_progress):
+            manager.download()
+            self.assertEqual(self.finish(manager)["state"], "ready")
+        self.assertEqual(Path(manager.prepare_install()["path"]).read_bytes(), self.binary)
+        self.assertCountEqual(requests, [(n, min(n + segment, size) - 1) for n in range(0, size, segment)]
+                              + [(segment + ota_transfer.READ_BYTES, 2 * segment - 1)])
+
+    def test_wrong_content_range_never_commits_installer(self):
+        manager = self.manager()
+        self.available(manager)
+
+        def wrong_range(url, byte_range):
+            response = Response(self.binary)
+            response.status = 206
+            response.headers["Content-Range"] = "bytes 0-0/1"
+            return response
+
+        manager.opener = wrong_range
+        manager.download()
+        self.assertEqual(self.finish(manager)["state"], "error")
+        self.assertEqual(list((manager.root / "updates").iterdir()), [])
 
     def test_signature_tampering_wrong_key_and_domain(self):
         altered = json.loads(self.signed())
@@ -216,7 +282,7 @@ class UpdateTests(unittest.TestCase):
                 entered.set()
                 unblock.wait(3)
                 return super().read(count)
-        manager.opener = lambda url: BlockingResponse(self.binary)
+        manager.opener = lambda url, byte_range=None: BlockingResponse(self.binary)
         manager.download()
         self.assertTrue(entered.wait(3))
         with self.assertRaises(updates.UpdateError):
@@ -227,7 +293,7 @@ class UpdateTests(unittest.TestCase):
         unblock.set()
         self.assertEqual(self.finish(manager)["state"], "cancelled")
         self.assertEqual(list((manager.root / "updates").iterdir()), [])
-        manager.opener = lambda url: Response(self.binary)
+        manager.opener = lambda url, byte_range=None: Response(self.binary)
         manager.download()
         self.assertEqual(self.finish(manager)["state"], "ready")
 
@@ -266,10 +332,10 @@ class UpdateTests(unittest.TestCase):
 
     def test_untrusted_redirects_and_https_only(self):
         for url in ("http://github.com/x", "https://github.com.evil.test/x", "https://user@github.com/x", "https://github.com:8443/x", "file:///tmp/setup.exe", "https://127.0.0.1/x"):
-            self.assertFalse(updates.allowed_url(url))
+            self.assertFalse(ota_transfer.allowed_url(url))
             with self.assertRaises(updates.UpdateError):
-                updates.SafeRedirect().redirect_request(Request(updates.FEED_URL), None, 302, "Found", {}, url)
-        self.assertTrue(updates.allowed_url("https://release-assets.githubusercontent.com/github-production-release-asset/x?sig=test"))
+                ota_transfer.SafeRedirect().redirect_request(Request(updates.FEED_URL), None, 302, "Found", {}, url)
+        self.assertTrue(ota_transfer.allowed_url("https://release-assets.githubusercontent.com/github-production-release-asset/x?sig=test"))
 
     def test_no_target_before_download(self):
         manager = self.manager()

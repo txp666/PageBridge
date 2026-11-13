@@ -103,6 +103,8 @@ profile_report = prune_runtime(runtime, profile, info["versions"])
 for relative in profile["engineFiles"]:
     (engine / relative).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "engine" / relative, engine / relative)
+shutil.copy2(ROOT / "engine/sparkle_download.py", engine)
+shutil.copy2(ROOT / "desktop/pagebridge/ota_transfer.py", engine)
 # The optional parser uses an independent, writable environment. Ship only its
 # fixed bootstrap tool, not the parser models or another Python dependency tree.
 uv_source = Path(os.environ.get("PAGEBRIDGE_UV", ROOT / "engine/.tools/bin/uv"))

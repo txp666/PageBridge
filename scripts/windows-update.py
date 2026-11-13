@@ -11,12 +11,16 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "desktop"))
+from pagebridge import updates
+
 REPOSITORY = "txp666/PageBridge"
 NAME = "windows-update.json"
 
@@ -33,14 +37,8 @@ def load_module(name, path):
     return module
 
 
-def contract():
-    # Use the exact client parser and canonical signature bytes; this module is
-    # intentionally independent of PDF libraries and imports cryptography lazily.
-    return load_module("pagebridge_update_contract", ROOT / "desktop/pagebridge/updates.py")
-
-
 def verify_manifest(raw, public_key):
-    return contract().verify_manifest(raw, public_key)
+    return updates.verify_manifest(raw, public_key)
 
 
 def signing_key(secret, public_key):
@@ -57,7 +55,7 @@ def signing_key(secret, public_key):
 
 def sign_payload(payload, secret, public_key):
     private = signing_key(secret, public_key)
-    signature = private.sign(contract().signature_message(payload))
+    signature = private.sign(updates.signature_message(payload))
     raw = (json.dumps(dict(payload=payload, signature=base64.b64encode(signature).decode("ascii")),
                       ensure_ascii=True, sort_keys=True, indent=2) + "\n").encode("ascii")
     # Fail before creating any artifact if the client would reject the envelope,
@@ -91,7 +89,7 @@ def generate(dist, source_root, cloudflare=False):
     checked = packages.verify_installer(installer, source_root)
     require(checked["status"] == "passed", "Windows installer must pass verification before signing")
     base = "https://github.com/" + REPOSITORY
-    download = contract().DOWNLOAD_ROOT + "/ota" if cloudflare else base + "/releases/download"
+    download = updates.DOWNLOAD_ROOT + "/ota" if cloudflare else base + "/releases/download"
     payload = dict(schema=1, platform="windows-x64", version=version, build=int(release["build"]),
                    minWindowsBuild=19041, url=download + f"/v{version}/" + installer.name,
                    sha256=checked["sha256"], bytes=checked["bytes"], releaseNotesURL=base + f"/releases/tag/v{version}")

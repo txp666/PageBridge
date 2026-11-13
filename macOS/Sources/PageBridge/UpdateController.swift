@@ -16,6 +16,7 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var observations = Set<AnyCancellable>()
     private var translationObservation: AnyCancellable?
     private var installationGate = UpdateInstallationGate()
+    private var download: SparkleDownload?
     private var deferredCheck = false
     private var started = false
 
@@ -92,6 +93,29 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         try requireIdle()
     }
 
+    func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest) {
+        stopDownload()
+        guard let source = request.url, source.scheme == "https",
+              let host = source.host, ["pagebridge.modusignal.cn", "github.com"].contains(host),
+              item.contentLength > 0 else { return }
+        let helper = SparkleDownload()
+        if let local = try? helper.start(source: source, size: item.contentLength) {
+            download = helper
+            request.url = local
+            // A slow first range can hold back already downloaded later ranges.
+            request.timeoutInterval = 300
+        }
+    }
+
+    private func stopDownload() {
+        download?.cancel()
+        download = nil
+    }
+
+    func userDidCancelDownload(_ updater: SPUUpdater) { stopDownload() }
+
+    func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) { stopDownload() }
+
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         let postponed = installationGate.postpone(whileBusy: translationIsRunning, resume: installHandler)
@@ -104,12 +128,14 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        stopDownload()
         installationGate.cancel()
         isRelaunchingForUpdate = false
     }
 
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
                  error: Error?) {
+        stopDownload()
         // Dismissing or skipping an update may finish without an error.
         installationGate.cancel()
         isRelaunchingForUpdate = false

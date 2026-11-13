@@ -17,8 +17,8 @@ import tempfile
 import threading
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from .ota_transfer import UpdateError, download as download_archive, open_response
 
 REPOSITORY = "txp666/PageBridge"
 DOWNLOAD_ROOT = "https://pagebridge.modusignal.cn/download"
@@ -29,10 +29,6 @@ MAX_INSTALLER_BYTES = 2 * 1024**3
 ACTIONS = frozenset({"update_check", "update_download", "update_status", "update_cancel", "update_prepare_install"})
 FIELDS = {"schema", "platform", "version", "build", "minWindowsBuild", "url", "sha256", "bytes", "releaseNotesURL"}
 CACHE_FILE = re.compile(r"\.download-.+\.part|PageBridge-.+-setup\.exe")
-
-
-class UpdateError(ValueError):
-    pass
 
 
 class Cancelled(Exception):
@@ -107,36 +103,6 @@ def verify_manifest(raw: bytes, public_key: str) -> dict:
     except Exception as error:
         raise UpdateError("更新信息签名验证失败，已阻止下载。") from error
     return payload
-
-
-def allowed_url(url):
-    try:
-        parts = urlsplit(url)
-        return (parts.scheme == "https" and parts.hostname in {
-            "pagebridge.modusignal.cn", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
-        } and parts.port in (None, 443) and not parts.username and not parts.password and not parts.fragment)
-    except ValueError:
-        return False
-
-
-class SafeRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not allowed_url(newurl):
-            raise UpdateError("更新服务重定向到了不受信任的地址。")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def open_response(url):
-    if not allowed_url(url):
-        raise UpdateError("更新地址无效。")
-    response = build_opener(SafeRedirect()).open(Request(url, headers={
-        "User-Agent": "PageBridge-Windows-Updater/1", "Accept-Encoding": "identity",
-        "Cache-Control": "no-cache",
-    }), timeout=15)
-    if not allowed_url(response.geturl()) or response.status != 200 or response.headers.get("Content-Encoding", "identity") != "identity":
-        response.close()
-        raise UpdateError("更新服务返回了不支持的响应。")
-    return response
 
 
 class UpdateManager:
@@ -266,22 +232,15 @@ class UpdateManager:
             deadline = time.monotonic() + 3600
             digest, received = hashlib.sha256(), 0
             try:
-                with os.fdopen(fd, "wb") as stream, self.opener(payload["url"]) as response:
-                    content_length = response.headers.get("Content-Length")
-                    if content_length is not None and content_length != str(payload["bytes"]):
-                        raise UpdateError("安装包大小与签名信息不一致。")
-                    while True:
-                        self._checkpoint(deadline)
-                        block = response.read(256 * 1024)
-                        self._checkpoint(deadline)
-                        if not block:
-                            break
-                        received += len(block)
-                        if received > payload["bytes"]:
-                            raise UpdateError("安装包超出签名指定的大小。")
+                with os.fdopen(fd, "wb") as stream:
+                    def write(block):
+                        nonlocal received
                         digest.update(block)
                         stream.write(block)
+                        received += len(block)
                         self._set(received=received)
+                    download_archive(payload["url"], payload["bytes"], write, opener=self.opener,
+                                     checkpoint=lambda: self._checkpoint(deadline))
                     stream.flush()
                     os.fsync(stream.fileno())
                 if received != payload["bytes"] or digest.hexdigest() != payload["sha256"]:
