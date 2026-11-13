@@ -10,8 +10,9 @@ def _trim_word_edge(latex, fragment, *, left):
     """Remove only the letters the PDF and the parser both assign to the split word."""
     letters = r"\s*".join(re.escape(c) for c in fragment)
     literal = rf"(?:\\(?:mathrm|mathbf|mathit|text)\s*\{{\s*{letters}\s*\}}|{letters})"
-    pattern = rf"^\s*{literal}(?=\s|\\)" if left else rf"{literal}\s*$"
-    return re.sub(pattern, "", latex, count=1).strip()
+    pattern = rf"^\s*{literal}(?=\s|\\)" if left else rf"(?<![A-Za-z\\]){literal}\s*$"
+    trimmed, changed = re.subn(pattern, "", latex, count=1)
+    return trimmed.strip() if changed else latex
 
 
 def _refine_block(block, words):
