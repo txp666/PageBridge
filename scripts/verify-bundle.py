@@ -295,6 +295,8 @@ def main():
                     checksum = sha256(ENGINE / name)
                     require(checksum == sha256(ROOT / 'engine' / name), 'Bundled source differs: ' + name)
                     report['engineModulesSHA256'][name] = checksum
+                for source in (ROOT / "engine/sparkle_download.py", ROOT / "desktop/pagebridge/ota_transfer.py"):
+                    require(sha256(ENGINE / source.name) == sha256(source), 'Bundled OTA helper differs: ' + source.name)
                 uv = ENGINE / 'tools/uv'
                 require(uv.is_file(), 'Missing optional reading bootstrap.')
                 require(subprocess.check_output([str(uv), '--version'], text=True).split()[:2] == ['uv', '0.9.17'], 'Unexpected reading bootstrap version.')

@@ -221,7 +221,7 @@ class WindowsUpdateSigningTests(unittest.TestCase):
 
     def test_producer_matches_client_and_independent_canonical_signature(self):
         raw = windows_update.sign_payload(self.payload, self.secret, self.key)
-        self.assertEqual(windows_update.contract().verify_manifest(raw, self.key), self.payload)
+        self.assertEqual(windows_update.updates.verify_manifest(raw, self.key), self.payload)
         envelope = json.loads(raw)
         self.assertEqual(set(envelope), {'payload','signature'})
         canonical = b'PageBridge.Windows.Update.v1\n'+json.dumps(self.payload,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode('ascii')
