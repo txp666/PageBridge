@@ -256,6 +256,8 @@ def parse_request(raw):
         if type(limit) is not int or not 1 <= limit <= 150:
             raise WorkerError("术语数量上限无效。")
     if request["action"] == "translate":
+        if "translateTables" in request and not isinstance(request["translateTables"], bool):
+            raise WorkerError("表格翻译选项必须为布尔值。")
         for key, default in (("sourceLanguage", "en"), ("targetLanguage", "zh")):
             request.setdefault(key, default)
             if not isinstance(request[key], str) or not re.fullmatch(r"[a-zA-Z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?", request[key]):

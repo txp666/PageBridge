@@ -16,6 +16,7 @@ import pymupdf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import structured_reading as reading
 import mineru_bridge as bridge
+from reading_formulas import refine_inline_formulas
 
 
 class Events:
@@ -34,6 +35,17 @@ def blocks_page(number=1):
 
 
 class ReadingUnitTests(unittest.TestCase):
+    def test_first_line_indent_comes_from_source_lines_in_this_paragraph(self):
+        # Source in two columns. The first paragraph starts 18 pt in; the second is flush.
+        blocks = [{"type": "text", "content": "First", "bbox": [.05, .1, .45, .3]},
+                  {"type": "text", "content": "Second", "bbox": [.55, .1, .95, .3]}]
+        lines = [[.60, .12, .88, .15], [.14, .12, .40, .15], [.055, .2, .39, .23],
+                 [.605, .20, .90, .23], [.045, .26, .38, .29]]
+        page = {"page_idx": 0, "blocks": blocks, "sourceTextLines": lines}
+        first, second = reading.normalized_page({"pages": [page]}, 1, 200, 300)["blocks"]
+        self.assertAlmostEqual(first["firstLineIndent"], 18)
+        self.assertNotIn("firstLineIndent", second)
+
     def test_inline_formulas_have_distinct_tokens_and_only_actual_boxes(self):
         raw = {"pages": [{"page_idx": 0, "blocks": [{"type": "text", "bbox": [0, 0, 1, 1], "content": [
             {"type": "text", "content": "Compare "},
@@ -49,6 +61,19 @@ class ReadingUnitTests(unittest.TestCase):
         self.assertEqual(first["bbox"], [60, 160, 120, 240])
         self.assertEqual(block["sourceTemplate"], f"Compare {first['token']} with {second['token']}$y$")
         self.assertEqual(block, reading.normalized_page(raw, 1, 600, 800)["blocks"][0])
+
+    def test_source_word_split_at_fraction_edge_stays_in_prose(self):
+        # Actual parser crop from the caption on page 6 of the bundled example.
+        source = Path(__file__).resolve().parents[2] / "demos/pdfs/avalanches.pdf"
+        token = "[[PBM_1]]"
+        fraction = r"\frac { 1 } { \sigma y z }   \approx   1 . 8"
+        formula = {"token": token, "latex": r"\mathrm { f } " + fraction,
+                   "bbox": [419.4, 483.48, 452.52, 502.2]}
+        block = {"sourceTemplate": f"with an exponent o {token} .", "inlineMath": [formula]}
+        refine_inline_formulas(source, 6, [block])
+        self.assertEqual(block["sourceTemplate"], f"with an exponent of {token} .")
+        self.assertEqual(formula["latex"], fraction)
+        self.assertGreater(formula["bbox"][0], 419.4)
 
     def test_pinned_bridge_captures_real_spans_and_preserves_original_behavior(self):
         called = []
@@ -335,8 +360,37 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         page = blocks_page(); page["blocks"] = page["blocks"][:1]
         _, document, _ = await self.run_fixture(handler, pages=[page], request=dict(self.request, glossary="complete\n"))
         self.assertIn("complete → complete (keep", calls[0]["messages"][0]["content"])
+        self.assertIn("Simplified Chinese characters", calls[0]["messages"][0]["content"])
         self.assertEqual(len(calls), 2)
         self.assertEqual(document["pages"][0]["blocks"][0]["translatedText"], "第一段 complete 中文。")
+
+    async def test_table_choice_is_preserved_when_appending_pages(self):
+        def page(number):
+            raw = {"page_idx": number - 1, "blocks": [
+                {"type": "text", "content": "Test paragraph"},
+                {"type": "table", "content": [
+                    {"type": "table_caption", "content": "Test caption"},
+                    {"type": "table_body", "content": "<tr><td>Test scanned label</td></tr>"},
+                    {"type": "table_footnote", "content": "Test note"}]},
+            ]}
+            parsed = reading.normalized_page({"pages": [raw]}, number, 612, 792)
+            parsed["blocks"].append(dict(id=f"p{number:05d}-cell", kind="text", sourceType="table_cell",
+                                         sourceText="Test native label", status="preserved"))
+            return parsed
+
+        sent = []
+        def handler(request):
+            sent.append(json.loads(request.content)["messages"][-1]["content"])
+            return self.response(request)
+
+        first, draft, _ = await self.run_fixture(handler, [page(1)], self.request)
+        self.assertFalse(draft["translateTables"])
+        _, updated, _ = await self.run_fixture(handler, [page(2)], dict(self.request, attemptId="append",
+            pages="2", readingPath=first["readingPath"], appendPages=True))
+        self.assertEqual(sent, ["Test paragraph"] * 2)
+        self.assertTrue(all(block["status"] == "preserved" for page in updated["pages"] for block in page["blocks"][1:]))
+        _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables", translateTables=True))
+        self.assertTrue(all(block["status"] == "translated" for block in enabled["pages"][0]["blocks"]))
 
     async def test_one_failed_block_keeps_other_translation_formula_and_code(self):
         calls = []
@@ -370,7 +424,8 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocks[3]["status"], "preserved")
         self.assertNotIn("translatedText", blocks[3])
         self.assertTrue(all(block["status"] == "preserved" and "translatedText" not in block for block in blocks[4:]))
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(sum(payload["messages"][-1]["content"].startswith("Second") for payload in calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertTrue(all(source_code not in payload["messages"][-1]["content"] for payload in calls))
         self.assertEqual(before, reading.sha256(self.source))
         self.assertEqual(reading.sha256(result["readingPath"]), result["readingSHA256"])
@@ -421,10 +476,12 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         def handler(request):
             passage = json.loads(request.content)["messages"][-1]["content"]
             calls.append(passage)
+            if passage == block["sourceTemplate"] and calls.count(passage) == 1:
+                return self.response(request, "第一次应答漏掉了第二个公式" + tokens[0])
             return self.response(request, "均值" + tokens[0] + "与方差" + tokens[1] + "属于此完整段落。" if passage.startswith("Mean") else "第二段。")
         result, document, _ = await self.run_fixture(handler, pages=[page])
         translated = document["pages"][0]["blocks"][0]
-        self.assertEqual(calls[0], block["sourceTemplate"])
+        self.assertEqual(calls.count(block["sourceTemplate"]), 2)
         self.assertEqual(translated["translatedText"], "均值$x$与方差$x$属于此完整段落。")
         self.assertEqual(translated["inlineMath"], block["inlineMath"])
         self.assertTrue(all(translated["translatedTemplate"].count(token) == 1 for token in tokens))
@@ -485,7 +542,7 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
             return self.response(request, "截断的译文", finish="length")
         result, document, _ = await self.run_fixture(handler)
         self.assertEqual(result["failedBlocks"], 2)
-        self.assertEqual(calls, ["https://example.test/v1/chat/completions"] * 2)
+        self.assertEqual(calls, ["https://example.test/v1/chat/completions"] * 3)
         self.assertNotIn("translatedText", document["pages"][0]["blocks"][1])
 
     async def test_source_mutation_prevents_commit(self):
@@ -664,7 +721,7 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
 # Regression cases for opaque formula markers, not translation quality scoring.
 class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
-    async def translate(self, source, reply, **metadata):
+    async def translate(self, source, reply, *, attempts=1, **metadata):
         block = dict(id="p00001-b00001", kind="text", sourceText=source, status="preserved", **metadata)
         calls = []
         def handler(request):
@@ -675,7 +732,7 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
                        apiKey="test-only", concurrency=1)
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await reading.translate_block(client, block, service, "fr", "zh")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), attempts)
         return block, calls[0]
 
     async def test_observed_plain_text_leaks_keep_source_without_priming_markers(self):
@@ -683,7 +740,7 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         for source, reply in (("- masse des colis ;", "- [[PBM_1]]"),
                               ("FY24 Flight Manifest", "[[PBM_...]]")):
             with self.subTest(source=source):
-                block, payload = await self.translate(source, reply, translatedText="stale",
+                block, payload = await self.translate(source, reply, attempts=2, translatedText="stale",
                                                      translatedTemplate="stale [[PBM_1]]")
                 self.assertEqual(payload["messages"][1]["content"], source)
                 self.assertNotIn("PBM", payload["messages"][0]["content"])
@@ -714,7 +771,7 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_marker_cannot_hide_beside_a_complete_real_formula(self):
         token = "[[PBM_abc123_0001]]"
-        block, _ = await self.translate("Mean $x$.", f"均值{token}，以及[[PBM_2]]。",
+        block, _ = await self.translate("Mean $x$.", f"均值{token}，以及[[PBM_2]]。", attempts=2,
                                        inlineMath=[dict(token=token, latex="x", bbox=[10, 20, 30, 40])],
                                        sourceTemplate=f"Mean {token}.")
         self.assertEqual(block["status"], "source_fallback")
@@ -724,7 +781,7 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
     async def test_unfinished_marker_is_not_displayed(self):
         for reply in ("未知[[PBM_2", "未知[[PBM_2]\n另一行"):
             with self.subTest(reply=reply):
-                block, _ = await self.translate("Plain text.", reply)
+                block, _ = await self.translate("Plain text.", reply, attempts=2)
                 self.assertEqual(block["status"], "source_fallback")
                 self.assertNotIn("translatedText", block)
 
@@ -744,8 +801,17 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(context, json.dumps(payload))
         self.assertNotIn("3091", json.dumps(payload))
         self.assertIn("do not expand abbreviations", payload["messages"][0]["content"])
+        self.assertIn("Simplified Chinese characters", payload["messages"][0]["content"])
+        self.assertIn("Traditional Chinese characters", reading.table_cell_messages("Label", "en", "zh-TW")[0]["content"])
         self.assertIn("Month names", payload["messages"][0]["content"])
         self.assertNotIn("PBM", payload["messages"][0]["content"])
+
+    async def test_unchanged_model_answer_counts_as_preserved(self):
+        passage = "Whenever possible, use a program to modify the data."
+        block, _ = await self.translate(passage, passage)
+        self.assertEqual(block["status"], "preserved")
+        self.assertNotIn("translatedText", block)
+        self.assertTrue(block["model"])
 
 
 # Native paths and parser boxes must share the displayed page's local origin.

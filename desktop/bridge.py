@@ -416,6 +416,8 @@ def translate(request, root):
                         targetLanguage=request.get("targetLanguage", "zh"), pages=request.get("pages"), service=service)
         if terms:
             envelope["glossary"] = terms
+        if not previous_reading and "translateTables" in request:
+            envelope["translateTables"] = request["translateTables"]
         if previous_reading:
             # Retries and appended pages keep the draft's languages.
             envelope.update(readingPath=previous_reading,

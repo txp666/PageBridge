@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 from collections import Counter
 import math
+from typing import NamedTuple
 
 import pymupdf
 
@@ -116,10 +117,44 @@ def translated_blocks(page_result):
             and block["translatedText"].strip() != str(block.get("sourceText", "")).strip()]
 
 
+class SourceGlyph(NamedTuple):
+    native: pymupdf.Rect
+    local: pymupdf.Rect
+    rgb: tuple
+    size: float
+    bold: bool | None
+
+
+def _cff_weight(document, xref):
+    """Some PDF producers strip all weight information from embedded Type 1 subsets.
+    Measure a vertical stem halfway up the actual glyph in em units."""
+    data = document.extract_font(xref)[3]
+    if not data:
+        return None
+    font = pymupdf.Font(fontbuffer=data)
+    m = pymupdf.mupdf
+    for char in "lIi":
+        gid = font.has_glyph(ord(char))
+        if gid:
+            mask = pymupdf.Pixmap(m.fz_render_glyph_pixmap(font.this, gid, m.FzMatrix(100, 0, 0, -100, 0, 0),
+                                                            m.FzIrect(-200, -200, 200, 200), 8))
+            row = (mask.height // 2) * mask.stride
+            if mask.width and mask.height:
+                return sum(mask.samples[row:row + mask.width]) >= 12 * 255
+    return None
+
+
+def source_bold(glyphs):
+    weights = Counter(g.bold for g in glyphs if g.bold is not None)
+    return weights.most_common(1)[0][0] if weights else None
+
+
 def visible_glyphs(page):
-    """Visible horizontal glyphs as (native box, page-local box, rgb, size), plus their span boxes."""
+    """Visible horizontal glyphs and their native span boxes."""
     rotation, origin = page.rotation_matrix, page.rect.tl
     glyphs, spans = [], []
+    cff = {name.split("+")[-1]: xref for xref, ext, _, name, *_ in page.get_fonts() if ext == "cff"}
+    weights = {}
     for span in page.get_texttrace():
         if span["type"] == 3 or span.get("opacity", 1) <= 0:
             continue  # A hidden OCR layer cannot remove pixels in a scan.
@@ -133,6 +168,15 @@ def visible_glyphs(page):
         if len(color) != 3:
             color = (0, 0, 0)
         rgb = tuple(round(max(0, min(1, channel)) * 255) for channel in color)
+        name = span["font"]
+        bold = bool(span["flags"] & pymupdf.TEXT_FONT_BOLD)
+        if not bold and name in cff:
+            if name not in weights:
+                try:
+                    weights[name] = _cff_weight(page.parent, cff[name])
+                except (pymupdf.mupdf.FzErrorBase, RuntimeError, ValueError):
+                    weights[name] = None
+            bold = weights[name]
         for unicode_value, _, _, bounds in span["chars"]:
             if not 0 <= unicode_value <= 0x10FFFF or chr(unicode_value).isspace():
                 continue
@@ -140,7 +184,7 @@ def visible_glyphs(page):
             local = native * rotation
             local += (-origin.x, -origin.y, -origin.x, -origin.y)
             if not local.is_empty:
-                glyphs.append((native, local, rgb, span["size"]))
+                glyphs.append(SourceGlyph(native, local, rgb, span["size"], bold))
     return glyphs, spans
 
 
@@ -151,7 +195,7 @@ def glyph_owners(glyphs, blocks):
     boxes = {b["id"]: pymupdf.Rect(b["bbox"]) for b in blocks}
     owners = {b["id"]: [] for b in blocks}
     for glyph in glyphs:
-        center = (glyph[1].tl + glyph[1].br) / 2
+        center = (glyph.local.tl + glyph.local.br) / 2
         matches = [b for b in blocks if boxes[b["id"]].contains(center)]
         if matches:
             owner = min(matches, key=lambda b: boxes[b["id"]].get_area())
@@ -210,24 +254,26 @@ def add_page_background(input_path, page_result):
             chars = owners[block["id"]]
             if not chars:
                 continue
-            if block.get("kind") == "heading" and len({rgb for _, _, rgb, _ in chars}) > 1:
+            if block.get("kind") == "heading" and len({g.rgb for g in chars}) > 1:
                 # A combined heading can contain a white badge on a black bar
                 # followed by black text on white. One translated text color
                 # cannot reproduce both runs. Keep this heading's source pixels;
                 # its complete translation remains available through the detail.
                 continue
-            actual = pymupdf.Rect(chars[0][1])
-            for _, box, _, _ in chars[1:]:
-                actual |= box
+            actual = pymupdf.Rect(chars[0].local)
+            for glyph in chars[1:]:
+                actual |= glyph.local
             # Use the same native glyph geometry to place and clear text, so a
             # decorative shape inside an oversized heading box is never moved.
             actual = (actual + (-.3, -.6, .3, .6)) & pymupdf.Rect(0, 0, page_result["width"], page_result["height"])
             if actual.is_empty:
                 continue
             block["bbox"] = list(actual)
-            block["foregroundColor"] = list(Counter(rgb for _, _, rgb, _ in chars).most_common(1)[0][0])
+            block["foregroundColor"] = list(Counter(g.rgb for g in chars).most_common(1)[0][0])
+            if (bold := source_bold(chars)) is not None:
+                block["sourceBold"] = bold
             background_ids.append(block["id"])
-            redactions.extend(native for native, _, _, _ in chars)
+            redactions.extend(g.native for g in chars)
 
         selected = [block for block in translated if block["id"] in background_ids]
         remove_text(source, redactions, spans_in(source, native_spans, [boxes[block["id"]] for block in selected]),

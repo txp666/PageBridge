@@ -47,13 +47,15 @@ public final class StructuredReadingTextLayout {
     private let container: NSTextContainer
     public var attributedText: NSAttributedString { NSAttributedString(attributedString: storage) }
 
-    private init(text: String, width: CGFloat, fontSize: CGFloat, heading: Bool, foregroundColor: NSColor,
-                 template: String?, images: [String: StructuredReadingInlineImage], referenceFontSize: CGFloat) {
+    private init(text: String, width: CGFloat, fontSize: CGFloat, weight: NSFont.Weight, foregroundColor: NSColor,
+                 template: String?, images: [String: StructuredReadingInlineImage], referenceFontSize: CGFloat,
+                 firstLineIndent: CGFloat) {
         self.fontSize = fontSize
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byWordWrapping
+        paragraph.firstLineHeadIndent = firstLineIndent * fontSize / max(1, referenceFontSize)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: heading ? .semibold : .regular),
+            .font: NSFont.systemFont(ofSize: fontSize, weight: weight),
             .foregroundColor: foregroundColor,
             .paragraphStyle: paragraph
         ]
@@ -78,7 +80,8 @@ public final class StructuredReadingTextLayout {
     public static func fit(text: String, in bounds: CGSize, preferredFontSize: CGFloat, heading: Bool,
                            backgroundColor: [Double]? = nil, foregroundColor: [Double]? = nil, template: String? = nil,
                            inlineImages: [String: StructuredReadingInlineImage] = [:],
-                           referenceFontSize: CGFloat? = nil, minimumFontSize: CGFloat = 8) -> StructuredReadingTextLayout {
+                           referenceFontSize: CGFloat? = nil, minimumFontSize: CGFloat = 8,
+                           firstLineIndent: CGFloat = 0, sourceBold: Bool? = nil) -> StructuredReadingTextLayout {
         // Small print (references, citations, footers) is often below the reader minimum, and
         // Chinese runs wider per character: let it shrink to 85% of its original size. Body
         // text of 9.4 pt or more keeps the reader minimum.
@@ -93,9 +96,10 @@ public final class StructuredReadingTextLayout {
             foreground = brightness < 128 ? .white : .black
         }
         func layout(_ size: CGFloat) -> StructuredReadingTextLayout {
-            StructuredReadingTextLayout(text: text, width: bounds.width, fontSize: size, heading: heading,
+            StructuredReadingTextLayout(text: text, width: bounds.width, fontSize: size,
+                                        weight: sourceBold.map { $0 ? .bold : .regular } ?? (heading ? .semibold : .regular),
                                         foregroundColor: foreground, template: template, images: inlineImages,
-                                        referenceFontSize: referenceFontSize ?? preferredFontSize)
+                                        referenceFontSize: referenceFontSize ?? preferredFontSize, firstLineIndent: firstLineIndent)
         }
         func fits(_ value: StructuredReadingTextLayout) -> Bool {
             value.measuredSize.height <= bounds.height && value.measuredSize.width <= bounds.width

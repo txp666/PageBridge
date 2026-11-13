@@ -12,8 +12,8 @@ from pathlib import Path
 
 
 @contextmanager
-def capture_inline_geometry():
-    """Retain actual 4.0.12 spans before its public schema drops their boxes."""
+def capture_inline_geometry(text_lines=None):
+    """Retain the parser's formula spans and paragraph line boxes before serialization."""
     from mineru.backend.analysis.pdf.text import content
     original = content._apply_block_content_and_line_metadata
     if tuple(inspect.signature(original).parameters) != ("page_model_list", "block_lines", "page_size"):
@@ -23,6 +23,10 @@ def capture_inline_geometry():
     def wrapped(page_model_list, block_lines, page_size):
         result = original(page_model_list, block_lines, page_size)
         width, height = page_size
+        if text_lines is not None:
+            for item in page_model_list:
+                if item.get("type") == "text":
+                    text_lines.extend(line["bbox"] for line in item.get("lines", []) if line.get("bbox"))
         for lines in block_lines.values():
             for line in lines:
                 for span in line.spans:
@@ -86,16 +90,19 @@ def main():
         return 2
     from mineru.parser import parse
     from mineru.parser.writer import FileBasedDataWriter
-    with capture_inline_geometry() as formulas:
+    text_lines = []
+    with capture_inline_geometry(text_lines) as formulas:
         result = parse(args.input, tier="basic", ocr_mode="auto", image_analysis=True,
                        page_range=str(args.page))
     # Raw parser artifacts remain temporary and are never consumed as HTML by a UI.
     result.save(FileBasedDataWriter(args.output))
     path = Path(args.output) / "middle_json.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not any(page.get("page_idx") == args.page - 1 for page in data.get("pages", [])):
+    page = next((page for page in data.get("pages", []) if page.get("page_idx") == args.page - 1), None)
+    if page is None:
         return 3
     attach_inline_geometry(data, formulas)
+    page["sourceTextLines"] = text_lines
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return 0
 

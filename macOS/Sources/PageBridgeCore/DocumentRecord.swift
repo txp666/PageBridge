@@ -26,6 +26,7 @@ public struct DocumentRecord: Identifiable, Codable, Sendable, Equatable {
     public var readingPath: String?
     public var sourceLanguage: String
     public var targetLanguage: String
+    public var translateTables: Bool?
     public var lastError: String?
     public var attemptID: UUID?
     public var inputSHA256: String

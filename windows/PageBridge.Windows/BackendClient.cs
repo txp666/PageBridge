@@ -232,7 +232,7 @@ public sealed class BackendClient : IDisposable
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Action<JsonObject> onEvent,
         CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
-        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false)
+        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = false)
     {
         // Only the profile ID crosses this interface. The bridge resolves
         // its saved credential privately through Windows Credential Manager.
@@ -241,6 +241,7 @@ public sealed class BackendClient : IDisposable
             ["action"] = "translate", ["dataRoot"] = DataRoot,
             ["document_id"] = documentId, ["service_id"] = serviceId,
             ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
+            ["translateTables"] = translateTables,
             ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
             ["glossary_ids"] = glossaryIds is null ? null : new JsonArray(glossaryIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()),
             ["retry_terms"] = retryTerms is null ? null : new JsonArray(retryTerms.Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()),

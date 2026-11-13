@@ -37,6 +37,16 @@ final class StructuredReadingTextLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(layout.measuredSize.height, bounds.height)
     }
 
+    func testFirstLineIndentUsesFittedSizeAndKeepsTheTextSearchable() throws {
+        let passage = "第一段正文需要换行才能显示完整。\n第二段从这里开始。"
+        let layout = StructuredReadingTextLayout.fit(text: passage, in: CGSize(width: 110, height: 70),
+            preferredFontSize: 16, heading: false, firstLineIndent: 19)
+        XCTAssertEqual(layout.attributedText.string, passage)
+        let style = try XCTUnwrap(layout.attributedText.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.firstLineHeadIndent, layout.fontSize * 19 / 16)
+        XCTAssertEqual(style.headIndent, 0)
+    }
+
     func testOverflowRetainsReadableMinimumInsteadOfExpandingTheFrame() {
         let bounds = CGSize(width: 50, height: 12)
         let layout = StructuredReadingTextLayout.fit(text: String(repeating: "完整译文通过点击展开。", count: 30),

@@ -19,13 +19,11 @@ import tempfile
 
 import pymupdf
 
-from reading_background import _rect, glyph_owners, remove_text, spans_in, translated_blocks, visible_glyphs
+from reading_background import _rect, glyph_owners, remove_text, source_bold, spans_in, translated_blocks, visible_glyphs
 from structured_reading import ReadingError, load_reading
 
 ARTIFACT_TYPE = "reading-export"
 FORMULA_SCALE = 4  # Inline formula crops at 288 dpi.
-CAP_HEIGHT = .7  # em
-PLACEHOLDER = "placeholder.png"
 SOURCE_REGIONS = ("table", "formula", "figure", "code")
 
 
@@ -46,8 +44,8 @@ def _center(rect):
     return (rect.tl + rect.br) / 2
 
 
-def _formula_images(page, block):
-    """Crop each inline formula at the readers' rectangle, before its glyphs are removed."""
+def _formula_images(page, block, archive, block_index):
+    """Give Story the actual crops so its line boxes include each formula's full height."""
     images, area, origin = {}, pymupdf.Rect(0, 0, page.rect.width, page.rect.height), page.rect.tl
     for formula in block.get("inlineMath", []):
         box = _rect(formula.get("bbox")) if isinstance(formula, dict) else None
@@ -58,17 +56,16 @@ def _formula_images(page, block):
             continue
         pixmap = page.get_pixmap(matrix=pymupdf.Matrix(FORMULA_SCALE, FORMULA_SCALE), clip=rect + (*origin, *origin),
                                    colorspace=pymupdf.csRGB, alpha=False)
-        images[formula["token"]] = (pixmap.tobytes("png"), rect.width, rect.height)
+        filename = f"formula-{block_index}-{len(images)}.png"
+        archive.add(pixmap.tobytes("png"), filename)
+        images[formula["token"]] = (filename, rect.width, rect.height)
     return images
 
 
-def _body(block, images, size, placed):
-    """The translation as HTML. MuPDF sits an inline image on the baseline, which lifts a
-    formula by its descent, so each marker becomes a transparent placeholder for the part
-    above the baseline; its crop is drawn afterwards, centred on the cap height like the
-    macOS reader. Formulas without a crop stay readable as LaTeX."""
+def _body(block, images):
+    """The translated passage with inline formulas at the translated token positions."""
     def text(value):
-        return html.escape(value).replace("\n", "<br>")
+        return html.escape(value.replace("\r\n", "\n").replace("\r", "\n")).replace("\n", "<br>")
     formulas = {f["token"]: f for f in block.get("inlineMath", []) if isinstance(f, dict) and isinstance(f.get("token"), str) and f["token"]}
     template = block.get("translatedTemplate")
     if not formulas or not isinstance(template, str):
@@ -78,24 +75,35 @@ def _body(block, images, size, placed):
         if piece not in formulas:
             parts.append(text(piece))
         elif piece in images:
-            png, width, height = images[piece]
-            parts.append(f'<img src="{PLACEHOLDER}" style="width:{width:.2f}pt;height:{(height + CAP_HEIGHT * size) / 2:.2f}pt">')
-            placed.append((png, width, height, size))
+            filename, width, height = images[piece]
+            parts.append(f'<img src="{filename}" style="width:{width:.3f}pt;height:{height:.3f}pt">')
         else:
             parts.append(text("$" + str(formulas[piece].get("latex", "")) + "$"))
     return "".join(parts)
 
 
-def _css(block, size, background):
+def _embolden(page):
+    """Stroke and fill the existing glyphs, including CJK faces without a bold font.
+    This stream is generated solely by Story on our own transparent overlay."""
+    doc = page.parent
+    for xref in page.get_contents():
+        stream = doc.xref_stream(xref).replace(b"BT\n", b"BT\n2 Tr 1 j\n")
+        stream = re.sub(rb"(?m)^([\d.]+ [\d.]+ [\d.]+) rg$", rb"\1 rg \1 RG", stream)
+        # The stroke follows the fitted font size and the source foreground colour.
+        stream = re.sub(rb"/\w+ ([\d.]+) Tf", lambda m: m[0] + f" {float(m[1]) * .035:.3f} w".encode(), stream)
+        doc.update_stream(xref, stream)
+
+
+def _css(block, size, background, indent):
     color = _color(block.get("foregroundColor"))
     if color is None:
         # Reader rule: light text on a dark filled region, otherwise black.
         rgb = background or [255, 255, 255]
         color = [255] * 3 if rgb[0] * .299 + rgb[1] * .587 + rgb[2] * .114 < 128 else [0] * 3
-    # Regular weight throughout: the built-in CJK fallback has no bold, and
-    # bold Latin inside regular Chinese headings reads as random emphasis.
-    return ("body {margin: 0; padding: 0; font-family: sans-serif; line-height: 1.15; "
-            f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}")
+    line_height = 1.35 if block.get("inlineMath") else 1.15
+    return (f"body {{margin: 0; padding: 0; font-family: sans-serif; line-height: {line_height}; "
+            f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
+            f" p {{margin: 0; text-indent: {indent:.3f}pt}}")
 
 
 def estimated_font_size(block):
@@ -114,8 +122,7 @@ def estimated_font_size(block):
 def _start_size(block, glyphs):
     """Character-weighted median native font size in the region, as both readers use;
     small print keeps its own size (5 pt floor) and fitting may still shrink it so nothing is cut."""
-    rect = pymupdf.Rect(block["bbox"])
-    sizes = sorted(size for _, local, _, size in glyphs if rect.contains(_center(local)) and size > 0)
+    sizes = sorted(glyph.size for glyph in glyphs if glyph.size > 0)
     size = sizes[len(sizes) // 2] if sizes else estimated_font_size(block) or (18 if block.get("kind") == "heading" else 12)
     return max(5, size)
 
@@ -155,14 +162,21 @@ def translate_page(document, index, page_result, keep):
     links = page.get_links()
     glyphs, spans = visible_glyphs(page)
     regions = [pymupdf.Rect(block["bbox"]) & area for block in drawn]
+    owners = glyph_owners(glyphs, translated if native else drawn)
     if native:
-        owners = glyph_owners(glyphs, translated)
         owned = [glyph for block in drawn for glyph in owners[block["id"]]]
         formulas = [f["bbox"] for block in drawn for f in block.get("inlineMath", []) if isinstance(f, dict) and _rect(f.get("bbox"))]
-        inside = [any((pymupdf.Rect(box) + (-.75, -.75, .75, .75)).contains(_center(glyph[1])) for box in formulas) for glyph in owned]
-        # Prose first, so a formula crop shows the formula, not the ends of neighbouring words.
-        remove_text(page, [glyph[0] for glyph, formula in zip(owned, inside) if not formula],
-                    spans_in(page, spans, regions), [], keep)
+        if formulas:
+            expanded = [pymupdf.Rect(box) + (-.75, -.75, .75, .75) for box in formulas]
+            # Only erase the centers of neighboring prose glyphs before taking
+            # the crops. Full font boxes can also touch a fraction's denominator.
+            probes = []
+            for glyph in owned:
+                if any(box.intersects(glyph.local) for box in expanded) and not any(box.contains(_center(glyph.local)) for box in expanded):
+                    x, y = _center(glyph.native)
+                    probes.append(pymupdf.Rect(x - .05, y - .05, x + .05, y + .05))
+            if probes:
+                remove_text(page, probes, [], [])
     else:
         # A scan: cover each region with its sampled colour, as the reader does.
         # An invisible OCR layer under it is removed so search finds only the translation.
@@ -171,12 +185,11 @@ def translate_page(document, index, page_result, keep):
                   if any(region.contains(_center(pymupdf.Rect(bounds) * rotation) - origin) for region in regions)]
         if hidden:
             remove_text(page, hidden, [], [])
-    crops = [_formula_images(page, block) for block in drawn]
-    if native and formulas:
-        remove_text(page, [glyph[0] for glyph, formula in zip(owned, inside) if formula], [], formulas)
-    archive, items, fills, placed = pymupdf.Archive(), [], [], []
-    # One fully transparent pixel (Pixmap.clear_with keeps alpha opaque).
-    archive.add(pymupdf.Pixmap(pymupdf.csRGB, 1, 1, b"\xff\xff\xff\x00", True).tobytes("png"), PLACEHOLDER)
+    archive = pymupdf.Archive()
+    crops = [_formula_images(page, block, archive, index) for index, block in enumerate(drawn)]
+    if native:
+        remove_text(page, [glyph.native for glyph in owned], spans_in(page, spans, regions), formulas, keep)
+    items, fills = {False: [], True: []}, []
     holes = [_rect(block.get("bbox")) for block in page_result["blocks"] if block.get("kind") in SOURCE_REGIONS]
     for block, rect, images in zip(drawn, regions, crops):
         background = None
@@ -185,37 +198,42 @@ def translate_page(document, index, page_result, keep):
             # Source regions stay visible unless this text is part of that region (a caption inside a figure).
             for part in _subtract(rect, [hole for hole in holes if hole and not hole.contains(_center(rect))]):
                 fills.append((part, background))
-        size = _start_size(block, glyphs)
-        items.append((rect, _body(block, images, size, placed), _css(block, size, background)))
+        chars = owners[block["id"]]
+        size = _start_size(block, chars)
+        bold = block.get("sourceBold")
+        if bold is None:
+            bold = source_bold(chars)
+        if bold is None:
+            bold = block["kind"] == "heading"
+        indent = block.get("firstLineIndent", 0)
+        body = _body(block, images)
+        if indent:
+            body = "<p>" + body.replace("<br>", "</p><p>") + "</p>"
+        items[bold].append((rect, body, _css(block, size, background, indent)))
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
-    device = writer.begin_page(area)
-    for rect, body, css in items:
-        story = pymupdf.Story(body, user_css=css, archive=archive)
-        # Shrink until the whole translation fits; nothing is dropped or truncated.
-        fit = story.fit_scale(pymupdf.Rect(0, 0, rect.width, rect.height), scale_min=1)
-        scale = 1 / fit.parameter
-        story.draw(device, pymupdf.Matrix(scale, 0, 0, scale, rect.x0, rect.y0))
-    writer.end_page()
+    weights = [bold for bold in items if items[bold]]
+    for bold in weights:
+        device = writer.begin_page(area)
+        for rect, body, css in items[bold]:
+            story = pymupdf.Story(body, user_css=css, archive=archive)
+            # Fit each complete passage and its actual formula images into its region.
+            fit = story.fit_scale(pymupdf.Rect(0, 0, rect.width, rect.height), scale_min=1)
+            scale = 1 / fit.parameter
+            story.draw(device, pymupdf.Matrix(scale, 0, 0, scale, rect.x0, rect.y0))
+        writer.end_page()
     writer.close()
-    # One overlay per page shares its fonts; subset here so original fonts are never touched.
     with pymupdf.open(stream=buffer.getvalue(), filetype="pdf") as overlay:
-        # Placeholders are the overlay's only images, drawn in story order.
-        boxes = [pymupdf.Rect(info["bbox"]) for info in overlay[0].get_image_info()]
-        if len(boxes) != len(placed):
-            raise RuntimeError("formula placeholders")
-        for box, (png, width, height, size) in zip(boxes, placed):
-            scale = box.width / width
-            middle = box.y1 - CAP_HEIGHT * size * scale / 2
-            overlay[0].insert_image(pymupdf.Rect(box.x0, middle - height * scale / 2, box.x1, middle + height * scale / 2), stream=png)
+        if items[True]:
+            _embolden(overlay[-1])
         for rect, rgb in fills:
             overlay[0].draw_rect(rect, color=None, fill=[value / 255 for value in rgb], overlay=False)
         overlay.subset_fonts()
-        # The overlay is drawn in displayed page space. show_pdf_page misplaces
-        # content on rotated pages with a crop box, so map it on the unrotated page.
+        # The overlay is drawn in displayed page space. Map it onto the unrotated page.
         rotation = page.rotation
         page.set_rotation(0)
-        page.show_pdf_page(page.rect, overlay, 0, rotate=rotation)
+        for layer in range(len(overlay)):
+            page.show_pdf_page(page.rect, overlay, layer, rotate=rotation)
         page.set_rotation(rotation)
     # Redaction drops links over removed text; their targets still apply to the translation.
     # Reloading also drops MuPDF's stale link list, which later page copies would read.
