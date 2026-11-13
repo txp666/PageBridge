@@ -12,6 +12,7 @@ struct TranslationSheet: View {
     @State private var glossaryIDs: [String] = []
     @State private var glossaryManagerPresented = false
     @State private var append = true
+    @State private var translateTables = false
 
     static let languages: [(String, String)] = [
         ("en", "英语"), ("zh", "简体中文"), ("zh-TW", "繁体中文"),
@@ -60,6 +61,8 @@ struct TranslationSheet: View {
                 if canAppend {
                     Toggle("追加到现有阅读稿（保留已译的 \(draftPages.count) 页）", isOn: $append)
                 }
+                Toggle("自动翻译表格", isOn: appending ? .constant(draft?.translateTables ?? true) : $translateTables)
+                    .disabled(appending)
                 LabeledContent("术语表") {
                     HStack(spacing: 8) {
                         Menu {
@@ -114,7 +117,7 @@ struct TranslationSheet: View {
                 Text("源语言和目标语言需要不同。").font(.caption).foregroundStyle(.orange)
             }
             if appending {
-                Text("只翻译尚未翻译的页，并合并进现有阅读稿，沿用阅读稿的语言。")
+                Text("只翻译尚未翻译的页，并合并进现有阅读稿，沿用阅读稿的语言和表格设置。")
                     .font(.caption).foregroundStyle(.secondary)
             } else if model.selectedDocument?.hasTranslation == true {
                 Text("本次翻译成功后，将用这次的页范围替换此文档的阅读稿。原 PDF 会保留。")
@@ -205,7 +208,8 @@ struct TranslationSheet: View {
             guard wanted.contains(where: { !existing.contains($0) }) else { pageError = "这些页已在阅读稿中，请选择尚未翻译的页。"; return }
         }
         model.startTranslation(sourceLanguage: sourceLanguage, targetLanguage: targetLanguage, pages: selectedRange == "custom" ? range : nil,
-                               glossaryIDs: glossaryIDs, scope: appending ? .append : .full)
+                               translateTables: appending ? nil : translateTables, glossaryIDs: glossaryIDs,
+                               scope: appending ? .append : .full)
         dismiss()
     }
 }

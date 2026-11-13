@@ -18,7 +18,7 @@ def _bounds(items):
     return result
 
 
-def _native_words(page):
+def native_words(page, *, include_chars=False):
     rotation, origin = page.rotation_matrix, page.rect.tl
     zero = pymupdf.Point(0, 0) * rotation
     # Scanned PDFs often carry invisible OCR text. Its words cannot be removed
@@ -27,7 +27,8 @@ def _native_words(page):
                for span in page.get_texttrace() if span.get("type") != 3 and span.get("opacity", 1) > 0
                for char in span["chars"]}
     words = []
-    for block_index, block in enumerate(page.get_text("rawdict")["blocks"]):
+    flags = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
+    for block_index, block in enumerate(page.get_text("rawdict", flags=flags)["blocks"]):
         if block.get("type") != 0:
             continue
         for line_index, line in enumerate(block["lines"]):
@@ -40,6 +41,8 @@ def _native_words(page):
                     rect = _bounds(current)
                     words.append(dict(text="".join(c["text"] for c in current), bbox=list(rect),
                                       line=(block_index, line_index), horizontal=horizontal))
+                    if include_chars:
+                        words[-1]["chars"] = current.copy()
                     current.clear()
 
             for span in line["spans"]:
@@ -50,7 +53,10 @@ def _native_words(page):
                     else:
                         box = pymupdf.Rect(char["bbox"]) * rotation
                         box += (-origin.x, -origin.y, -origin.x, -origin.y)
-                        current.append(dict(text=char["c"], bbox=list(box)))
+                        glyph = dict(text=char["c"], bbox=list(box))
+                        if include_chars:
+                            glyph["style"] = (span["font"], span["size"], span["flags"])
+                        current.append(glyph)
             finish()
     return words
 
@@ -112,7 +118,7 @@ def refine_native_tables(input_path, page_number, page_result):
         return
     try:
         with pymupdf.open(input_path) as pdf:
-            words = _native_words(pdf[page_number - 1])
+            words = native_words(pdf[page_number - 1])
     except (OSError, ValueError, RuntimeError):
         return
     if not words:

@@ -26,6 +26,12 @@ final class ReadingScrollSynchronizationTests: XCTestCase {
         XCTAssertEqual(layout.pageNumber(for: ReadingScrollAnchor(page: 1, fraction: 1.001)), 2)
     }
 
+    func testShortDocumentIsVerticallyCenteredInTheViewport() {
+        let viewport = CGSize(width: 534, height: 759)
+        let layout = ReadingScrollLayout(pageSizes: [CGSize(width: 480, height: 430)], viewport: viewport, zoom: 1)
+        XCTAssertEqual(layout.pageFrames[0].midY, viewport.height / 2, accuracy: 0.001)
+    }
+
     func testZoomAndViewportResizePreserveCanonicalPosition() throws {
         let old = ReadingScrollLayout(pageSizes: sizes, viewport: CGSize(width: 500, height: 600), zoom: 1)
         let new = ReadingScrollLayout(pageSizes: sizes, viewport: CGSize(width: 800, height: 450), zoom: 2)

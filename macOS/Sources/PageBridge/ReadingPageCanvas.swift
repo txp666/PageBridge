@@ -66,7 +66,8 @@ final class ReadingPageCanvasView: NSView {
                 preferredFontSize: placement.preferredFontSize, heading: placement.block.kind == "heading",
                 backgroundColor: block.backgroundColor, foregroundColor: block.foregroundColor,
                 template: crops.count == block.inlineMath?.count ? block.translatedTemplate : nil,
-                inlineImages: crops, minimumFontSize: block.sourceType == "table_cell" ? 6.5 : 8))
+                inlineImages: crops, minimumFontSize: block.sourceType == "table_cell" ? 6.5 : 8,
+                firstLineIndent: block.firstLineIndent ?? 0, sourceBold: block.sourceBold))
         })
         needsDisplay = true
     }

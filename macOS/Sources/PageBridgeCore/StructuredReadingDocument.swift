@@ -9,6 +9,7 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
     public var pageCount: Int
     public var sourceLanguage: String
     public var targetLanguage: String
+    public var translateTables: Bool?
     public var status: String
     public var selectedPages: [Int]
     public var pages: [StructuredReadingPage]
@@ -135,6 +136,15 @@ public struct StructuredReadingBlock: Codable, Sendable, Equatable, Identifiable
     public var sourceTemplate: String?
     public var translatedTemplate: String?
     public var inlineMath: [StructuredReadingInlineMath]?
+    public var firstLineIndent: Double?
+    public var sourceBold: Bool?
+    public var model: String?
+    public var returnedSourceText: Bool {
+        if status == "preserved" { return model != nil }
+        return status == "translated" && translatedText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            == sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    public var canRetry: Bool { status == "source_fallback" || returnedSourceText }
     public var isSourceRegion: Bool { ["table", "formula", "figure", "code"].contains(kind) }
     public var displayText: String { status == "translated" ? (translatedText ?? sourceText) : sourceText }
     /// Font size from the region's area and character count, for text without a text layer
@@ -221,6 +231,7 @@ extension DocumentRepository {
         var updated = document
         updated.readingPath = destination.appendingPathComponent("reading.json").path
         updated.sourceLanguage = reading.sourceLanguage; updated.targetLanguage = reading.targetLanguage
+        updated.translateTables = reading.translateTables ?? true
         updated.status = reading.isPartial ? .partial : .completed
         updated.lastError = nil; updated.attemptID = attempt
         return updated

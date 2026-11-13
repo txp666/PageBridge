@@ -29,7 +29,7 @@ class Events:
 
 def native_blocks(path, number):
     with pymupdf.open(path) as pdf:
-        return {"".join(span["text"] for line in block["lines"] for span in line["spans"]): block["bbox"]
+        return {"".join(span["text"] for line in block["lines"] for span in line["spans"]): list(block["bbox"])
                 for block in pdf[number - 1].get_text("dict")["blocks"] if block["type"] == 0}
 
 
@@ -62,6 +62,26 @@ class ReadingExportTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
+    def test_pdf_first_line_follows_the_source_indent(self):
+        source = self.root / "indent-source.pdf"
+        with pymupdf.open() as pdf:
+            pdf.new_page(width=300, height=300)
+            pdf.save(source)
+        passage = "第一段正文足够长，可以在此栏内自动换行并继续阅读。\n第二段从这里开始。"
+        def block(top, text, **fields):
+            return dict({"kind": "text", "bbox": [20, top, 180, top + 65], "sourceText": "x",
+                         "status": "translated", "translatedText": text}, **fields)
+        blocks = [block(10, passage, firstLineIndent=18), block(95, "顶格正文同样可以翻译。"),
+                  block(165, "标签", sourceType="table_cell")]
+        output = self.root / "translated.pdf"
+        export(source, draft(source, {1: blocks}, self.root), output, "translated")
+        with pymupdf.open(output) as pdf:
+            spans = [line["spans"][0] for item in pdf[0].get_text("dict")["blocks"] for line in item.get("lines", [])]
+        self.assertGreater(len(spans), 4)  # At least one line actually wrapped.
+        for span in spans:
+            first = span["text"].startswith(("第一段", "第二段"))
+            self.assertAlmostEqual(span["origin"][0], 38 if first else 20, delta=0.1)
+
     def test_translated_page_replaces_only_drawn_text_and_keeps_artwork(self):
         native = native_blocks(DEMO, 2)
         heading = next(text for text in native if text.startswith("Rule 5"))
@@ -73,12 +93,14 @@ class ReadingExportTests(unittest.TestCase):
              "translatedText": "任何绘图库或软件都带有一组默认设置。终端用户没有指定任何设置时，就会使用这些默认值。"},
             {"kind": "text", "bbox": native[preserved], "sourceText": preserved, "status": "preserved"},
         ]}, self.root)
+        styles = json.loads(reading.read_text())["pages"][0]["blocks"]
+        self.assertEqual([block["sourceBold"] for block in styles[:2]], [True, False])
         output = self.root / "translated.pdf"
         export(DEMO, reading, output, "translated")
         with pymupdf.open(DEMO) as original, pymupdf.open(output) as result:
             self.assertEqual(result.page_count, original.page_count)
             text = result[1].get_text()
-            self.assertIn("不要相信默认设置", text)
+            self.assertIn("不要相信默认设置", text.replace("\n", ""))
             self.assertIn("任何绘图库", text)
             self.assertNotIn("Trust the Defaults", text.replace("\n", " "))
             self.assertNotIn("Any plotting library", text.replace("\n", " "))

@@ -1,5 +1,22 @@
 # 版本记录
 
+## 0.7.1 / build 19 — 原页排版、表格与行内公式
+
+- Mac 和 Windows 新建或重新翻译时，默认保留表格、表题和表注原文。可在翻译窗口开启“自动翻译表格”。追加页与重试沿用阅读稿设置。
+- 原页版式阅读和 PDF 导出沿用原文可识别的小标题字重。导出的行内公式按实际图像高度排版，分式为分母和下一行正文留出空间。
+- 带文字层的 PDF 会按原文单词边界纠正行内公式裁图。模型回复截断、为空或公式标记不完整时，自动重试该段一次。
+- 列表开头使用独立字体的项目符号保留原样。模型原样返回的段落计入“保留原文”，可在段落详情重试。
+- 翻译正文和表格时，明确要求模型按所选的简体或繁体中文书写。
+- 阅读稿和导出的 PDF 沿用原文可识别的段落首行缩进，顶格段落继续顶格。
+- 修复 macOS 对照视图中，短页原文与译文上下错位的问题。
+
+**English**
+
+- New translations preserve tables, captions and table notes by default. Enable table translation in the translation dialog. Appended pages and retries inherit the draft’s setting.
+- The reader and PDF exporter follow the source’s first-line indents and heading weights. Inline fractions reserve their full height. In PDFs with native text, formula crops can recover letters that belong to adjacent words.
+- Empty or truncated replies and replies with incorrect formula markers get one automatic retry. Segments returned verbatim remain available for manual retry. List markers drawn in a separate font retain their original appearance.
+- Chinese translations follow the selected Simplified or Traditional script. Short pages align vertically in the Mac side-by-side reader.
+
 ## 0.7.0 / build 18 — 术语表、边读边加术语、追加页和全库搜索
 
 - 术语表：内置九个英文→简体中文领域术语表（工业自动化、电子与嵌入式、机械、通信、汽车电子、机器学习、统计、医学、学术论文）；可新建、复制、修改、导入导出（TXT／CSV），设置语言对，翻译时可同时选用多个。同一术语在整份阅读稿中译法一致。

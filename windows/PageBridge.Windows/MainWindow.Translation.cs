@@ -6,7 +6,8 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
-    private sealed record TranslationChoice(string Source, string Target, string? Pages, IReadOnlyList<string>? GlossaryIds = null, bool Append = false);
+    private sealed record TranslationChoice(string Source, string Target, string? Pages, IReadOnlyList<string>? GlossaryIds = null,
+        bool Append = false, bool TranslateTables = false);
     private readonly Button exportCancel = new() { Content = "取消导出", FontSize = 11, MinHeight = 0, Height = 24, Padding = new Thickness(8, 1, 8, 1), Visibility = Visibility.Collapsed };
     private CancellationTokenSource? exportCancellation;
     private bool ReadingExportAvailable => selected is not null && HasReading && translationCancellation is null && !translationPreparing && exportCancellation is null;
@@ -38,12 +39,18 @@ public sealed partial class MainWindow
         var draftPages = selected?["reading_pages"]?.AsArray().Select(n => n?.GetValue<int>() ?? 0).ToHashSet() ?? new HashSet<int>();
         var append = new CheckBox { Content = $"追加到现有阅读稿（保留已译的 {draftPages.Count} 页）", IsChecked = initial?.Append ?? true, FontSize = 13 };
         var appendRow = new StackPanel { Children = { append } };
+        bool draftTables = selected?["reading_translate_tables"]?.GetValue<bool>() ?? true;
+        bool chosenTables = initial?.TranslateTables ?? false;
+        var tables = new CheckBox { Content = "自动翻译表格", IsChecked = chosenTables, FontSize = 13 };
+        tables.Click += (_, _) => chosenTables = tables.IsChecked == true;
         void UpdateAppend()
         {
             bool canAppend = HasReading && range.SelectedIndex == 1;
             appendRow.Visibility = canAppend ? Visibility.Visible : Visibility.Collapsed;
             bool appending = canAppend && append.IsChecked == true;
             source.IsEnabled = target.IsEnabled = !appending;
+            tables.IsEnabled = !appending;
+            tables.IsChecked = appending ? draftTables : chosenTables;
             if (appending)
             {
                 source.SelectedItem = source.Items.OfType<ComboBoxItem>().FirstOrDefault(x => (string)x.Tag == Text(selected, "reading_source_language")) ?? source.SelectedItem;
@@ -51,6 +58,7 @@ public sealed partial class MainWindow
             }
         }
         panel.Children.Add(appendRow);
+        panel.Children.Add(tables);
         range.SelectionChanged += (_, _) => UpdateAppend(); append.Click += (_, _) => UpdateAppend();
 
         // Several glossaries can be combined; only those whose language pair fits are listed.
@@ -128,7 +136,7 @@ public sealed partial class MainWindow
             args.Cancel = error.Text != "";
         };
         TranslationChoice Current() => new(Code(source), Code(target), range.SelectedIndex == 1 ? pages.Text.Trim() : null,
-            chosenIds.ToList(), HasReading && range.SelectedIndex == 1 && append.IsChecked == true);
+            chosenIds.ToList(), HasReading && range.SelectedIndex == 1 && append.IsChecked == true, chosenTables);
         // Dialogs cannot stack: managing closes this one, then reopens it with the same choices.
         bool managing = false;
         manage.Click += (_, _) => { managing = true; dialog.Hide(); };

@@ -35,7 +35,8 @@ struct ReadingMathText: NSViewRepresentable {
         let layout = StructuredReadingTextLayout.fit(text: useSourceText ? block.sourceText : (block.translatedText ?? block.sourceText),
             in: CGSize(width: width, height: .greatestFiniteMagnitude), preferredFontSize: displayFontSize, heading: false,
             template: crops.count == block.inlineMath?.count ? template : nil,
-            inlineImages: crops, referenceFontSize: preferredFontSize)
+            inlineImages: crops, referenceFontSize: preferredFontSize, firstLineIndent: useSourceText ? 0 : (block.firstLineIndent ?? 0),
+            sourceBold: block.sourceBold)
         let text = NSMutableAttributedString(attributedString: layout.attributedText)
         text.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: text.length))
         view.textContainer?.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)

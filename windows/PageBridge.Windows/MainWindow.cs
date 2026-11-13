@@ -311,7 +311,7 @@ public sealed partial class MainWindow : Window
                     if (!ReferenceEquals(translationCancellation, cancellation)) return;
                     if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
                     var message = Text(evt, "message"); if (message != "") status.Text = message;
-                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId }, choice.GlossaryIds, retryTerms, choice.Append);
+                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId }, choice.GlossaryIds, retryTerms, choice.Append, choice.TranslateTables);
                 status.Text = cancellation.IsCancellationRequested ? "已取消，保留上次译文" : retryTerms is not null ? "已按术语重译相关段落" : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成";
             }
             catch (OperationCanceledException) { status.Text = "已取消，保留上次译文"; }

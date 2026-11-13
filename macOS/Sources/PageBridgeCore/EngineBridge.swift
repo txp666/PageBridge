@@ -33,15 +33,16 @@ public struct WorkerRequest: Codable, Sendable {
     public var glossary: String?
     public var retryTerms: [String]?
     public var appendPages: Bool?
+    public var translateTables: Bool?
     public var outputPath: String?
     public var kind: String?
-    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil, glossary: String? = nil, retryTerms: [String]? = nil, appendPages: Bool? = nil, outputPath: String? = nil, kind: String? = nil) {
+    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil, glossary: String? = nil, retryTerms: [String]? = nil, appendPages: Bool? = nil, translateTables: Bool? = nil, outputPath: String? = nil, kind: String? = nil) {
         self.jobId = jobID.uuidString; self.attemptId = attemptID.uuidString; self.action = action
         self.inputPath = inputPath; self.outputDirectory = outputDirectory
         self.sourceLanguage = sourceLanguage; self.targetLanguage = targetLanguage
         self.pages = pages; self.service = service
         self.readingPath = readingPath; self.retryBlockIds = retryBlockIds; self.glossary = glossary
-        self.retryTerms = retryTerms; self.appendPages = appendPages
+        self.retryTerms = retryTerms; self.appendPages = appendPages; self.translateTables = translateTables
         self.outputPath = outputPath; self.kind = kind
     }
 }

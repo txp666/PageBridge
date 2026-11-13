@@ -156,14 +156,17 @@ private struct StructuredReadingBlockDetails: View {
                 Button("加入术语…", action: onAddTerm).buttonStyle(.link)
                     .help("把这段里的某个词加入术语表，并重译含该词的段落")
                 Button("定位原文", action: onLocate).buttonStyle(.link)
-                if block.status == "source_fallback" {
+                if block.canRetry {
                     Button("重试此段") { model.retryReadingBlock(block) }.disabled(model.isWorkerBusy)
                 }
             }
             if let error = block.error {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
             }
-            if block.status == "translated", let translated = block.translatedText,
+            if block.returnedSourceText {
+                Text("模型返回了原文。").font(.caption).foregroundStyle(.secondary)
+            }
+            if block.status == "translated", !block.returnedSourceText, let translated = block.translatedText,
                !translated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                block.kind != "code" && block.kind != "formula" {
                 Text(block.isSourceRegion ? "文字翻译（辅助阅读）" : "完整译文")

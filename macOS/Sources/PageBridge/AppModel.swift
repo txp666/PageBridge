@@ -173,7 +173,7 @@ final class AppModel: ObservableObject {
 
     enum TranslationScope { case full, append, retryBlocks([String]), retryTerms([String]) }
 
-    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, glossaryIDs: [String] = [], scope: TranslationScope = .full) {
+    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, translateTables: Bool? = nil, glossaryIDs: [String] = [], scope: TranslationScope = .full) {
         guard !isWorkerBusy, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
         do {
             guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
@@ -200,7 +200,8 @@ final class AppModel: ObservableObject {
                 inputPath: document.inputPath, outputDirectory: staging.path, sourceLanguage: sourceLanguage,
                 targetLanguage: targetLanguage, pages: pages, service: EngineService(configuration: service, apiKey: apiKey),
                 readingPath: retryBlockIds != nil || retryTerms != nil || building ? document.readingPath : nil, retryBlockIds: retryBlockIds,
-                glossary: terms.isEmpty ? nil : terms, retryTerms: retryTerms, appendPages: building ? true : nil)
+                glossary: terms.isEmpty ? nil : terms, retryTerms: retryTerms, appendPages: building ? true : nil,
+                translateTables: translateTables)
             var record = document; record.status = .running; record.attemptID = attempt; record.lastError = nil
             let retry = retryBlockIds != nil || retryTerms != nil
             if !retry { try? changeGlossaries { $0.lastUsedIDs = glossaryIDs } }
@@ -411,7 +412,7 @@ final class AppModel: ObservableObject {
     }
 
     func retryReadingBlock(_ block: StructuredReadingBlock) {
-        guard let document = selectedDocument, let reading = structuredReading, document.readingPath != nil, block.status == "source_fallback" else { return }
+        guard let document = selectedDocument, let reading = structuredReading, document.readingPath != nil, block.canRetry else { return }
         startTranslation(sourceLanguage: reading.sourceLanguage, targetLanguage: reading.targetLanguage,
                          pages: nil, scope: .retryBlocks([block.id]))
     }

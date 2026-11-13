@@ -257,10 +257,21 @@ internal sealed partial class StructuredReadingPane
         var details = new StackPanel { Spacing = 10, MaxWidth = 540 };
         details.Children.Add(new TextBlock { Text = KindLabel(kind) + (status == "source_fallback" ? " · 未译，原文保留" : status == "preserved" ? " · 原文保留" : ""), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         if (status == "source_fallback" && Text(block, "error") is { Length: > 0 } error) details.Children.Add(Prose(error, 12));
-        if (status == "translated" && !string.IsNullOrWhiteSpace(translated))
+        bool returnedSource = status == "preserved" && Text(block, "model").Length > 0 ||
+                              status == "translated" && translated.Trim() == source.Trim();
+        if (returnedSource) details.Children.Add(Prose("模型返回了原文。", 12));
+        if (status == "translated" && !returnedSource && !string.IsNullOrWhiteSpace(translated))
         {
             details.Children.Add(new TextBlock { Text = "完整译文", FontSize = 12 });
-            details.Children.Add(Prose(translated));
+            double indent = block["firstLineIndent"]?.GetValue<double>() ?? 0;
+            if (indent > 0)
+            {
+                var prose = new RichTextBlock { FontSize = 15, LineHeight = 22.5, TextIndent = indent * 15 / ReferenceFontSize(block),
+                    TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+                AppendParagraphText(prose, AddParagraph(prose), translated);
+                details.Children.Add(prose);
+            }
+            else details.Children.Add(Prose(translated));
         }
         if (source.Length > 0)
         {
@@ -275,7 +286,7 @@ internal sealed partial class StructuredReadingPane
         ToolTipService.SetToolTip(addTerm, "把这段里的某个词加入术语表，并重译含该词的段落");
         addTerm.Click += (_, _) => { if (current != generation) return; flyout.Hide(); AddTermRequested?.Invoke(source); };
         actions.Children.Add(addTerm);
-        if (status == "source_fallback")
+        if (status == "source_fallback" || returnedSource)
         {
             var retry = new Button { Content = "重试此段", FontSize = 12 };
             retry.Click += async (_, _) => { if (current != generation) return; retry.IsEnabled = false; flyout.Hide(); try { if (RetryRequested is not null) await RetryRequested(Text(block, "id")); } finally { if (current == generation) retry.IsEnabled = true; } };

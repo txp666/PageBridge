@@ -29,6 +29,7 @@ def read_artifact(path, document):
         if (artifact.get("schemaVersion") != 1 or artifact.get("artifactType") != ARTIFACT_TYPE
                 or artifact.get("sourceSHA256") != document["input_sha256"]
                 or artifact.get("pageCount") != document["page_count"]
+                or not isinstance(artifact.get("translateTables", True), bool)
                 or artifact.get("status") not in {"completed", "partial"}
                 or not isinstance(artifact.get("pages"), list)):
             raise ValueError()
@@ -60,6 +61,11 @@ def read_artifact(path, document):
                         or not 0 <= bbox[0] < bbox[2] <= page["width"] + 1
                         or not 0 <= bbox[1] < bbox[3] <= page["height"] + 1):
                     raise ValueError()
+                if "firstLineIndent" in block:
+                    inset = block["firstLineIndent"]
+                    if (type(inset) not in (int, float) or not math.isfinite(inset) or not bbox
+                            or not 0 <= inset < bbox[2] - bbox[0]):
+                        raise ValueError()
             if "backgroundImage" in page:
                 encoded, positioned = page["backgroundImage"], page.get("backgroundBlocks")
                 if not isinstance(encoded, str) or not 44 <= len(encoded) <= 16 * 1024 * 1024:
@@ -131,6 +137,7 @@ def commit_reading(store, document_id, attempt_id, event):
                                 lambda destination: dict(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
                                                          reading_sha256=digest, reading_source_language=source_language,
                                                          reading_target_language=target_language,
+                                                         reading_translate_tables=artifact.get("translateTables", True),
                                                          reading_pages=artifact["selectedPages"],
                                                          reading_failed_blocks=sum(b["status"] == "source_fallback" for b in blocks),
                                                          source_language=source_language, target_language=target_language))

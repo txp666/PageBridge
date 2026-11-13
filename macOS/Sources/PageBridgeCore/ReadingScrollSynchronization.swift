@@ -87,8 +87,10 @@ public struct ReadingScrollLayout: Equatable {
             frames.append(CGRect(x: (width - scaled.width) / 2, y: y, width: scaled.width, height: scaled.height))
             y += scaled.height + 28 * scale
         }
-        pageFrames = frames
-        contentSize = CGSize(width: width, height: max(viewport.height, y - (frames.isEmpty ? 0 : 28 * scale) + margin))
+        let documentHeight = (frames.last?.maxY ?? margin) + margin
+        let extraInset = max(0, (viewport.height - documentHeight) / 2)
+        pageFrames = extraInset > 0 ? frames.map { $0.offsetBy(dx: 0, dy: extraInset) } : frames
+        contentSize = CGSize(width: width, height: max(viewport.height, documentHeight))
     }
 
     public func anchor(at offset: CGFloat) -> ReadingScrollAnchor? {
