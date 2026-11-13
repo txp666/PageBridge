@@ -260,26 +260,87 @@ jobs:
       - name: Verify the Windows installer, then sign its domain-separated update manifest
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: python3 scripts/windows-update.py --output validation/release/windows-update-signing.json
+        run: |
+          python3 scripts/windows-update.py --output validation/release/windows-update-signing.json
+          python3 scripts/windows-update.py --cloudflare --output validation/release/windows-update-cloudflare.json
       - name: Verify all twelve assets, both platform sources and increasing OTA builds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md
+      - name: Stage verified downloads in Cloudflare without changing the current release
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python3 -m pip install --only-binary=:all: --require-hashes -r scripts/r2-requirements.txt
+          python3 scripts/cloudflare-release.py stage
+      - name: Save verified pointer and legacy Windows manifest for activation or retry
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-transition-${{ github.run_id }}
+          overwrite: true
+          path: |
+            validation/release/r2-pointer.json
+            dist/windows-update.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload one draft, check every digest, then publish both platforms together
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/release-ci.py publish
-      - name: Verify anonymous public downloads, SHA-256, Range and latest OTA feed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/verify-release.py --published --require-latest --output validation/release/published.json
-      - name: Save complete publication evidence
+      - name: Save publication evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-validation-publish-${{ github.run_id }}
+          overwrite: true
           path: validation/release/*.json
           if-no-files-found: ignore
+          retention-days: 30
+
+  activate:
+    needs: [identity, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.sourceCommit }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-assets-*-${{ github.run_id }}
+          merge-multiple: true
+          path: dist
+          digest-mismatch: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-transition-${{ github.run_id }}
+          path: .
+          digest-mismatch: error
+      - name: Install verified release dependencies
+        run: |
+          python3 scripts/release-ci.py requirements --output /tmp/pagebridge-verification.txt
+          python3 -m pip install --require-hashes --only-binary=:all: --no-deps -r /tmp/pagebridge-verification.txt
+          python3 -m pip install --require-hashes --only-binary=:all: -r scripts/r2-requirements.txt
+      - name: Switch the website and OTA to the new version, then remove earlier R2 releases
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python3 scripts/cloudflare-release.py activate
+      - name: Verify anonymous public downloads, SHA-256, Range and latest OTA feeds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify-release.py --published --require-latest --output validation/release/published.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-public-${{ github.run_id }}
+          path: validation/release/published.json
           retention-days: 30
 
 defaults:

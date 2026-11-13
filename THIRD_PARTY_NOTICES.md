@@ -70,7 +70,7 @@ MinerU 的[对应版本源码与许可](https://github.com/opendatalab/MinerU/tr
 
 ## 在线服务
 
-应用更新连接本项目 GitHub Releases 的 HTTPS 更新源：Mac 通过 Sparkle 检查签名的 appcast 与应用归档，Windows 检查签名的 `windows-update.json` 与安装器哈希。更新检查不上传本机 PDF、批注、翻译密钥或模型对话；Mac 的系统信息统计与静默安装均关闭，自动检查由使用者选择。更新签名与 Apple 公证、Windows Authenticode 是不同机制。
+应用更新连接PageBridge 官网在 Cloudflare 上的 HTTPS 更新源：Mac 通过 Sparkle 检查签名的 appcast 与应用归档，Windows 检查签名的 `windows-update.json` 与安装器哈希。更新检查不上传本机 PDF、批注、翻译密钥或模型对话；Mac 的系统信息统计与静默安装均关闭，自动检查由使用者选择。更新签名与 Apple 公证、Windows Authenticode 是不同机制。
 
 OpenAlex 提供在线文献元数据检索，Sci-Hub 和公开 PDF 来源提供可选的全文获取路径。它们是外部服务，不属于 PageBridge 源码或随包许可授权的内容；软件开源不授予对任意检索结果、远程文献或服务数据的额外权利。服务访问、收录、验证要求及可用性由相应提供方决定。
 

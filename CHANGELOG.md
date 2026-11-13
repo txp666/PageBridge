@@ -1,5 +1,15 @@
 # 版本记录
 
+## 0.7.2 / build 20 — 下载与更新加速
+
+- 官网安装包、Mac 和 Windows 的签名更新改由 Cloudflare 提供。旧版 Windows 仍可通过原更新入口升级。
+- 首次准备阅读模式时，复用安装包自带的 Python 3.12，从清华大学 PyPI 镜像安装依赖；识别模型继续优先从 ModelScope 下载。
+
+**English**
+
+- The website and both desktop updaters now download releases from Cloudflare. Older Windows installations can still upgrade through the existing signed feed.
+- First-time reading setup uses the bundled Python interpreter and installs dependencies from Tsinghua University’s PyPI mirror. Model downloads continue to prefer ModelScope.
+
 ## 0.7.1 / build 19 — 原页排版、表格与行内公式
 
 - Mac 和 Windows 新建或重新翻译时，默认保留表格、表题和表注原文。可在翻译窗口开启“自动翻译表格”。追加页与重试沿用阅读稿设置。

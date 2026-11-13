@@ -79,11 +79,11 @@ def verify_installer_binding(raw, public_key, release, installer):
     return payload
 
 
-def generate(dist, source_root):
+def generate(dist, source_root, cloudflare=False):
     release = json.loads((source_root / "VERSION.json").read_text())
     config = json.loads((source_root / "update-config.json").read_text())
     require(config["repository"] == REPOSITORY, "Unexpected Windows update repository")
-    destination = dist / NAME
+    destination = (dist / "cloudflare" if cloudflare else dist) / NAME
     require(not destination.exists(), "Refusing to overwrite an existing signed Windows update manifest")
     version = release["version"]
     installer = dist / f"PageBridge-{version}-windows-x64-setup.exe"
@@ -91,13 +91,15 @@ def generate(dist, source_root):
     checked = packages.verify_installer(installer, source_root)
     require(checked["status"] == "passed", "Windows installer must pass verification before signing")
     base = "https://github.com/" + REPOSITORY
+    download = contract().DOWNLOAD_ROOT + "/ota" if cloudflare else base + "/releases/download"
     payload = dict(schema=1, platform="windows-x64", version=version, build=int(release["build"]),
-                   minWindowsBuild=19041, url=base + f"/releases/download/v{version}/" + installer.name,
+                   minWindowsBuild=19041, url=download + f"/v{version}/" + installer.name,
                    sha256=checked["sha256"], bytes=checked["bytes"], releaseNotesURL=base + f"/releases/tag/v{version}")
     # Scope the secret to this in-process signing call. Verification above does
     # not run subprocesses or network requests with the key in their environment.
     raw = sign_payload(payload, os.environ.get("SPARKLE_PRIVATE_KEY", "").strip(), config["publicEDKey"])
     verify_installer_binding(raw, config["publicEDKey"], release, installer)
+    destination.parent.mkdir(exist_ok=True)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=dist, prefix=".windows-update-", delete=False) as stream:
@@ -116,9 +118,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("--source-root", type=Path, default=ROOT)
+    parser.add_argument("--cloudflare", action="store_true", help="Sign the manifest for clients using the Cloudflare download URL.")
     parser.add_argument("--output", type=Path, help="Write public verification evidence (never key material)")
     args = parser.parse_args()
-    result = generate(args.dist.resolve(), args.source_root.resolve())
+    result = generate(args.dist.resolve(), args.source_root.resolve(), args.cloudflare)
     report = json.dumps(result, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

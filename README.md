@@ -10,15 +10,15 @@
 
 ## 下载
 
-当前版本 **0.7.1 / build 19**：
+当前版本 **0.7.2 / build 20**：
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
-| Mac（Apple Silicon） | [macOS arm64 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-macOS-arm64.zip)（约 60 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
-| Windows x64（推荐） | [Windows 安装器](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
-| Windows x64（便携） | [Windows 便携 ZIP](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-windows-x64.zip)（约 130 MB）· [SHA-256](https://github.com/txp666/PageBridge/releases/download/v0.7.1/PageBridge-0.7.1-windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
+| Mac（Apple Silicon） | [macOS arm64 ZIP](https://pagebridge.modusignal.cn/download/macOS-arm64.zip)（约 60 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/macOS-arm64.zip.sha256) | 解压，将 `PageBridge.app` 放入“应用程序” |
+| Windows x64（推荐） | [Windows 安装器](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
+| Windows x64（便携） | [Windows 便携 ZIP](https://pagebridge.modusignal.cn/download/windows-x64.zip)（约 130 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.1)还提供项目源码和第三方对应源码。
+同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.2)还提供项目源码和第三方对应源码。
 
 Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Windows 安装器和程序 **没有 Authenticode 签名**。首次打开时系统可能提示风险，请核对下载来源和 SHA-256 后再确认。
 
@@ -37,7 +37,7 @@ Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Wind
 - **不需要独立显卡。** MinerU 在 CPU 上运行（ONNX）。
 - **磁盘：** 原页版式阅读模式首次使用会安装本地识别组件，实际约 3.2 GB（Python 环境约 1.1 GB、模型约 0.8 GB、安装缓存约 1.3 GB），**请预留约 4 GB**，另加文档和译文所需空间。
 - **本机模型：** Ollama 模型的内存需求另算。例如 `qwen3.5:35b-a3b-int4` 约 20 GB，需要 32 GB 或更大内存的 Mac；只用云端 API 时不需要这部分内存。
-- **网络：** 首次使用阅读模式会下载 MinerU 运行环境（Python 3.12 来自 GitHub，依赖包来自 PyPI）和 818 MB 模型（ModelScope 或 Hugging Face）。之后解析可离线进行；翻译只有使用云端 API 时才需要联网。
+- **网络：** 首次使用阅读模式会从清华大学 PyPI 镜像下载 MinerU 的 Python 依赖（解释器随应用提供）和 818 MB 模型（ModelScope 或 Hugging Face）。之后解析可离线进行；翻译只有使用云端 API 时才需要联网。
 - **解析速度与内存（阅读模式逐页解析）：**
   - Mac 实测（Apple M5 Pro）：普通页约 4 秒，公式密集页约 23 秒；单页解析峰值内存 0.8–1.2 GB。
   - Windows 实测（Apple Silicon 上的 Windows 11 ARM 虚拟机，x64 仿真，7 GB 内存）：普通页约 16 秒，公式密集页约 33 秒；单页解析峰值内存 0.8–1.5 GB。

@@ -98,7 +98,7 @@ class ReleaseSignatureTests(unittest.TestCase):
         for name in ('generate_appcast', 'sign_update'):
             (tools / name).write_text('offline mocked tool; never executed')
         config = dict(repository='example/PageBridge', publicEDKey=self.public_base64,
-                      feedURL='https://github.com/example/PageBridge/releases/latest/download/appcast.xml', sparkleVersion='2.10.0')
+                      feedURL='https://pagebridge.modusignal.cn/download/appcast.xml', sparkleVersion='2.10.0')
         (root / 'VERSION.json').write_text(json.dumps(dict(version='1.2.3', build='123')))
         (root / 'update-config.json').write_text(json.dumps(config))
         (root / 'CHANGELOG.md').write_text('## 1.2.3 / build 123\n\nOffline fixture.\n')
@@ -273,6 +273,11 @@ class WindowsUpdateSigningTests(unittest.TestCase):
             self.assertNotIn(self.secret,stdout.getvalue())
             self.assertEqual({p.relative_to(root) for p in root.rglob('*')}-before,{Path('dist/windows-update.json')})
             self.assertEqual(windows_update.verify_manifest((dist/'windows-update.json').read_bytes(),self.key),self.payload)
+            with patch.object(windows_update,'load_module',side_effect=loader),patch.dict(os.environ,{'SPARKLE_PRIVATE_KEY':self.secret}):
+                windows_update.generate(dist,root,cloudflare=True)
+            cf=windows_update.verify_installer_binding((dist/'cloudflare/windows-update.json').read_bytes(),self.key,self.payload,
+                dist/'PageBridge-0.4.0-windows-x64-setup.exe')
+            self.assertEqual(cf,{**self.payload,'url':'https://pagebridge.modusignal.cn/download/ota/v0.4.0/PageBridge-0.4.0-windows-x64-setup.exe'})
 
     def test_unverified_installer_is_never_signed_and_existing_manifest_not_replaced(self):
         with tempfile.TemporaryDirectory() as temporary:
