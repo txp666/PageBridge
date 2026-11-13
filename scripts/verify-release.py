@@ -232,7 +232,10 @@ def main():
     repository = config["repository"]
     base = "https://github.com/" + repository
     api = "https://api.github.com/repos/" + repository
-    require(config["feedURL"] == base + "/releases/latest/download/appcast.xml", "Unexpected configured feed")
+    github_feed = base + "/releases/latest/download/appcast.xml"
+    cloudflare = "https://pagebridge.modusignal.cn/download"
+    require(config["feedURL"] in (github_feed, cloudflare + "/appcast.xml"), "Unexpected configured feed")
+    download_root = base + "/releases/download" if config["feedURL"] == github_feed else cloudflare + "/ota"
     key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
     report = {"version": version, "build": build, "repository": repository, "assets": []}
     filenames = payload_names(version)
@@ -283,7 +286,7 @@ def main():
     require(enclosure is not None, "Appcast has no archive enclosure")
     require(item.findtext(SPARKLE + "version") == build, "Appcast build differs")
     require(item.findtext(SPARKLE + "shortVersionString") == version, "Appcast version differs")
-    require(enclosure.attrib["url"] == base + f"/releases/download/v{version}/" + app.name, "Appcast download URL differs")
+    require(enclosure.attrib["url"] == download_root + f"/v{version}/" + app.name, "Appcast download URL differs")
     require(int(enclosure.attrib["length"]) == app.stat().st_size, "Appcast archive length differs")
     require(item.findtext(SPARKLE + "minimumSystemVersion") == info["LSMinimumSystemVersion"], "Appcast minimum macOS differs")
     key.verify(base64.b64decode(enclosure.attrib[SPARKLE + "edSignature"], validate=True), app.read_bytes())
@@ -297,7 +300,7 @@ def main():
                 raise
             report["previousRelease"] = None
         else:
-            old_feed = signed_feed(fetch(config["feedURL"]), key)
+            old_feed = signed_feed(fetch(github_feed), key)
             builds = [entry.findtext(SPARKLE + "version", "") for entry in old_feed.findall("./channel/item")]
             require(builds and all(value.isdecimal() for value in builds), "Previous feed has invalid build numbers")
             require(int(build) > max(map(int, builds)), "New build must exceed every build in the current public feed")
@@ -323,9 +326,14 @@ def main():
         latest = json.loads(fetch_github_api(api + "/releases/latest", retry_missing=True))
         if args.require_latest or latest["tag_name"] == "v" + version:
             require(latest["tag_name"] == "v" + version, "Published tag is not the latest release")
-            verify_latest(config["feedURL"], feed_path.read_bytes(), lambda data: signed_feed(data, key))
+            verify_latest(github_feed, feed_path.read_bytes(), lambda data: signed_feed(data, key))
             verify_latest(base + "/releases/latest/download/windows-update.json", update_path.read_bytes(),
                           lambda data: windows_update.verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
+            if config["feedURL"] != github_feed:
+                verify_latest(config["feedURL"], feed_path.read_bytes(), lambda data: signed_feed(data, key))
+                cloud_windows = windows_update.verify_installer_binding(
+                    fetch(cloudflare + "/windows-update.json", limit=64 * 1024), config["publicEDKey"], release, installer)
+                require(cloud_windows["url"] == f"{cloudflare}/ota/v{version}/{installer.name}", "Windows feed points outside Cloudflare")
         else:
             # Historical releases remain independently verifiable after an OTA
             # upgrade. Still authenticate the current feed and reject rollback.

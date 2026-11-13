@@ -1,5 +1,6 @@
 .DS_Store
 .pnpm-store/
+/.wrangler/
 dist/
 macOS/.build/
 windows/**/bin/

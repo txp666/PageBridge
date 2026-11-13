@@ -13,7 +13,6 @@ from html.parser import HTMLParser
 import json
 import math
 import os
-import platform
 from pathlib import Path
 import re
 import shutil
@@ -66,6 +65,22 @@ def runtime_directory():
 
 def runtime_python(root):
     return root / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+
+def install_python(root):
+    # Keep the private venv usable if the app/portable directory is moved.
+    # The signed bundle already contains the correct native interpreter.
+    bundled = ENGINE / "runtime"
+    if not bundled.is_dir():
+        return ["--managed-python", "--python", "cpython-3.12.12-windows-x86_64-none" if sys.platform == "win32" else "3.12.12"]
+    base = root / "base-python-3.12.12"
+    if not base.is_dir():
+        with tempfile.TemporaryDirectory(dir=root) as temp:
+            stage = Path(temp) / "base"
+            shutil.copytree(bundled, stage, symlinks=True, ignore=shutil.ignore_patterns("site-packages", "__pycache__"))
+            stage.rename(base)
+    executable = base / ("python.exe" if sys.platform == "win32" else "bin/python3")
+    return ["--no-python-downloads", "--python", str(executable)]
 
 
 def runtime_environment(root, *, offline=True):
@@ -276,14 +291,13 @@ async def ensure_runtime(events):
                     uv = uv_executable()
                     events.emit("stage", stage="prepare", message="正在安装独立的 MinerU 运行环境。")
                     if not python.exists():
-                        python_target = "cpython-3.12.12-windows-x86_64-none" if sys.platform == "win32" else (
-                            "cpython-3.12.12-macos-" + ("aarch64" if platform.machine() == "arm64" else "x86_64") + "-none"
-                            if sys.platform == "darwin" else "3.12.12")
-                        code = await run_process([uv, "venv", "--managed-python", "--python", python_target, root / ".venv"],
+                        interpreter = await asyncio.to_thread(install_python, root)
+                        code = await run_process([uv, "venv", *interpreter, root / ".venv"],
                                                  env=env, timeout=600, log=log)
                         if code:
                             raise ReadingError("无法创建 MinerU 运行环境，请检查磁盘空间后重试。")
-                    code = await run_process([uv, "pip", "install", "--python", python, "-r", ENGINE / "mineru-requirements.txt"],
+                    code = await run_process([uv, "pip", "install", "--default-index", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+                                              "--python", python, "-r", ENGINE / "mineru-requirements.txt"],
                                              env=env, timeout=1800, log=log)
                     if code:
                         raise ReadingError("MinerU 依赖下载或安装失败，请检查网络与磁盘空间后重试。")

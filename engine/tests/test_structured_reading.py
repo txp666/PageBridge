@@ -595,6 +595,7 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         commands = [call.args[0] for call in process.call_args_list]
         self.assertIn("--managed-python", commands[0])
         self.assertNotIn(sys.executable, commands[0])
+        self.assertIn("https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple", commands[1])
         self.assertEqual(process.call_args_list[0].kwargs["env"]["UV_PYTHON_INSTALL_DIR"], str(root / "python"))
         self.assertTrue((root / "ready.json").is_file())
 

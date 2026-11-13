@@ -15,7 +15,7 @@
 - OpenAlex 搜索发送检索词，Sci-Hub 全文查询发送 DOI，下载 PDF 会连接对应来源；这些请求不使用翻译 API Key。
 - 应用内网站验证使用临时 WebKit（Mac）或 WebView2（Windows）会话，不导出网页凭据；匿名下载器不继承该会话的 Cookie。
 - MinerU 解析子进程的环境中会去掉 API Key 类变量。
-- 更新检查访问本项目 GitHub Releases：Mac 的 appcast 与 ZIP、Windows 的 `windows-update.json` 与安装器都以 Ed25519 签名或哈希验证，不发送文档、笔记、模型密钥或系统配置画像。托管方仍会收到普通的网络请求元数据。
+- 更新检查访问 PageBridge 官网的 Cloudflare 下载服务：Mac 的 appcast 与 ZIP、Windows 的 `windows-update.json` 与安装器都以 Ed25519 签名或哈希验证，不发送文档、笔记、模型密钥或系统配置画像。托管方仍会收到普通的网络请求元数据。
 - Mac 自动检查需用户同意，不静默下载或安装；Windows 只在手动检查时联网。翻译进行时不会安装更新。
 - 不通过关闭 TLS 检查或替换域名来处理证书错误。外部网站、文档和模型回答都属于不可信输入。
 

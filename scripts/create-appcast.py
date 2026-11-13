@@ -66,7 +66,7 @@ def main():
     repository = config["repository"]
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid repository")
     base_url = "https://github.com/" + repository
-    require(config["feedURL"] == base_url + "/releases/latest/download/appcast.xml", "Unexpected feed URL")
+    require(config["feedURL"] == "https://pagebridge.modusignal.cn/download/appcast.xml", "Unexpected feed URL")
     with zipfile.ZipFile(archive) as zipped:
         app_info = plistlib.loads(zipped.read("PageBridge.app/Contents/Info.plist"))
         require(app_info["CFBundleShortVersionString"] == version and app_info["CFBundleVersion"] == build,
@@ -105,7 +105,7 @@ def main():
         (feeds / (archive.stem + ".html")).write_text("<h2>PageBridge " + html.escape(version)
             + "</h2><pre>" + html.escape(notes) + "</pre>\n")
         commands = [[str(tools / "generate_appcast"), *signing,
-                     "--download-url-prefix", base_url + f"/releases/download/v{version}/",
+                     "--download-url-prefix", config["feedURL"].rsplit("/", 1)[0] + f"/ota/v{version}/",
                      "--link", base_url + f"/releases/tag/v{version}",
                      "--maximum-deltas", "0", "--maximum-versions", "1",
                      "--versions", build, "--embed-release-notes", str(feeds)],

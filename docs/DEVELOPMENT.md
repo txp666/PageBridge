@@ -98,7 +98,7 @@ dist/PageBridge.app/Contents/Resources/engine/runtime/bin/python3 -B engine/veri
 Mac 使用 Sparkle 2.10.0（锁定在 `macOS/Package.swift` 与 `Package.resolved`）。`update-config.json` 记录仓库、feed 地址、Ed25519 公钥和 Sparkle 版本，构建时写入 Info.plist。feed 为：
 
 ```text
-https://github.com/txp666/PageBridge/releases/latest/download/appcast.xml
+https://pagebridge.modusignal.cn/download/appcast.xml
 ```
 
 私钥不得进入 Git、配置、命令行或日志。本机签名使用钥匙串账户 `tech.pagebridge.mac.ota`；发布 CI 通过 `SPARKLE_PRIVATE_KEY` Actions Secret 取得私钥，普通 CI 和 PR 不提供该 Secret。本机发布步骤：
@@ -116,12 +116,15 @@ CI 不传 `--account`，`create-appcast.py` 从环境变量读取私钥。`verif
 `desktop/pagebridge/updates.py` 通过随包的 `VERSION.json` 和 `update-config.json` 公钥检查、下载更新，界面入口在 `MainWindow.Updates.cs`。清单地址：
 
 ```text
-https://github.com/txp666/PageBridge/releases/latest/download/windows-update.json
+https://pagebridge.modusignal.cn/download/windows-update.json
 ```
 
 清单包含平台、版本与 build、最低 Windows build、安装器 URL、大小与 SHA-256 和更新说明 URL，由 `scripts/windows-update.py` 在发布签名步骤用同一个 `SPARKLE_PRIVATE_KEY` 签名（独立的签名域，Windows 不读取 Sparkle appcast）。下载保存在用户数据的 `updates/` 中；安装前再次验证签名和哈希，WinUI 锁定文件复核 SHA-256 后以普通交互方式启动安装器并退出应用。产品代码中没有跳过签名的开关。
 
 ### GitHub CI 与发布
+
+安装包、校验文件和两端 OTA 由官网 `/download/` 提供。发布工作流用仅限 `pagebridge-downloads` 桶的 R2 Object Read & Write 凭据（Actions secrets：`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`；变量：`CLOUDFLARE_ACCOUNT_ID`）。CI 先上传并核对每份文件，再公开 GitHub Release，随后一次切换 `latest.json`；确认新清单可读后删除 R2 中的旧版。若切换步骤中断，可在原 release run 选择 **Re-run failed jobs**。GitHub 保留历史发布和供旧版 Windows 读取的签名清单。
+
 
 - `.github/workflows/ci.yml`：推送 `main` 和 Pull Request 时，在 `macos-15`（arm64）上运行 Swift、引擎、desktop 和脚本测试。
 - `.github/workflows/windows.yml`：Windows 测试、打包和安装器实测，上传构建产物。

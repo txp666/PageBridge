@@ -97,11 +97,11 @@ Mac 数据目录中：`documents.json`（文档记录）、`services.json`（不
 | 功能 | 本机处理 | 联网 |
 |---|---|---|
 | 解析、排版、导出、预览、批注、助手片段提取 | 全部 | 无 |
-| MinerU 首次准备 | — | Python 与依赖（GitHub、PyPI），模型（ModelScope 或 Hugging Face） |
+| MinerU 首次准备 | — | 清华 PyPI 镜像（依赖包，Python 随应用提供），模型（ModelScope 或 Hugging Face） |
 | 本机 Ollama 翻译／问答 | 全部（仅连接回环地址） | 无 |
 | 在线 API 翻译／问答 | — | 待翻译文本，或问题、片段与近期对话发送至所选服务 |
 | 文献检索与下载 | — | 检索词发往 OpenAlex，DOI 发往所选 Sci-Hub 站点，下载连接文献来源 |
-| 更新检查 | — | GitHub Releases（不发送文档、笔记或密钥） |
+| 更新检查 | — | PageBridge 官网（Cloudflare，不发送文档、笔记或密钥） |
 
 所需组件与模型齐备后，使用 Ollama 可以完全离线工作。应用不会因本机模型不可用而自动改用云服务。只支持 OpenAI Chat Completions 兼容接口；远程地址必须是 HTTPS，HTTP 只允许回环地址，拒绝带凭据的 URL 和 HTTP 重定向。模型列表与权限以账户接口返回为准。
 

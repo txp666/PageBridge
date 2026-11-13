@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPOSITORY = "txp666/PageBridge"
-FEED_URL = f"https://github.com/{REPOSITORY}/releases/latest/download/windows-update.json"
+DOWNLOAD_ROOT = "https://pagebridge.modusignal.cn/download"
+FEED_URL = DOWNLOAD_ROOT + "/windows-update.json"
 DOMAIN = b"PageBridge.Windows.Update.v1\n"
 MAX_MANIFEST_BYTES = 32768
 MAX_INSTALLER_BYTES = 2 * 1024**3
@@ -91,7 +92,10 @@ def verify_manifest(raw: bytes, public_key: str) -> dict:
         raise UpdateError("安装包校验信息无效。")
     version = payload["version"]
     base = f"https://github.com/{REPOSITORY}/releases"
-    if payload["url"] != f"{base}/download/v{version}/PageBridge-{version}-windows-x64-setup.exe" or payload["releaseNotesURL"] != f"{base}/tag/v{version}":
+    installer = f"PageBridge-{version}-windows-x64-setup.exe"
+    # Older Windows clients consume the signed GitHub compatibility manifest.
+    official = (f"{DOWNLOAD_ROOT}/ota/v{version}/{installer}", f"{base}/download/v{version}/{installer}")
+    if payload["url"] not in official or payload["releaseNotesURL"] != f"{base}/tag/v{version}":
         raise UpdateError("更新下载地址不属于此应用的正式发布。")
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -109,7 +113,7 @@ def allowed_url(url):
     try:
         parts = urlsplit(url)
         return (parts.scheme == "https" and parts.hostname in {
-            "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
+            "pagebridge.modusignal.cn", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
         } and parts.port in (None, 443) and not parts.username and not parts.password and not parts.fragment)
     except ValueError:
         return False
