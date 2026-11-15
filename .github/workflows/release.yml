@@ -335,10 +335,10 @@ jobs:
           TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
           TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
         run: python3 scripts/cos-release.py activate
-      - name: Verify anonymous public downloads, SHA-256, Range and latest OTA feeds
+      - name: Verify public release and OTA feeds using the completed COS staging checks
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/verify-release.py --published --require-latest --output validation/release/published.json
+        run: python3 scripts/verify-release.py --published --require-latest --cos-staged --output validation/release/published.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-validation-public-${{ github.run_id }}
