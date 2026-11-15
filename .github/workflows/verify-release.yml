@@ -107,6 +107,8 @@ jobs:
               print('Downloaded and verified:', name)
           PY
       - name: Download direct COS feeds for independent signature verification
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
           import importlib.util, json, os
