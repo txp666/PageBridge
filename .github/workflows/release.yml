@@ -96,7 +96,9 @@ jobs:
       - name: Sign OTA archive and feed with public-key verification
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: engine/.venv/bin/python scripts/create-appcast.py
+        run: |
+          engine/.venv/bin/python scripts/create-appcast.py
+          engine/.venv/bin/python scripts/create-appcast.py --cos
       - name: Save Mac release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -105,6 +107,7 @@ jobs:
             dist/PageBridge-*-macOS-arm64.zip
             dist/PageBridge-*-macOS-arm64.zip.sha256
             dist/appcast.xml
+            dist/cos/appcast.xml
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
@@ -262,27 +265,27 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           python3 scripts/windows-update.py --output validation/release/windows-update-signing.json
-          python3 scripts/windows-update.py --cloudflare --output validation/release/windows-update-cloudflare.json
+          python3 scripts/windows-update.py --cos --output validation/release/windows-update-cos.json
       - name: Verify all twelve assets, both platform sources and increasing OTA builds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/verify-release.py --check-latest --output validation/release/assets.json --notes-output validation/release/notes.md
-      - name: Stage verified downloads in Cloudflare without changing the current release
+      - name: Stage verified downloads in Tencent COS without changing the current release
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+          TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
         run: |
-          python3 -m pip install --only-binary=:all: --require-hashes -r scripts/r2-requirements.txt
-          python3 scripts/cloudflare-release.py stage
+          python3 -m pip install --only-binary=:all: --require-hashes -r scripts/cos-requirements.txt
+          python3 scripts/cos-release.py stage
       - name: Save verified pointer and legacy Windows manifest for activation or retry
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-transition-${{ github.run_id }}
           overwrite: true
           path: |
-            validation/release/r2-pointer.json
+            validation/release/cos-pointer.json
             dist/windows-update.json
+            dist/cos/windows-update.json
           if-no-files-found: error
           retention-days: 14
       - name: Upload one draft, check every digest, then publish both platforms together
@@ -326,13 +329,12 @@ jobs:
         run: |
           python3 scripts/release-ci.py requirements --output /tmp/pagebridge-verification.txt
           python3 -m pip install --require-hashes --only-binary=:all: --no-deps -r /tmp/pagebridge-verification.txt
-          python3 -m pip install --require-hashes --only-binary=:all: -r scripts/r2-requirements.txt
-      - name: Switch the website and OTA to the new version, then remove earlier R2 releases
+          python3 -m pip install --require-hashes --only-binary=:all: -r scripts/cos-requirements.txt
+      - name: Switch the website and OTA to the new version, then remove earlier COS releases
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python3 scripts/cloudflare-release.py activate
+          TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+          TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+        run: python3 scripts/cos-release.py activate
       - name: Verify anonymous public downloads, SHA-256, Range and latest OTA feeds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

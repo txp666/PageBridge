@@ -133,6 +133,35 @@ class ReadingExportTests(unittest.TestCase):
                          [f"Source page {number} explains the valve." for number in (1, 2, 3)])
         self.assertIn("第 3 页", texts[4])
 
+    def test_hybrid_export_clears_bitmap_words_and_keeps_selectable_translation(self):
+        source = self.root / "hybrid.pdf"
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=300, height=180)
+            page.insert_text((24, 50), "DISCLAIMER", fontsize=24)
+            page.insert_text((24, 95), "Keep this source footer", fontsize=10)
+            page.draw_rect(pymupdf.Rect(240, 20, 280, 60), fill=(.2, .7, .3), color=None)
+            image = page.get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes("png")
+            page.insert_image(page.rect, stream=image)
+            pdf.save(source)
+        native = native_blocks(source, 1)
+        text = next(text for text in native if text.startswith("DISCLAIMER"))
+        reading = draft(source, {1: [dict(kind="heading", bbox=native[text], sourceText=text,
+                                         translatedText="免责声明", status="translated", backgroundColor=[255, 255, 255])]}, self.root)
+        metadata = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(metadata.get("backgroundFillBlocks"), [metadata["blocks"][0]["id"]])
+        output = self.root / "hybrid-translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            self.assertIn("免责声明", result[0].get_text().replace("\n", ""))
+            self.assertNotIn("DISCLAIMER", result[0].get_text())
+            self.assertIn("Keep this source footer", result[0].get_text())
+            before, after = original[0].get_pixmap(), result[0].get_pixmap()
+            # The old heading's right-hand letters are outside the short Chinese
+            # title. Their pixels must be blank, not merely absent from extraction.
+            self.assertEqual(after.color_count(clip=pymupdf.IRect(160, 30, 180, 51)), 1)
+            for point in [(250, 30), (30, 90), (30, 10)]:
+                self.assertEqual(before.pixel(*point), after.pixel(*point))
+
     def test_draft_of_another_source_is_rejected(self):
         blocks = native_blocks(DEMO, 2)
         text = next(iter(blocks))

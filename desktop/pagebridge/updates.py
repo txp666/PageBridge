@@ -21,7 +21,8 @@ from urllib.error import HTTPError
 from .ota_transfer import UpdateError, download as download_archive, open_response
 
 REPOSITORY = "txp666/PageBridge"
-DOWNLOAD_ROOT = "https://pagebridge.modusignal.cn/download"
+DOWNLOAD_ROOT = "https://pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com/PageBridge/ota"
+LEGACY_DOWNLOAD_ROOT = "https://pagebridge.modusignal.cn/download"
 FEED_URL = DOWNLOAD_ROOT + "/windows-update.json"
 DOMAIN = b"PageBridge.Windows.Update.v1\n"
 MAX_MANIFEST_BYTES = 32768
@@ -90,7 +91,8 @@ def verify_manifest(raw: bytes, public_key: str) -> dict:
     base = f"https://github.com/{REPOSITORY}/releases"
     installer = f"PageBridge-{version}-windows-x64-setup.exe"
     # Older Windows clients consume the signed GitHub compatibility manifest.
-    official = (f"{DOWNLOAD_ROOT}/ota/v{version}/{installer}", f"{base}/download/v{version}/{installer}")
+    official = (f"{DOWNLOAD_ROOT}/releases/v{version}/{installer}",
+                f"{LEGACY_DOWNLOAD_ROOT}/ota/v{version}/{installer}", f"{base}/download/v{version}/{installer}")
     if payload["url"] not in official or payload["releaseNotesURL"] != f"{base}/tag/v{version}":
         raise UpdateError("更新下载地址不属于此应用的正式发布。")
     try:

@@ -63,6 +63,13 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
             } else if page.backgroundBlocks != nil {
                 throw BridgeError.message("阅读稿缺少原页背景。")
             }
+            if let filled = page.backgroundFillBlocks {
+                let colors = Set(page.blocks.filter { $0.backgroundColor != nil }.map(\.id))
+                guard page.backgroundImage != nil, Set(filled).count == filled.count,
+                      Set(filled).isSubset(of: Set(page.backgroundBlocks ?? [])), Set(filled).isSubset(of: colors) else {
+                    throw BridgeError.message("阅读稿的图像文字背景无效。")
+                }
+            }
             for path in page.decorations ?? [] {
                 guard path.kind == nil || path.kind == "stroke" || path.kind == "fill_boundary" else {
                     throw BridgeError.message("阅读稿的原页边缘类型无效。")
@@ -119,6 +126,7 @@ public struct StructuredReadingPage: Codable, Sendable, Equatable, Identifiable 
     public var decorationsCoordinateSpace: String?
     public var backgroundImage: String?
     public var backgroundBlocks: [String]?
+    public var backgroundFillBlocks: [String]?
     public var id: Int { pageNumber }
 }
 

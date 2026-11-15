@@ -1,0 +1,15 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": ["name/cos:GetBucket", "name/cos:GetBucketVersioning"],
+      "resource": ["qcs::cos:ap-hongkong:uid/1257631357:pagebridge-downloads-1257631357/*"]
+    },
+    {
+      "effect": "allow",
+      "action": ["name/cos:GetObject", "name/cos:HeadObject", "name/cos:PutObject", "name/cos:DeleteObject", "name/cos:GetObjectACL", "name/cos:PutObjectACL"],
+      "resource": ["qcs::cos:ap-hongkong:uid/1257631357:pagebridge-downloads-1257631357/PageBridge/ota/*"]
+    }
+  ]
+}

@@ -85,11 +85,31 @@ internal sealed partial class StructuredReadingPane
         }
         var overlay = new Canvas { Width = pageWidth, Height = pageHeight, Clip = new RectangleGeometry { Rect = new Rect(0, 0, pageWidth, pageHeight) } };
         var blocks = result["blocks"]?.AsArray() ?? [];
-        bool hasBackground = Text(result, "backgroundImage") is { Length: > 0 };
+        string backgroundPath = Text(result, "backgroundImage");
+        bool hasBackground = backgroundPath.Length > 0;
         var positioned = (result["backgroundBlocks"]?.AsArray() ?? []).Select(value => value!.GetValue<string>()).ToHashSet();
         if (hasBackground)
-            overlay.Children.Add(new Image { Source = new BitmapImage(new Uri(Text(result, "backgroundImage"))), Width = pageWidth,
+        {
+            // A URI source loads asynchronously and does not throw on decode failure.
+            // Publish the cleared background and its translations together; otherwise
+            // the original page shows through underneath the translated text.
+            var background = new BitmapImage();
+            try
+            {
+                var file = await global::Windows.Storage.StorageFile.GetFileFromPathAsync(backgroundPath);
+                using var stream = await file.OpenReadAsync();
+                await background.SetSourceAsync(stream);
+                if (background.PixelWidth <= 0 || background.PixelHeight <= 0)
+                    throw new InvalidOperationException("背景图片为空。");
+            }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException("译文背景未能加载，已保留原页。请重新定位此页以重试。", error);
+            }
+            if (current != generation) return null;
+            overlay.Children.Add(new Image { Source = background, Width = pageWidth,
                 Height = pageHeight, Stretch = Stretch.Fill, IsHitTestVisible = false });
+        }
         void AddRegions(bool sourceRegions)
         {
             foreach (var block in blocks)

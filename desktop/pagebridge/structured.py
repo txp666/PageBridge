@@ -80,6 +80,19 @@ def read_artifact(path, document):
                         or len(positioned) != len(set(positioned))
                         or not set(positioned).issubset({b["id"] for b in page["blocks"]})):
                     raise ValueError()
+            if "backgroundFillBlocks" in page:
+                filled = page["backgroundFillBlocks"]
+                if ("backgroundImage" not in page or not isinstance(filled, list)
+                        or any(not isinstance(x, str) for x in filled)
+                        or len(filled) != len(set(filled)) or not set(filled).issubset(page["backgroundBlocks"])):
+                    raise ValueError()
+                for block in page["blocks"]:
+                    if block["id"] not in filled:
+                        continue
+                    color = block.get("backgroundColor")
+                    if (not isinstance(color, list) or len(color) != 3
+                            or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 255 for v in color)):
+                        raise ValueError()
         selected = artifact.get("selectedPages")
         if not numbers or not isinstance(selected, list) or any(type(p) is not int for p in selected) or set(selected) != numbers or len(selected) != len(numbers):
             raise ValueError()

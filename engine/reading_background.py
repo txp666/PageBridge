@@ -234,9 +234,103 @@ def remove_text(page, glyph_boxes, span_boxes, formula_boxes, keep=()):
         page.apply_redactions(images=0, graphics=0, text=0)
 
 
+def residual_text_fills(before, after, blocks, owners, protected, scale, load_native_mask):
+    """Find duplicated raster/outline text that native redaction cannot clear.
+
+    A searchable scan may paint text both as glyphs and as pixels. Only use the
+    scan-style fill when most source ink survives, the surrounding paper is
+    uniform, and the remaining ink follows the actual native glyph shapes.
+    Photos and protected source regions keep their actual background.
+    """
+    original, cleared = before.samples_mv, after.samples_mv
+
+    def pixel(data, x, y):
+        offset = y * before.stride + x * 3
+        return data[offset:offset + 3]
+
+    def close(a, b, tolerance=24):
+        return max(abs(x - y) for x, y in zip(a, b)) <= tolerance
+
+    def bounds(rect):
+        return (max(0, int(rect.x0 * scale)), max(0, int(rect.y0 * scale)),
+                min(before.width, math.ceil(rect.x1 * scale)), min(before.height, math.ceil(rect.y1 * scale)))
+
+    fills = []
+    native_mask = None
+    page_area = pymupdf.Rect(0, 0, before.width / scale, before.height / scale)
+    for block in blocks:
+        color = block.get("backgroundColor")
+        if (not isinstance(color, list) or len(color) != 3
+                or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 255 for v in color)):
+            continue
+        background = tuple(round(v) for v in color)
+        foreground = block["foregroundColor"]
+        delta = [b - f for b, f in zip(background, foreground)]
+        pivot = max(range(3), key=lambda i: abs(delta[i]))
+        if abs(delta[pivot]) < 32:
+            continue
+        box = (pymupdf.Rect(block["bbox"]) + (-.75, -.75, .75, .75)) & page_area
+        if any(box.intersects(rect) for rect in protected):
+            continue
+        ink = remaining = 0
+        for glyph in owners[block["id"]]:
+            left, top, right, bottom = bounds(glyph.local)
+            for y in range(top, bottom, max(1, (bottom - top) // 10)):
+                for x in range(left, right, max(1, (right - left) // 10)):
+                    if close(pixel(original, x, y), foreground):
+                        ink += 1
+                        # A lower-resolution duplicate is antialiased: its
+                        # visible grey edges need not equal the native ink RGB.
+                        remaining += (background[pivot] - pixel(cleared, x, y)[pivot]) / delta[pivot] > .25
+        if ink < 16 or remaining < ink * .8:
+            continue
+        left, top, right, bottom = bounds((box + (-1.5, -1.5, 1.5, 1.5)) & page_area)
+        perimeter = ([(x, y) for x in range(left, right, max(1, (right - left) // 32)) for y in (top, bottom - 1)]
+                     + [(x, y) for y in range(top, bottom, max(1, (bottom - top) // 32)) for x in (left, right - 1)])
+        if not perimeter or sum(close(pixel(cleared, x, y), background, 16) for x, y in perimeter) < .95 * len(perimeter):
+            continue
+        left, top, right, bottom = bounds(box)
+        step = max(1, math.ceil(math.sqrt((right - left) * (bottom - top) / 4096)))
+        samples = paper = other = 0
+        for y in range(top, bottom, step):
+            for x in range(left, right, step):
+                value = pixel(cleared, x, y)
+                fraction = max(0, min(1, (value[pivot] - foreground[pivot]) / delta[pivot]))
+                other += not close(value, [f + fraction * d for f, d in zip(foreground, delta)], 16)
+                paper += close(value, background, 16)
+                samples += 1
+        if not samples or paper < .1 * samples or other > .005 * samples:
+            continue
+        # A monochrome photo or diagram can also use only ink/paper colours.
+        # Verify that its surviving pixels follow letters, including their
+        # counters and spaces, rather than erasing arbitrary two-colour artwork.
+        if native_mask is None:
+            native_mask = load_native_mask()
+        if native_mask is None or (native_mask.width, native_mask.height) != (before.width, before.height):
+            continue
+        alpha = native_mask.samples_mv
+        radius = max(1, math.ceil(scale * .75))
+        unpaired = residual = 0
+        for y in range(top, bottom, step):
+            for x in range(left, right, step):
+                if (background[pivot] - pixel(cleared, x, y)[pivot]) / delta[pivot] <= .25:
+                    continue
+                residual += 1
+                nearby = any(alpha[yy * native_mask.stride + xx * 4 + 3] > 16
+                             for yy in range(max(0, y - radius), min(before.height, y + radius + 1))
+                             for xx in range(max(0, x - radius), min(before.width, x + radius + 1)))
+                unpaired += not nearby
+        if not residual or unpaired > .02 * residual:
+            continue
+        block["bbox"] = list(box)
+        fills.append(block)
+    return fills
+
+
 def add_page_background(input_path, page_result):
     page_result.pop("backgroundImage", None)
     page_result.pop("backgroundBlocks", None)
+    page_result.pop("backgroundFillBlocks", None)
     translated = translated_blocks(page_result)
     if not translated:
         return
@@ -276,11 +370,34 @@ def add_page_background(input_path, page_result):
             redactions.extend(g.native for g in chars)
 
         selected = [block for block in translated if block["id"] in background_ids]
-        remove_text(source, redactions, spans_in(source, native_spans, [boxes[block["id"]] for block in selected]),
-                    [formula["bbox"] for block in selected for formula in block.get("inlineMath", [])])
         scale = min(1800 / source.rect.width, 2400 / source.rect.height)
         matrix = pymupdf.Matrix(scale, scale).pretranslate(-origin.x, -origin.y)
+        remove_text(source, redactions, spans_in(source, native_spans, [boxes[block["id"]] for block in selected]),
+                    [formula["bbox"] for block in selected for formula in block.get("inlineMath", [])])
         pixmap = source.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
+        if selected:
+            # Render the immutable reference separately, after the cleared page,
+            # so comparison does not warm that page's image caches before redaction.
+            with pymupdf.open(input_path) as reference_pdf:
+                before = reference_pdf[page_result["pageNumber"] - 1].get_pixmap(
+                    matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
+            protected = [rect for block in page_result["blocks"] if block["id"] not in background_ids
+                         if (rect := _rect(block.get("bbox"))) is not None]
+            def native_mask():
+                try:
+                    with pymupdf.open(input_path) as mask_pdf:
+                        page = mask_pdf[page_result["pageNumber"] - 1]
+                        page.add_redact_annot(page.rect * page.derotation_matrix, fill=False, cross_out=False)
+                        page.apply_redactions(images=1, graphics=2, text=1)
+                        return page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=True, annots=False)
+                except (pymupdf.mupdf.FzErrorBase, RuntimeError, ValueError):
+                    return None
+            fills = residual_text_fills(before, pixmap, selected, owners, protected, scale, native_mask)
+            for block in fills:
+                pixels = (pymupdf.Rect(block["bbox"]) * pymupdf.Matrix(scale, scale)).irect & pixmap.irect
+                pixmap.set_rect(pixels, tuple(round(v) for v in block["backgroundColor"]))
+            if fills:
+                page_result["backgroundFillBlocks"] = [block["id"] for block in fills]
         page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
         page_result["backgroundBlocks"] = background_ids
         # Their original pixels already exist in the page background. Keeping

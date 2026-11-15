@@ -146,7 +146,8 @@ class StructuredReadingTests(unittest.TestCase):
         with pymupdf.open(self.doc["input_path"]) as pdf:
             png = pdf[1].get_pixmap(matrix=pymupdf.Matrix(.2, .2)).tobytes("png")
         page = artifact["pages"][0]
-        page.update(backgroundImage=base64.b64encode(png).decode(), backgroundBlocks=["p2-b1"],
+        page["blocks"][0]["backgroundColor"] = [255, 255, 255]
+        page.update(backgroundImage=base64.b64encode(png).decode(), backgroundBlocks=["p2-b1"], backgroundFillBlocks=["p2-b1"],
                     decorations=[{"unused": "old paths must not be repainted over the clean background"}])
         self.save_modified(event, artifact)
         self.store.commit_result(self.doc["id"], attempt, event)
@@ -155,6 +156,7 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(Path(result["backgroundImage"]).read_bytes(), png)
         self.assertTrue(Path(result["backgroundImage"]).is_relative_to(reopened.root / "preview-cache"))
         self.assertEqual(result["backgroundBlocks"], ["p2-b1"])
+        self.assertEqual(structured.committed_artifact(reopened, self.doc["id"])[1]["pages"][0]["backgroundFillBlocks"], ["p2-b1"])
         self.assertIsNone(result["decorationsImage"])
         self.assertIsNone(result["decorations_error"])
         self.assertEqual(sha256(self.source), sha256(self.doc["input_path"]))
@@ -168,6 +170,22 @@ class StructuredReadingTests(unittest.TestCase):
                              (base64.b64encode(png).decode(), ["p2-b1", "p2-b1"])]:
             with self.subTest(ids=ids):
                 artifact["pages"][0].update(backgroundImage=encoded, backgroundBlocks=ids)
+                self.save_modified(event, artifact)
+                with self.assertRaises(AppError):
+                    self.store.commit_result(self.doc["id"], attempt, event)
+
+    def test_background_fills_require_positioned_blocks_and_valid_paper_color(self):
+        attempt, event, artifact = self.prepare()
+        with pymupdf.open(self.doc["input_path"]) as pdf:
+            png = pdf[1].get_pixmap(matrix=pymupdf.Matrix(.1, .1)).tobytes("png")
+        page = artifact["pages"][0]
+        page.update(backgroundImage=base64.b64encode(png).decode(), backgroundBlocks=["p2-b1"])
+        for ids, color in [(["unknown"], [255, 255, 255]), (["p2-b2"], [255, 255, 255]),
+                           (["p2-b1", "p2-b1"], [255, 255, 255]), (["p2-b1"], None),
+                           (["p2-b1"], [255, -1, 255]), (["p2-b1"], [255, True, 255])]:
+            with self.subTest(ids=ids, color=color):
+                page["backgroundFillBlocks"] = ids
+                page["blocks"][0]["backgroundColor"] = color
                 self.save_modified(event, artifact)
                 with self.assertRaises(AppError):
                     self.store.commit_result(self.doc["id"], attempt, event)

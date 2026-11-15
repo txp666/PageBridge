@@ -77,11 +77,11 @@ def verify_installer_binding(raw, public_key, release, installer):
     return payload
 
 
-def generate(dist, source_root, cloudflare=False):
+def generate(dist, source_root, cos=False):
     release = json.loads((source_root / "VERSION.json").read_text())
     config = json.loads((source_root / "update-config.json").read_text())
     require(config["repository"] == REPOSITORY, "Unexpected Windows update repository")
-    destination = (dist / "cloudflare" if cloudflare else dist) / NAME
+    destination = (dist / "cos" if cos else dist) / NAME
     require(not destination.exists(), "Refusing to overwrite an existing signed Windows update manifest")
     version = release["version"]
     installer = dist / f"PageBridge-{version}-windows-x64-setup.exe"
@@ -89,7 +89,7 @@ def generate(dist, source_root, cloudflare=False):
     checked = packages.verify_installer(installer, source_root)
     require(checked["status"] == "passed", "Windows installer must pass verification before signing")
     base = "https://github.com/" + REPOSITORY
-    download = updates.DOWNLOAD_ROOT + "/ota" if cloudflare else base + "/releases/download"
+    download = updates.DOWNLOAD_ROOT + "/releases" if cos else base + "/releases/download"
     payload = dict(schema=1, platform="windows-x64", version=version, build=int(release["build"]),
                    minWindowsBuild=19041, url=download + f"/v{version}/" + installer.name,
                    sha256=checked["sha256"], bytes=checked["bytes"], releaseNotesURL=base + f"/releases/tag/v{version}")
@@ -116,10 +116,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("--source-root", type=Path, default=ROOT)
-    parser.add_argument("--cloudflare", action="store_true", help="Sign the manifest for clients using the Cloudflare download URL.")
+    parser.add_argument("--cos", action="store_true", help="Sign the manifest for direct Tencent COS downloads.")
     parser.add_argument("--output", type=Path, help="Write public verification evidence (never key material)")
     args = parser.parse_args()
-    result = generate(args.dist.resolve(), args.source_root.resolve(), args.cloudflare)
+    result = generate(args.dist.resolve(), args.source_root.resolve(), args.cos)
     report = json.dumps(result, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
