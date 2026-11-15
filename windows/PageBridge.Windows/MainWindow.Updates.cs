@@ -10,7 +10,30 @@ namespace PageBridge.Windows;
 public sealed partial class MainWindow
 {
     private bool updatesDialogOpen, updateInstallPreparing;
+    private bool startupUpdateChecked;
     private CancellationTokenSource? updatesPolling;
+
+    private async Task CheckStartupUpdatesAsync()
+    {
+        if (startupUpdateChecked || windowClosed) return;
+        startupUpdateChecked = true;
+        void Record(string state) { if (Application.Current is App app) app.RecordUpdateCheck(state); }
+        if (!UpdatePreferences.AutomaticallyCheck(backend.DataRoot)) { Record("disabled"); return; }
+        try
+        {
+            var snapshot = await backend.CallAsync("update_check");
+            while (!windowClosed && Text(snapshot, "state") == "checking")
+            {
+                await Task.Delay(500);
+                if (!windowClosed) snapshot = await backend.CallAsync("update_status");
+            }
+            if (windowClosed) return;
+            Record(Text(snapshot, "state"));
+            if (Text(snapshot, "state") == "available" && !updatesDialogOpen && UpdatePreferences.AutomaticallyCheck(backend.DataRoot))
+                await ShowUpdatesAsync();
+        }
+        catch { if (!windowClosed) Record("error"); } // Background failures stay in the manual update dialog.
+    }
 
     // The updater itself is one Attempt; another active operation could still
     // be importing, saving or displaying a native picker behind this dialog.

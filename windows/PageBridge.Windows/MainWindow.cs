@@ -78,7 +78,11 @@ public sealed partial class MainWindow : Window
             closingAfterReading = true; root.IsHitTestVisible = false; readingTimer?.Stop();
             await PersistReadingAsync(); allowClose = true; Close();
         };
-        root.Loaded += async (_, _) => await Attempt(async () => { sizing ??= new WindowSizing(this, root.XamlRoot.RasterizationScale); await backend.CallAsync("recover"); await ReloadAsync(); });
+        root.Loaded += async (_, _) =>
+        {
+            await Attempt(async () => { sizing ??= new WindowSizing(this, root.XamlRoot.RasterizationScale); await backend.CallAsync("recover"); await ReloadAsync(); });
+            _ = CheckStartupUpdatesAsync();
+        };
         ApplyMode();
     }
 

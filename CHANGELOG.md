@@ -1,5 +1,17 @@
 # 版本记录
 
+## 0.7.4 / build 22 — 启动自动检查更新
+
+- Mac 开启“自动检查更新”后，每次启动都会在后台检查一次；只有发现新版才提示，关闭自动检查的设置继续生效。
+- Windows 新增“启动时自动检查更新”选项，默认开启。设置会保留，只有发现新版才提示，下载和安装仍由你确认。
+- Mac 的 COS 更新包接入已有的四路并行下载，并保留签名校验。
+
+**English**
+
+- Check for updates in the background on each Mac launch when automatic checks are enabled. Only a newer release triggers a notification; disabling automatic checks remains effective.
+- Add a Windows option to check for updates on launch, enabled by default. Preserve the setting and only show a prompt when a newer release is available; downloads and installation still require confirmation.
+- Route Mac COS update archives through the existing four-range downloader while retaining signature verification.
+
 ## 0.7.3 / build 21 — 修复 PDF 图像文字重影
 
 - 修复带图像文字和可搜索文字层的 PDF 中，删去文字层后仍把译文叠在图像原文上的重影。对确认是平色背景的重复文字区域补充清理，阅读稿和导出 PDF 使用相同处理；照片背景继续保留原图。

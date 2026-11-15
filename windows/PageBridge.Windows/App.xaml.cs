@@ -10,6 +10,8 @@ public partial class App : Application
     private readonly object lifecycleLock = new();
     private string? lifecyclePath;
 
+    internal void RecordUpdateCheck(string state) => RecordLifecycle("startup-update-" + state);
+
     private void RecordLifecycle(string kind, Exception? error = null)
     {
         if (lifecyclePath is null) return;

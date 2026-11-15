@@ -45,6 +45,11 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         guard !started else { return }
         started = true
         controller.startUpdater()
+        // Sparkle's scheduled interval can outlive an app relaunch. Its public
+        // API recommends this immediate check for launch-time updates.
+        if controller.updater.automaticallyChecksForUpdates {
+            controller.updater.checkForUpdatesInBackground()
+        }
     }
 
     func checkForUpdates() {
@@ -96,7 +101,7 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
     func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest) {
         stopDownload()
         guard let source = request.url, source.scheme == "https",
-              let host = source.host, ["pagebridge.modusignal.cn", "github.com"].contains(host),
+              let host = source.host, ["pagebridge.modusignal.cn", "github.com", "pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com"].contains(host),
               item.contentLength > 0 else { return }
         let helper = SparkleDownload()
         if let local = try? helper.start(source: source, size: item.contentLength) {
