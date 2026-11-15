@@ -96,6 +96,17 @@ class CosReleaseTests(unittest.TestCase):
             result = json.loads(pointer.read_bytes())
             self.assertTrue(all(set(item) == {'name','bytes','sha256'} for item in result['assets'] + result['compatibility']))
 
+    def test_failed_parallel_transfer_does_not_create_a_ready_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pointer = Path(directory) / 'pointer.json'
+            files = {'failed.zip': (Path('unused'), dict(name='failed.zip', bytes=1))}
+            with patch.object(cos_release, 'prepare', return_value=('v0.7.3', files)), \
+                    patch.object(cos_release, 'current', return_value=None), \
+                    patch.object(cos_release, 'put_release_file', side_effect=ValueError('download differs')), \
+                    self.assertRaisesRegex(ValueError, 'download differs'):
+                cos_release.stage(Mock(), Path(directory), dict(build=21), {}, pointer)
+            self.assertFalse(pointer.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

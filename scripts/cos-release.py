@@ -1,6 +1,7 @@
 """Publish verified releases to Tencent COS and retain only the newest version."""
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import importlib.util
 import json
@@ -90,7 +91,6 @@ def put_release_file(cos, tag, path, item):
              ".xml": "application/rss+xml", ".sha256": "text/plain"}
     with path.open("rb") as stream:
         md5 = base64.b64encode(hashlib.file_digest(stream, "md5").digest()).decode()
-    cos.meta.events.register("before-sign.s3.PutObject", forbid_overwrite)
     try:
         with path.open("rb") as body:
             cos.put_object(Bucket=BUCKET, Key=key, Body=body, ContentLength=item["bytes"], ACL="public-read",
@@ -99,8 +99,6 @@ def put_release_file(cos, tag, path, item):
     except Exception as error:
         if getattr(error, "response", {}).get("ResponseMetadata", {}).get("HTTPStatusCode") not in (409, 412):
             raise
-    finally:
-        cos.meta.events.unregister("before-sign.s3.PutObject", forbid_overwrite)
     verify.verify_public_asset(f"{PUBLIC}/releases/{tag}/{item['name']}", item)
 
 
@@ -109,9 +107,21 @@ def stage(cos, dist, report, config, pointer):
     previous = current(cos)
     if previous and (previous["build"] >= int(report["build"]) or version_key("v" + previous["version"]) >= version_key(tag)):
         raise ValueError("COS already serves this or a newer release")
-    for path, item in files.values():
+    def upload(path, item):
         print("Staging", tag, item["name"], flush=True)
         put_release_file(cos, tag, path, item)
+        print("Verified", tag, item["name"], flush=True)
+    # Independent immutable objects can transfer together. Register the shared
+    # client's header once, before starting threads, rather than mutating hooks
+    # while another upload is being signed.
+    cos.meta.events.register("before-sign.s3.PutObject", forbid_overwrite)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            tasks = [pool.submit(upload, path, item) for path, item in files.values()]
+            for task in as_completed(tasks):
+                task.result()
+    finally:
+        cos.meta.events.unregister("before-sign.s3.PutObject", forbid_overwrite)
     public_item = lambda item: {key: item[key] for key in ("name", "bytes", "sha256")}
     release = dict(version=tag[1:], build=int(report["build"]),
         assets=[public_item(item) for name, (_, item) in files.items() if name not in LEGACY],

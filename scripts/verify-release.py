@@ -243,7 +243,7 @@ def verify_cos_feeds(dist, config, release):
     return dict(feedSignatureVerified=True, archiveSignatureVerified=True, windowsSignatureVerified=True)
 
 
-def verify_cos_published(dist, config, release):
+def verify_cos_published(dist, config, release, *, staged=False):
     pointer = json.loads(fetch(COS_ROOT + "/latest.json", limit=64 * 1024))
     require(pointer["version"] == release["version"] and pointer["build"] == int(release["build"]), "COS latest identity differs")
     expected = []
@@ -253,8 +253,11 @@ def verify_cos_published(dist, config, release):
     compatibility = [dict(name="legacy-" + name, bytes=(dist / name).stat().st_size, sha256=digest(dist / name))
                      for name in ("appcast.xml", "windows-update.json")]
     require(pointer["assets"] == expected and pointer["compatibility"] == compatibility, "COS latest assets differ")
-    for item in expected + compatibility:
-        verify_public_asset(f"{COS_ROOT}/releases/v{release['version']}/{item['name']}", item)
+    if not staged:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda item: verify_public_asset(
+                f"{COS_ROOT}/releases/v{release['version']}/{item['name']}", item), expected + compatibility))
     key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
     verify_latest(COS_ROOT + "/appcast.xml", (dist / "cos/appcast.xml").read_bytes(), lambda data: signed_feed(data, key))
     verify_latest(COS_ROOT + "/windows-update.json", (dist / "cos/windows-update.json").read_bytes(),
@@ -263,7 +266,8 @@ def verify_cos_published(dist, config, release):
     verify_latest(legacy_root + "/appcast.xml", (dist / "appcast.xml").read_bytes(), lambda data: signed_feed(data, key))
     verify_latest(legacy_root + "/windows-update.json", (dist / "windows-update.json").read_bytes(),
                   lambda data: helper("windows-update.py").verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
-    return dict(status="passed", assets=len(expected), compatibilityFeeds=len(compatibility), publicRoot=COS_ROOT)
+    return dict(status="passed", assets=len(expected), compatibilityFeeds=len(compatibility), publicRoot=COS_ROOT,
+                assetVerification="preceding-stage" if staged else "public-download")
 
 
 def main():
@@ -273,10 +277,12 @@ def main():
     parser.add_argument("--check-latest", action="store_true")
     parser.add_argument("--published", action="store_true")
     parser.add_argument("--require-latest", action="store_true", help="Require this published tag to be the latest release (publication CI)")
+    parser.add_argument("--cos-staged", action="store_true", help="Reuse this run's successful full COS staging downloads; still verify public pointers and signed feeds")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--notes-output", type=Path, help="Write current changelog section for gh release --notes-file")
     args = parser.parse_args()
     require(not args.require_latest or args.published, "--require-latest requires --published")
+    require(not args.cos_staged or args.require_latest, "--cos-staged requires --published --require-latest")
     source_root = args.source_root.resolve()
     release = json.loads((source_root / "VERSION.json").read_text())
     config = json.loads((source_root / "update-config.json").read_text())
@@ -385,7 +391,7 @@ def main():
             verify_latest(base + "/releases/latest/download/windows-update.json", update_path.read_bytes(),
                           lambda data: windows_update.verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
             if config["feedURL"] == COS_ROOT + "/appcast.xml":
-                report["cosPublished"] = verify_cos_published(args.dist, config, release)
+                report["cosPublished"] = verify_cos_published(args.dist, config, release, staged=args.cos_staged)
             elif config["feedURL"] != github_feed:
                 verify_latest(config["feedURL"], feed_path.read_bytes(), lambda data: signed_feed(data, key))
                 cloud_windows = windows_update.verify_installer_binding(
