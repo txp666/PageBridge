@@ -71,6 +71,75 @@ class NativeBackgroundTests(unittest.TestCase):
         self.assertNotEqual(before.samples, after.samples)
         self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), digest)
         self.assertEqual(page['blocks'][0]['foregroundColor'], [0, 0, 0])
+        self.assertIsNone(page.get('backgroundFillBlocks'))
+
+    def test_raster_text_above_or_below_native_text_is_cleared_without_covering_artwork(self):
+        for above in (False, True):
+            with self.subTest(image_above_text=above):
+                original = self.make_source()
+                path = self.root / f'hybrid-{above}.pdf'
+                with pymupdf.open(original) as pdf:
+                    image = pdf[0].get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes('png')
+                with pymupdf.open() as pdf:
+                    source = pdf.new_page(width=200, height=160)
+                    source.insert_text((20, 35), 'Hello world', fontsize=12)
+                    source.insert_text((20, 100), 'www.example.org', fontsize=8)
+                    source.insert_image(source.rect, stream=image, overlay=above)
+                    pdf.save(path)
+                digest = hashlib.sha256(path.read_bytes()).digest()
+                page = self.metadata(path)
+                page['blocks'][0]['backgroundColor'] = [51, 140, 204]
+                before = self.raster(path)
+                add_page_background(path, page)
+                after = pymupdf.Pixmap(base64.b64decode(page['backgroundImage']))
+                self.assertEqual(page.get('backgroundFillBlocks'), ['p00001-b00001'])
+                self.assertEqual(after.color_count(clip=pymupdf.IRect(19 * 9, 25 * 9, 81 * 9, 36 * 9)), 1)
+                for x, y in [(150, 30), (135, 60), (10, 10), (80, 120), (50, 98)]:
+                    self.assertEqual(before.pixel(x * 9, y * 9), after.pixel(x * 9, y * 9))
+                self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), digest)
+
+    def test_native_text_over_a_photo_keeps_the_real_background(self):
+        path = self.root / 'photo-background.pdf'
+        width, height = 200, 160
+        pixels = bytes(channel for y in range(height) for x in range(width) for channel in (x, y, 110))
+        with pymupdf.open() as pdf:
+            source = pdf.new_page(width=width, height=height)
+            source.insert_image(source.rect, stream=pymupdf.Pixmap(pymupdf.csRGB, width, height, pixels, False).tobytes('png'))
+            source.insert_text((20, 35), 'Hello world', fontsize=12)
+            source.insert_text((20, 100), 'www.example.org', fontsize=8)
+            pdf.save(path)
+        page = self.metadata(path)
+        page['blocks'][0]['backgroundColor'] = [51, 140, 204]
+        add_page_background(path, page)
+        self.assertIsNone(page.get('backgroundFillBlocks'))
+        with pymupdf.open(path) as pdf:
+            source = pdf[0]
+            source.add_redact_annot(pymupdf.Rect(15, 15, 100, 40), fill=False)
+            source.apply_redactions(images=0, graphics=0, text=0)
+            expected = source.get_pixmap(matrix=pymupdf.Matrix(9, 9), alpha=False)
+        actual = pymupdf.Pixmap(base64.b64decode(page['backgroundImage']))
+        self.assertEqual(actual.samples, expected.samples)
+
+    def test_black_and_white_artwork_is_not_mistaken_for_duplicated_letters(self):
+        path = self.root / 'monochrome-artwork.pdf'
+        width, height = 200, 160
+        pixels = bytes(channel for y in range(height) for x in range(width)
+                       for channel in ((0 if 20 <= x < 80 and 25 <= y < 36 and (x + y) % 13 else 255),) * 3)
+        with pymupdf.open() as pdf:
+            source = pdf.new_page(width=width, height=height)
+            source.insert_image(source.rect, stream=pymupdf.Pixmap(pymupdf.csRGB, width, height, pixels, False).tobytes('png'))
+            expected = source.get_pixmap(matrix=pymupdf.Matrix(9, 9), alpha=False)
+            source.insert_text((20, 35), 'Hello world', fontsize=12)
+            source.insert_text((20, 100), 'www.example.org', fontsize=8)
+            pdf.save(path)
+        page = self.metadata(path)
+        page['blocks'][0]['backgroundColor'] = [255, 255, 255]
+        add_page_background(path, page)
+        self.assertIsNone(page.get('backgroundFillBlocks'))
+        actual = pymupdf.Pixmap(base64.b64decode(page['backgroundImage']))
+        # Check the artwork only: the deliberately preserved URL is below it.
+        clip = pymupdf.IRect(15 * 9, 15 * 9, 100 * 9, 45 * 9)
+        self.assertEqual(actual.color_count(clip=clip, colors=True), expected.color_count(clip=clip, colors=True))
 
     def test_nonzero_origin_matches_page_local_raster(self):
         path = self.make_source(origin=True)

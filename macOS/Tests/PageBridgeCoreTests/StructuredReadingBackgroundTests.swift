@@ -24,13 +24,16 @@ final class StructuredReadingBackgroundTests: XCTestCase {
     }
 
     func testEmbeddedBackgroundSurvivesEncodingAndKeepsTranslatedBlockIdentity() throws {
-        let (document, reading) = try artifact()
+        var (document, reading) = try artifact()
+        reading.pages[0].backgroundFillBlocks = ["p1-b1"]
+        reading.pages[0].blocks[0].backgroundColor = [255, 255, 255]
         let decoded = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
         XCTAssertNoThrow(try decoded.validate(for: document))
         let encoded = try XCTUnwrap(decoded.pages[0].backgroundImage)
         let image = try XCTUnwrap(StructuredReadingBackground.image(encoded))
         XCTAssertEqual(image.size, CGSize(width: 8, height: 6))
         XCTAssertEqual(decoded.pages[0].backgroundBlocks, ["p1-b1"])
+        XCTAssertEqual(decoded.pages[0].backgroundFillBlocks, ["p1-b1"])
     }
 
     func testBackgroundNeverLoadsPathsURLsOrOversizedImageHeaders() throws {
@@ -65,5 +68,18 @@ final class StructuredReadingBackgroundTests: XCTestCase {
         XCTAssertGreaterThan(color.redComponent, 0.95)
         XCTAssertLessThan(color.greenComponent, 0.05)
         XCTAssertLessThan(color.blueComponent, 0.05)
+    }
+
+    func testRasterCleanupRequiresDrawnBlocksAndPaperColor() throws {
+        let (document, valid) = try artifact()
+        var reading = valid
+        reading.pages[0].backgroundFillBlocks = ["p1-b1"]
+        XCTAssertThrowsError(try reading.validate(for: document))
+        reading.pages[0].blocks[0].backgroundColor = [255, 255, 255]
+        XCTAssertNoThrow(try reading.validate(for: document))
+        for ids in [["missing"], ["p1-b1", "p1-b1"]] {
+            reading.pages[0].backgroundFillBlocks = ids
+            XCTAssertThrowsError(try reading.validate(for: document))
+        }
     }
 }

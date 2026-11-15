@@ -265,7 +265,15 @@
             "items": {
               "type": "string"
             },
-            "description": "Only these blocks overlay text on backgroundImage; never fill their rectangles or repaint original source regions."
+            "description": "Only these blocks overlay text on the prepared backgroundImage. Clients do not repaint their backgrounds or original source regions."
+          },
+          "backgroundFillBlocks": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Subset of backgroundBlocks with duplicated raster/outline text on verified uniform paper. Their backgroundColor fills are already baked into backgroundImage; PDF export must apply the same fills."
           }
         }
       }

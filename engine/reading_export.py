@@ -149,6 +149,7 @@ def translate_page(document, index, page_result, keep):
     page = document[index]
     area = pymupdf.Rect(0, 0, page.rect.width, page.rect.height)
     native = "backgroundBlocks" in page_result
+    fill_ids = set(page_result.get("backgroundFillBlocks", [])) if native else set()
     if native:
         # Text the reader draws over: its glyphs were removed from the background image.
         ids = set(page_result["backgroundBlocks"]) if isinstance(page_result["backgroundBlocks"], list) else set()
@@ -193,7 +194,7 @@ def translate_page(document, index, page_result, keep):
     holes = [_rect(block.get("bbox")) for block in page_result["blocks"] if block.get("kind") in SOURCE_REGIONS]
     for block, rect, images in zip(drawn, regions, crops):
         background = None
-        if not native:
+        if not native or block["id"] in fill_ids:
             background = _color(block.get("backgroundColor")) or [255, 255, 255]
             # Source regions stay visible unless this text is part of that region (a caption inside a figure).
             for part in _subtract(rect, [hole for hole in holes if hole and not hole.contains(_center(rect))]):
