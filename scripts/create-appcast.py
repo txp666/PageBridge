@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 ROOT = Path(__file__).resolve().parents[1]
+COS_ROOT = "https://pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com/PageBridge/ota"
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 
 
@@ -54,19 +55,21 @@ def main():
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("--account", help="Sparkle signing Keychain account")
     parser.add_argument("--tools", type=Path, help="Official Sparkle bin directory (defaults to SwiftPM artifact)")
+    parser.add_argument("--cos", action="store_true", help="Create the direct COS feed; default is the legacy GitHub feed.")
     args = parser.parse_args()
     release = json.loads((ROOT / "VERSION.json").read_text())
     config = json.loads((ROOT / "update-config.json").read_text())
     version, build = release["version"], str(release["build"])
     require(re.fullmatch(r"\d+\.\d+\.\d+", version) and build.isdecimal(), "Invalid release version/build")
     archive = args.dist.resolve() / f"PageBridge-{version}-macOS-arm64.zip"
-    destination = args.dist.resolve() / "appcast.xml"
+    destination = (args.dist.resolve() / "cos" if args.cos else args.dist.resolve()) / "appcast.xml"
+    destination.parent.mkdir(parents=True, exist_ok=True)
     require(archive.is_file(), "App ZIP must be packaged before creating its appcast")
     require(not destination.exists(), "Refusing to overwrite existing appcast")
     repository = config["repository"]
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid repository")
     base_url = "https://github.com/" + repository
-    require(config["feedURL"] == "https://pagebridge.modusignal.cn/download/appcast.xml", "Unexpected feed URL")
+    require(config["feedURL"] == COS_ROOT + "/appcast.xml", "Unexpected feed URL")
     with zipfile.ZipFile(archive) as zipped:
         app_info = plistlib.loads(zipped.read("PageBridge.app/Contents/Info.plist"))
         require(app_info["CFBundleShortVersionString"] == version and app_info["CFBundleVersion"] == build,
@@ -105,7 +108,7 @@ def main():
         (feeds / (archive.stem + ".html")).write_text("<h2>PageBridge " + html.escape(version)
             + "</h2><pre>" + html.escape(notes) + "</pre>\n")
         commands = [[str(tools / "generate_appcast"), *signing,
-                     "--download-url-prefix", config["feedURL"].rsplit("/", 1)[0] + f"/ota/v{version}/",
+                     "--download-url-prefix", (COS_ROOT + "/releases" if args.cos else base_url + "/releases/download") + f"/v{version}/",
                      "--link", base_url + f"/releases/tag/v{version}",
                      "--maximum-deltas", "0", "--maximum-versions", "1",
                      "--versions", build, "--embed-release-notes", str(feeds)],

@@ -213,6 +213,59 @@ def verify_source(path, version, source_root=ROOT):
     return len(manifest["files"])
 
 
+COS_ROOT = "https://pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com/PageBridge/ota"
+
+
+def verify_cos_feeds(dist, config, release):
+    """Authenticate the direct feeds against the exact packaged installers."""
+    version = release["version"]
+    require(config["feedURL"] == COS_ROOT + "/appcast.xml", "Unexpected COS feed")
+    key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
+    feed = signed_feed((dist / "cos/appcast.xml").read_bytes(), key)
+    items = feed.findall("./channel/item")
+    require(len(items) == 1, "Expected one COS appcast item")
+    item = items[0]
+    app = dist / f"PageBridge-{version}-macOS-arm64.zip"
+    enclosure = item.find("enclosure")
+    require(enclosure is not None, "COS appcast enclosure is missing")
+    require(item.findtext(SPARKLE + "version") == str(release["build"])
+            and item.findtext(SPARKLE + "shortVersionString") == version, "COS appcast identity differs")
+    require(enclosure.attrib["url"] == f"{COS_ROOT}/releases/v{version}/{app.name}", "COS appcast URL differs")
+    require(int(enclosure.attrib["length"]) == app.stat().st_size, "COS appcast size differs")
+    legacy = signed_feed((dist / "appcast.xml").read_bytes(), key)
+    require(item.findtext(SPARKLE + "minimumSystemVersion") == legacy.findtext("./channel/item/" + SPARKLE + "minimumSystemVersion"),
+            "COS appcast minimum macOS differs")
+    key.verify(base64.b64decode(enclosure.attrib[SPARKLE + "edSignature"], validate=True), app.read_bytes())
+    installer = dist / f"PageBridge-{version}-windows-x64-setup.exe"
+    payload = helper("windows-update.py").verify_installer_binding(
+        (dist / "cos/windows-update.json").read_bytes(), config["publicEDKey"], release, installer)
+    require(payload["url"] == f"{COS_ROOT}/releases/v{version}/{installer.name}", "COS Windows URL differs")
+    return dict(feedSignatureVerified=True, archiveSignatureVerified=True, windowsSignatureVerified=True)
+
+
+def verify_cos_published(dist, config, release):
+    pointer = json.loads(fetch(COS_ROOT + "/latest.json", limit=64 * 1024))
+    require(pointer["version"] == release["version"] and pointer["build"] == int(release["build"]), "COS latest identity differs")
+    expected = []
+    for name in asset_names(release["version"]):
+        path = dist / "cos" / name if name in ("appcast.xml", "windows-update.json") else dist / name
+        expected.append(dict(name=name, bytes=path.stat().st_size, sha256=digest(path)))
+    compatibility = [dict(name="legacy-" + name, bytes=(dist / name).stat().st_size, sha256=digest(dist / name))
+                     for name in ("appcast.xml", "windows-update.json")]
+    require(pointer["assets"] == expected and pointer["compatibility"] == compatibility, "COS latest assets differ")
+    for item in expected + compatibility:
+        verify_public_asset(f"{COS_ROOT}/releases/v{release['version']}/{item['name']}", item)
+    key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
+    verify_latest(COS_ROOT + "/appcast.xml", (dist / "cos/appcast.xml").read_bytes(), lambda data: signed_feed(data, key))
+    verify_latest(COS_ROOT + "/windows-update.json", (dist / "cos/windows-update.json").read_bytes(),
+                  lambda data: helper("windows-update.py").verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
+    legacy_root = "https://pagebridge.modusignal.cn/download"
+    verify_latest(legacy_root + "/appcast.xml", (dist / "appcast.xml").read_bytes(), lambda data: signed_feed(data, key))
+    verify_latest(legacy_root + "/windows-update.json", (dist / "windows-update.json").read_bytes(),
+                  lambda data: helper("windows-update.py").verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
+    return dict(status="passed", assets=len(expected), compatibilityFeeds=len(compatibility), publicRoot=COS_ROOT)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
@@ -233,9 +286,9 @@ def main():
     base = "https://github.com/" + repository
     api = "https://api.github.com/repos/" + repository
     github_feed = base + "/releases/latest/download/appcast.xml"
-    cloudflare = "https://pagebridge.modusignal.cn/download"
-    require(config["feedURL"] in (github_feed, cloudflare + "/appcast.xml"), "Unexpected configured feed")
-    download_root = base + "/releases/download" if config["feedURL"] == github_feed else cloudflare + "/ota"
+    legacy_root = "https://pagebridge.modusignal.cn/download"
+    require(config["feedURL"] in (github_feed, legacy_root + "/appcast.xml", COS_ROOT + "/appcast.xml"), "Unexpected configured feed")
+    download_root = legacy_root + "/ota" if config["feedURL"] == legacy_root + "/appcast.xml" else base + "/releases/download"
     key = Ed25519PublicKey.from_public_bytes(base64.b64decode(config["publicEDKey"], validate=True))
     report = {"version": version, "build": build, "repository": repository, "assets": []}
     filenames = payload_names(version)
@@ -292,6 +345,8 @@ def main():
     key.verify(base64.b64decode(enclosure.attrib[SPARKLE + "edSignature"], validate=True), app.read_bytes())
     report.update(feedSignatureVerified=True, archiveSignatureVerified=True)
     report["assets"].append({"name": "appcast.xml", "bytes": feed_path.stat().st_size, "sha256": digest(feed_path)})
+    if config["feedURL"] == COS_ROOT + "/appcast.xml" and (not args.published or (args.dist / "cos/appcast.xml").is_file()):
+        report["cosUpdates"] = verify_cos_feeds(args.dist, config, release)
     if args.check_latest:
         try:
             latest = json.loads(fetch_github_api(api + "/releases/latest"))
@@ -329,11 +384,13 @@ def main():
             verify_latest(github_feed, feed_path.read_bytes(), lambda data: signed_feed(data, key))
             verify_latest(base + "/releases/latest/download/windows-update.json", update_path.read_bytes(),
                           lambda data: windows_update.verify_manifest(data, config["publicEDKey"]), limit=64 * 1024)
-            if config["feedURL"] != github_feed:
+            if config["feedURL"] == COS_ROOT + "/appcast.xml":
+                report["cosPublished"] = verify_cos_published(args.dist, config, release)
+            elif config["feedURL"] != github_feed:
                 verify_latest(config["feedURL"], feed_path.read_bytes(), lambda data: signed_feed(data, key))
                 cloud_windows = windows_update.verify_installer_binding(
-                    fetch(cloudflare + "/windows-update.json", limit=64 * 1024), config["publicEDKey"], release, installer)
-                require(cloud_windows["url"] == f"{cloudflare}/ota/v{version}/{installer.name}", "Windows feed points outside Cloudflare")
+                    fetch(legacy_root + "/windows-update.json", limit=64 * 1024), config["publicEDKey"], release, installer)
+                require(cloud_windows["url"] == f"{legacy_root}/ota/v{version}/{installer.name}", "Windows feed points outside legacy download service")
         else:
             # Historical releases remain independently verifiable after an OTA
             # upgrade. Still authenticate the current feed and reject rollback.

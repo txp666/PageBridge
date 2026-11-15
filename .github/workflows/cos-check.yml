@@ -1,0 +1,25 @@
+name: Verify Tencent COS configuration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: |
+          python3 scripts/release-ci.py requirements --output /tmp/pagebridge-verification.txt
+          python3 -m pip install --only-binary=:all: --no-deps --require-hashes -r /tmp/pagebridge-verification.txt
+          python3 -m pip install --only-binary=:all: --require-hashes -r scripts/cos-requirements.txt
+      - name: Verify scoped COS access and disabled object versioning
+        env:
+          TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+          TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+        run: python3 scripts/cos-release.py probe

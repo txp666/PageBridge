@@ -22,7 +22,8 @@ def allowed_url(url):
     try:
         parts = urlsplit(url)
         return (parts.scheme == "https" and parts.hostname in {
-            "pagebridge.modusignal.cn", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
+            "pagebridge.modusignal.cn", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+            "pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com"
         } and parts.port in (None, 443) and not parts.username and not parts.password and not parts.fragment)
     except ValueError:
         return False

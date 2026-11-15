@@ -336,6 +336,8 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(updates.UpdateError):
                 ota_transfer.SafeRedirect().redirect_request(Request(updates.FEED_URL), None, 302, "Found", {}, url)
         self.assertTrue(ota_transfer.allowed_url("https://release-assets.githubusercontent.com/github-production-release-asset/x?sig=test"))
+        self.assertTrue(ota_transfer.allowed_url(updates.FEED_URL))
+        self.assertFalse(ota_transfer.allowed_url("https://pagebridge-downloads-1257631357.cos.ap-hongkong.myqcloud.com.evil.test/x"))
 
     def test_no_target_before_download(self):
         manager = self.manager()

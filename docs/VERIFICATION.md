@@ -20,9 +20,20 @@
 - 术语表与搜索：选用多个术语表翻译、追加页后原有页不变、加入术语后只重译含该词的段落、提取术语、TXT／CSV 导入导出、全库搜索并跳到对应页。
 - 导出：从阅读稿导出译文 PDF 和双语 PDF，打开核对页数、可选择和搜索的译文、图表与公式；引擎改动时另用 `engine/verify_real.py` 做真实检查（见[开发指南](DEVELOPMENT.md#mineru-阅读稿)）。
 
-验收使用独立的测试文库和固定测试凭据，不使用用户文档或真实 API Key；失败、修复后的复测和最终通过分别记录。证据保存在本机 `validation/`，不进入 Git。
+验收使用独立测试文库；自动测试使用固定测试凭据。经用户授权的真实 API 测试只临时注入凭据，不将凭据写入代码、阅读稿或日志。失败、修复后的复测和最终通过分别记录。证据保存在本机 `validation/`，不进入 Git。
 
-## 0.5.0 / build 14（当前版本）
+## 0.7.3 / build 21
+
+2026-11-15 发布前回归。反馈方目前仅提供 Windows 截图，尚未取得原 PDF；下列重现不代表已验证反馈方的原件。
+
+- **PDF 重影：** 测试 CDC、HHS 和 NASA 的三份公开 PDF，抽查 18 页；再用 CDC 原页构造图像文字位于可搜索文字层上方、下方的两种重复结构，均可重现旧版重影，修复后阅读背景和 PDF 导出均清除重复原文。18 个未重现的原始页背景与基线逐字节一致；照片与黑白插图另有保护回归。
+- **Windows 真实翻译：** 在 Windows 11 Pro ARM64 build 26200 的 x64 仿真环境中，使用 CI 包内私有 worker、真实 MinerU 和 DeepSeek `deepseek-flash`，翻译上述两种重影页及 HHS 第 15 页，13 个块全部完成、0 失败。三份译文与双语 PDF 都通过页数、可提取中文和原 PDF SHA-256 不变检查。
+- **Windows 原生界面：** SSH 操作交互会话并读取截图，检查两种重影页、HHS 照片页、NASA 封面、100% 和 150% 缩放；背景文件故障注入后只显示原页，恢复文件并重新定位后显示干净译文。重新构建后目视确认“同步滚动”开关与文字居中对齐。
+- **发布线路：** 腾讯云 COS 使用独立存储桶、限定到 PageBridge 目录的发布用户；版本文件上传后回读核对大小、SHA-256、Range 和签名，再发布 GitHub Release、切换清单并清理旧 COS 版本。GitHub 与官网旧入口使用独立签名兼容清单，新版直接读取 COS。线上结果由标签发布任务和独立复验任务记录。
+
+已有阅读稿需要升级后点击“重新翻译”重新生成，新的背景清理才会生效。本机证据：`validation/ghosting-20261115/`。
+
+## 0.5.0 / build 14
 
 2026-10-27 公开 [v0.5.0](https://github.com/txp666/PageBridge/releases/tag/v0.5.0)，源码提交 `edf1c4f702316c5bc4bc255a71d91a327cb49efc`。发布前 [Mac CI](https://github.com/txp666/PageBridge/actions/runs/40504943467) 与 [Windows CI](https://github.com/txp666/PageBridge/actions/runs/40504943537) 通过。[发布任务](https://github.com/txp666/PageBridge/actions/runs/40507257974)完成测试、构建、Windows 安装器实测、签名和公开，最后一步因 GitHub CDN 短暂返回旧 feed 而报失败；随后的[独立复验](https://github.com/txp666/PageBridge/actions/runs/40509507824)全部通过（12 项资产、5 个主文件的 HTTP Range、源码身份、两端更新签名）。
 
