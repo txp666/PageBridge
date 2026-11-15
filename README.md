@@ -10,7 +10,7 @@
 
 ## 下载
 
-当前版本 **0.7.3 / build 21**：
+当前版本 **0.7.4 / build 22**：
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | Windows x64（推荐） | [Windows 安装器](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
 | Windows x64（便携） | [Windows 便携 ZIP](https://pagebridge.modusignal.cn/download/windows-x64.zip)（约 130 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.3)还提供项目源码和第三方对应源码。
+同一 [Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.4)还提供项目源码和第三方对应源码。
 
 0.7.3 修复带图像文字和可搜索文字层的 PDF 重影。已有阅读稿需在升级后点击“重新翻译”并重新生成，才能应用新的背景清理。
 
