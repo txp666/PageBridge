@@ -160,7 +160,12 @@ public sealed partial class MainWindow
         var paging = Row(Tool("left", null, "上一页", () => ChangePage(-1)), new TextBlock { Text = "第", FontSize = 12, Opacity = .65, VerticalAlignment = VerticalAlignment.Center }, page, pageCount, Tool("right", null, "下一页", () => ChangePage(1))); paging.Spacing = 4; Grid.SetColumn(paging, 1); footer.Children.Add(paging);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sync, "ReaderSyncScroll");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(sync, "同步滚动");
-        sync.MinWidth = 40; sync.Height = 28; sync.Padding = new Thickness(0); var syncPanel = Row(ReaderIcons.Make("link", 13), new TextBlock { Text = "同步滚动", FontSize = 11, VerticalAlignment = VerticalAlignment.Center }, sync); syncPanel.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(syncPanel, 2); footer.Children.Add(syncPanel); Grid.SetRow(footer, 5); workspace.Children.Add(footer); themedBars.Add(footer);
+        sync.MinWidth = 40; sync.Height = 28; sync.Padding = new Thickness(0);
+        // The native template adds space above and below its 20 px track. Keep
+        // both margins inside this compact control so the track stays centered.
+        sync.Resources["ToggleSwitchPreContentMargin"] = 4d;
+        sync.Resources["ToggleSwitchPostContentMargin"] = 4d;
+        var syncPanel = Row(ReaderIcons.Make("link", 13), new TextBlock { Text = "同步滚动", FontSize = 11, VerticalAlignment = VerticalAlignment.Center }, sync); syncPanel.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(syncPanel, 2); footer.Children.Add(syncPanel); Grid.SetRow(footer, 5); workspace.Children.Add(footer); themedBars.Add(footer);
         BuildEmptyLibrary(); Grid.SetColumn(emptyLibrary, 1); root.Children.Add(emptyLibrary);
         root.AllowDrop = true; root.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
         root.Drop += async (_, e) => await Attempt(async () => { if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return; var files = await e.DataView.GetStorageItemsAsync(); await ImportPathsAsync(files.Where(f => f.Path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)).Select(f => f.Path)); });

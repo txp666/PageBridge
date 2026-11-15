@@ -4,6 +4,7 @@
 
 - 修复带图像文字和可搜索文字层的 PDF 中，删去文字层后仍把译文叠在图像原文上的重影。对确认是平色背景的重复文字区域补充清理，阅读稿和导出 PDF 使用相同处理；照片背景继续保留原图。
 - Windows 阅读视图等待译文背景图片加载成功后再显示译文；背景加载失败时保留原页并显示错误，避免把译文叠在尚未清除的原文上。
+- Windows 右下角“同步滚动”开关与文字水平居中对齐。
 - 已有阅读稿请在升级后点击“重新翻译”并重新生成，新的背景清理才会生效。
 - Mac 和 Windows 的应用内更新支持四路并行下载，并在下载过程中实时显示进度。
 
@@ -11,6 +12,7 @@
 
 - Clear duplicated image text on verified uniform paper when removing the searchable text layer alone leaves the original words visible. Reading drafts and PDF exports use the same cleanup; photographic backgrounds retain their original pixels.
 - The Windows reader waits for the cleared background image to load before displaying translations. If loading fails, it keeps the original page and reports the error instead of drawing translations over the original text.
+- Center the Windows sync scrolling switch vertically beside its label.
 - After upgrading, regenerate existing reading drafts using Translate Again to apply the background cleanup.
 - In-app updates on Mac and Windows download with four concurrent ranges and show progress while the download is running.
 
