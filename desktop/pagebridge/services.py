@@ -31,7 +31,20 @@ def new_profile(provider="ollama"):
         raise AppError("不支持的服务厂商。")
     preset = PRESETS[provider]
     return dict(id=str(uuid.uuid4()), provider=provider, name=preset["name"], kind=preset["kind"], baseURL=preset["baseURL"],
-                model=next(iter(preset["models"]), ""), timeoutSeconds=120, concurrency=1 if provider == "ollama" else 2)
+                model=next(iter(preset["models"]), ""), timeoutSeconds=120, concurrency=1 if provider == "ollama" else 2,
+                reasoningEffort="auto")
+
+
+def openai_reasoning_effort(provider, model, effort="auto"):
+    required = model in {"gpt-6-astra", "gpt-6.1-sol"}
+    if effort == "auto":
+        return ("low" if required else "none") if provider == "openAI" and model.startswith("gpt-6") else None
+    supported = ("low", "medium", "high", "xhigh", "max") if required else (
+        ("none", "low", "medium", "high", "xhigh", "max")
+        if model in {"gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"} else ())
+    if provider != "openAI" or effort not in supported:
+        raise AppError("当前模型不支持此推理强度，请选择“自动”或其他可用强度。")
+    return effort
 
 
 def validate_profile(profile, require_model=True):
@@ -44,6 +57,7 @@ def validate_profile(profile, require_model=True):
             if not isinstance(p[key], str):
                 raise ValueError()
             p[key] = p[key].strip()
+        p["reasoningEffort"] = profile.get("reasoningEffort", "auto")
         p["baseURL"] = p["baseURL"].rstrip("/")
         if not 1 <= len(p["name"]) <= 48 or p["provider"] not in PRESETS or PRESETS[p["provider"]]["kind"] != p["kind"]:
             raise ValueError()
@@ -69,6 +83,8 @@ def validate_profile(profile, require_model=True):
             raise ValueError()
         if type(p["concurrency"]) is not int or not 1 <= p["concurrency"] <= 8:
             raise ValueError()
+        if require_model:
+            openai_reasoning_effort(p["provider"], p["model"], p["reasoningEffort"])
         return p
     except AppError:
         raise
@@ -224,7 +240,8 @@ class ServiceStore:
 
 def worker_service(profile, api_key):
     # Saved profiles were validated when the store loaded them.
-    return {**{key: profile[key] for key in ("kind", "provider", "baseURL", "model", "timeoutSeconds", "concurrency")}, "apiKey": api_key}
+    return {**{key: profile[key] for key in ("kind", "provider", "baseURL", "model", "timeoutSeconds", "concurrency")},
+            "reasoningEffort": profile.get("reasoningEffort", "auto"), "apiKey": api_key}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -278,8 +295,9 @@ def _chat_body(p, messages, max_tokens, temperature=0):
         body["enable_thinking"] = False
     if p["provider"] == "siliconFlow" and p["model"] == "deepseek-ai/DeepSeek-V4-Flash":
         body["enable_thinking"] = False
-    if p["provider"] == "openAI" and p["model"].startswith("gpt-6"):
-        body["reasoning_effort"] = "none"
+    effort = openai_reasoning_effort(p["provider"], p["model"], p.get("reasoningEffort", "auto"))
+    if effort is not None:
+        body["reasoning_effort"] = effort
     return body
 
 

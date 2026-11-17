@@ -103,6 +103,35 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(AppError):
                 probe_service(profile)
 
+    def test_openai_probe_uses_supported_reasoning_effort(self):
+        for model, effort in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
+                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")]:
+            profile = self.profile("openAI")
+            profile["model"] = model
+            response = {"choices": [{"finish_reason": "stop", "message": {"content": "文档已就绪。"}}]}
+            with self.subTest(model=model), patch("pagebridge.services._request", return_value=response) as request:
+                self.assertEqual(probe_service(profile, "fixture"), "文档已就绪。")
+                body = request.call_args.args[3]
+                self.assertEqual(body["reasoning_effort"], effort)
+                self.assertEqual(body["max_completion_tokens"], 1024)
+                self.assertNotIn("temperature", body)
+
+    def test_reasoning_choice_persists_and_reaches_requests(self):
+        profile = self.profile("openAI")
+        profile.update(model="gpt-6-astra", reasoningEffort="high")
+        self.store.save(profile, "fixture")
+        saved = ServiceStore(self.store.root, vault=self.store.vault).get(profile["id"])
+        self.assertEqual(saved["reasoningEffort"], "high")
+        self.assertEqual(worker_service(saved, "fixture")["reasoningEffort"], "high")
+        with patch("pagebridge.services._request", return_value={"choices": [{"message": {"content": "就绪"}}]}) as request:
+            probe_service(saved, "fixture")
+            self.assertEqual(request.call_args.args[3]["reasoning_effort"], "high")
+        saved.pop("reasoningEffort")
+        self.assertEqual(validate_profile(saved)["reasoningEffort"], "auto")
+        saved["reasoningEffort"] = "none"
+        with self.assertRaisesRegex(AppError, "推理强度"):
+            validate_profile(saved)
+
     def test_delete_clears_credential_and_active_selection(self):
         first, second = self.profile(), self.profile()
         self.store.save(first, "secret")

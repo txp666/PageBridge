@@ -132,6 +132,18 @@ def token_limit_key(service):
     return "max_completion_tokens" if modern_openai else "max_tokens"
 
 
+def openai_reasoning_effort(provider, model, effort="auto"):
+    required = model in {"gpt-6-astra", "gpt-6.1-sol"}
+    if effort == "auto":
+        return ("low" if required else "none") if provider == "openAI" and model.startswith("gpt-6") else None
+    supported = ("low", "medium", "high", "xhigh", "max") if required else (
+        ("none", "low", "medium", "high", "xhigh", "max")
+        if model in {"gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"} else ())
+    if provider != "openAI" or effort not in supported:
+        raise WorkerError("当前模型不支持此推理强度，请选择“自动”或其他可用强度。")
+    return effort
+
+
 def provider_request_options(service, *, probe=False):
     """No credentials or URL changes; only documented options for exact official presets."""
     provider = service.get("provider", "custom")
@@ -139,9 +151,11 @@ def provider_request_options(service, *, probe=False):
     model = service["model"]
     if probe:
         result[token_limit_key(service)] = 1024
-    if service["kind"] == "ollama" or (provider == "openAI" and model.startswith("gpt-6")):
-        result["reasoning_effort"] = "none"
+    effort = openai_reasoning_effort(provider, model, service.get("reasoningEffort", "auto"))
+    if effort is not None:
+        result["reasoning_effort"] = effort
     if service["kind"] == "ollama":
+        result["reasoning_effort"] = "none"
         # Local model manifests may enable a repetition penalty (the tested
         # Qwen model defaults to 1.5). Translation must retain repeated numbers,
         # terms and formula markers instead of discouraging their recurrence.
@@ -213,8 +227,11 @@ def normalized_service(service):
         raise WorkerError("超时时间须介于 10 至 600 秒之间。")
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 8:
         raise WorkerError("并发数须介于 1 至 8 之间。")
+    effort = service.get("reasoningEffort", "auto")
+    openai_reasoning_effort(provider, model, effort)
     return {"kind": kind, "provider": provider, "baseURL": endpoint, "model": model,
-            "apiKey": api_key.strip() or "ollama-local", "timeoutSeconds": timeout, "concurrency": concurrency}
+            "apiKey": api_key.strip() or "ollama-local", "timeoutSeconds": timeout, "concurrency": concurrency,
+            "reasoningEffort": effort}
 
 
 def parse_request(raw):

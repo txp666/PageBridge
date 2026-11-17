@@ -61,7 +61,7 @@ public enum ServiceConnectionTester {
             body["options"] = ["temperature": temperature, "num_predict": maxTokens]
         } else if service.provider == .openAI && (service.model.hasPrefix("gpt-6") || service.model.hasPrefix("gpt-5") || service.model.hasPrefix("o")) {
             body["max_completion_tokens"] = maxTokens
-            if service.model.hasPrefix("gpt-6") { body["reasoning_effort"] = "none" }
+            if let effort = service.resolvedReasoningEffort { body["reasoning_effort"] = effort }
         } else {
             body["max_tokens"] = maxTokens
         }

@@ -9,11 +9,13 @@ public struct EngineService: Codable, Sendable {
     public var apiKey: String
     public var timeoutSeconds: Double
     public var concurrency: Int
+    public var reasoningEffort: String?
     public init(configuration: ServiceConfiguration, apiKey: String) {
         kind = configuration.kind.rawValue; provider = configuration.provider.rawValue
         baseURL = configuration.baseURL
         model = configuration.model; self.apiKey = apiKey
         timeoutSeconds = configuration.timeoutSeconds; concurrency = configuration.concurrency
+        reasoningEffort = configuration.reasoningEffort.rawValue
     }
 }
 

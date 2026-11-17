@@ -66,6 +66,22 @@ public enum ServiceProvider: String, Codable, CaseIterable, Identifiable, Sendab
     }
 }
 
+public enum ReasoningEffort: String, Codable, CaseIterable, Sendable {
+    case automatic = "auto", none, low, medium, high, xhigh, max
+
+    public var title: String {
+        switch self {
+        case .automatic: return "自动"
+        case .none: return "关闭推理"
+        case .low: return "低"
+        case .medium: return "中"
+        case .high: return "高"
+        case .xhigh: return "很高"
+        case .max: return "最高"
+        }
+    }
+}
+
 public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
     public var name: String
@@ -75,9 +91,11 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
     public var model: String
     public var timeoutSeconds: Double
     public var concurrency: Int
+    public var reasoningEffort: ReasoningEffort
 
     public init(id: UUID = UUID(), name: String, kind: ServiceKind, baseURL: String, model: String,
-                timeoutSeconds: Double = 120, concurrency: Int = 1, provider: ServiceProvider? = nil) {
+                timeoutSeconds: Double = 120, concurrency: Int = 1, provider: ServiceProvider? = nil,
+                reasoningEffort: ReasoningEffort = .automatic) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -86,10 +104,11 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         self.model = model
         self.timeoutSeconds = timeoutSeconds
         self.concurrency = concurrency
+        self.reasoningEffort = reasoningEffort
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, provider, baseURL, model, timeoutSeconds, concurrency
+        case id, name, kind, provider, baseURL, model, timeoutSeconds, concurrency, reasoningEffort
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -100,6 +119,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         model = try values.decode(String.self, forKey: .model)
         timeoutSeconds = try values.decode(Double.self, forKey: .timeoutSeconds)
         concurrency = try values.decode(Int.self, forKey: .concurrency)
+        reasoningEffort = try values.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .automatic
         let stored = try values.decodeIfPresent(String.self, forKey: .provider)
         provider = stored.flatMap(ServiceProvider.init(rawValue:)) ?? ServiceProvider.infer(kind: kind, baseURL: baseURL)
         if provider.kind != kind || !provider.accepts(baseURL: baseURL) {
@@ -127,7 +147,23 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         copy.provider = selected; copy.kind = template.kind
         copy.baseURL = template.baseURL; copy.model = template.model
         copy.timeoutSeconds = template.timeoutSeconds; copy.concurrency = template.concurrency
+        copy.reasoningEffort = .automatic
         return copy
+    }
+
+    public var availableReasoningEfforts: [ReasoningEffort] {
+        guard provider == .openAI else { return [.automatic] }
+        switch model.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "gpt-6-astra", "gpt-6.1-sol": return ReasoningEffort.allCases.filter { $0 != .none }
+        case "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna": return ReasoningEffort.allCases
+        default: return [.automatic]
+        }
+    }
+
+    public var resolvedReasoningEffort: String? {
+        guard provider == .openAI, model.hasPrefix("gpt-6") else { return nil }
+        if reasoningEffort != .automatic { return reasoningEffort.rawValue }
+        return ["gpt-6-astra", "gpt-6.1-sol"].contains(model) ? "low" : "none"
     }
 
     public var isLocal: Bool {
@@ -154,6 +190,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         guard !service.name.isEmpty, service.name.count <= 48 else { throw ServiceConfigurationError.invalidName }
         guard !service.model.isEmpty, service.model.count <= 256,
               !service.model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ServiceConfigurationError.invalidModel }
+        guard service.availableReasoningEfforts.contains(service.reasoningEffort) else { throw ServiceConfigurationError.invalidReasoningEffort }
     }
 
     public func validateConnection() throws {
@@ -211,7 +248,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
 
 public enum ServiceConfigurationError: LocalizedError, Equatable {
     case invalidName, invalidURL, credentialsInURL, insecureRemoteURL, remoteOllamaUnsupported, fullEndpoint
-    case invalidModel, invalidTimeout, invalidConcurrency, providerMismatch
+    case invalidModel, invalidTimeout, invalidConcurrency, providerMismatch, invalidReasoningEffort
 
     public var errorDescription: String? {
         switch self {
@@ -225,6 +262,7 @@ public enum ServiceConfigurationError: LocalizedError, Equatable {
         case .invalidModel: return "请输入有效的模型 ID（不超过 256 个字符）。"
         case .invalidTimeout: return "请求超时应为 10–600 秒。"
         case .invalidConcurrency: return "最大并发请求应为 1–8。"
+        case .invalidReasoningEffort: return "当前模型不支持此推理强度，请选择“自动”或其他可用强度。"
         }
     }
 }

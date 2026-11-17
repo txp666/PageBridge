@@ -152,14 +152,18 @@ class AssistantTests(unittest.TestCase):
     def test_openai_compatible_payload_model_options(self):
         prepared = self.prepare()
         for provider, model, field, value in [
-            ("openAI", "gpt-6", "max_completion_tokens", 3072),
+            ("openAI", "gpt-6-luna", "max_completion_tokens", 3072),
+            ("openAI", "gpt-6-astra", "reasoning_effort", "low"),
+            ("openAI", "gpt-6.1-sol", "reasoning_effort", "low"),
             ("deepSeek", "deepseek-chat", "thinking", {"type": "disabled"}),
             ("alibaba", "qwen-plus", "enable_thinking", False),
             ("custom", "some-model", "max_tokens", 3072),
         ]:
             prepared.profile.update(kind="openai", provider=provider, model=model)
-            with self.subTest(provider=provider):
+            with self.subTest(provider=provider, model=model):
                 self.assertEqual(assistant.request_payload(prepared)[field], value)
+        prepared.profile.update(provider="openAI", model="gpt-6.1-sol", reasoningEffort="high")
+        self.assertEqual(assistant.request_payload(prepared)["reasoning_effort"], "high")
 
     def test_real_request_shape_and_response_checks(self):
         prepared = self.prepare()
