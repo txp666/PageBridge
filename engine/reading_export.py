@@ -19,7 +19,9 @@ import tempfile
 
 import pymupdf
 
-from reading_background import _rect, glyph_owners, remove_text, source_bold, spans_in, translated_blocks, visible_glyphs
+from reading_background import (_rect, add_page_background, glyph_owners, remove_text, source_bold,
+                                spans_in, translated_blocks, visible_glyphs)
+from reading_outlines import clear_outlines, outline_colors
 from structured_reading import ReadingError, load_reading
 
 ARTIFACT_TYPE = "reading-export"
@@ -144,7 +146,7 @@ def _subtract(rect, holes):
     return parts
 
 
-def translate_page(document, index, page_result, keep):
+def translate_page(document, index, page_result, keep, outlines=()):
     """Replace one page's translated regions in place."""
     page = document[index]
     area = pymupdf.Rect(0, 0, page.rect.width, page.rect.height)
@@ -178,7 +180,7 @@ def translate_page(document, index, page_result, keep):
                     probes.append(pymupdf.Rect(x - .05, y - .05, x + .05, y + .05))
             if probes:
                 remove_text(page, probes, [], [])
-    else:
+    if not native or not glyphs:
         # A scan: cover each region with its sampled colour, as the reader does.
         # An invisible OCR layer under it is removed so search finds only the translation.
         rotation, origin = page.rotation_matrix, page.rect.tl
@@ -189,7 +191,10 @@ def translate_page(document, index, page_result, keep):
     archive = pymupdf.Archive()
     crops = [_formula_images(page, block, archive, index) for index, block in enumerate(drawn)]
     if native:
-        remove_text(page, [glyph.native for glyph in owned], spans_in(page, spans, regions), formulas, keep)
+        outlined = outline_colors(outlines)
+        native_regions = [rect for block, rect in zip(drawn, regions) if block["id"] not in outlined]
+        clear_outlines(page, outlines)
+        remove_text(page, [glyph.native for glyph in owned], spans_in(page, spans, native_regions), formulas, keep)
     items, fills = {False: [], True: []}, []
     holes = [_rect(block.get("bbox")) for block in page_result["blocks"] if block.get("kind") in SOURCE_REGIONS]
     for block, rect, images in zip(drawn, regions, crops):
@@ -283,12 +288,18 @@ async def export(request, events):
         for index in range(count):
             for xref, *_ in work[index].get_images(full=True):
                 usage.setdefault(xref, set()).add(index)
+        retained = 0
         try:
             for position, number in enumerate(selected):
                 events.emit("progress", stage="export", progress=0.9 * position / len(selected),
                             message=f"正在导出第 {position + 1} / {len(selected)} 页")
-                translate_page(work, number - 1, pages[number],
-                               {xref for xref, used in usage.items() if used != {number - 1}})
+                page_result = pages[number]
+                outlines = add_page_background(data, page_result, include_image=False)
+                positioned = set(page_result.get("backgroundBlocks", []))
+                retained += sum(block.get("status") == "translated" and block["id"] not in positioned
+                                for block in page_result["blocks"])
+                translate_page(work, number - 1, page_result,
+                               {xref for xref, used in usage.items() if used != {number - 1}}, outlines)
                 await _checkpoint()
             events.emit("stage", stage="save", progress=0.9, message="正在保存导出 PDF。")
             if request["kind"] == "bilingual":
@@ -324,5 +335,8 @@ async def export(request, events):
         finally:
             if temporary and os.path.exists(temporary):
                 os.remove(temporary)
-    events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, outputPath=str(output), pageCount=expected,
-                message="双语 PDF 已导出。" if request["kind"] == "bilingual" else "译文 PDF 已导出。")
+    title = "双语" if request["kind"] == "bilingual" else "译文"
+    message = f"{title} PDF 已导出。"
+    if retained:
+        message += f"有 {retained} 处已译内容在 PDF 中保留原文，可在阅读稿中查看译文。"
+    events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, outputPath=str(output), pageCount=expected, message=message)

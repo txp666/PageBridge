@@ -320,7 +320,7 @@ final class AppModel: ObservableObject {
                       PDFDocument(url: destination)?.pageCount == count else {
                     throw BridgeError.message("导出的 PDF 未通过完整性检查。")
                 }
-                statusMessage = "\(kind.title) 已导出至 \(destination.path)"
+                statusMessage = result.message ?? "\(kind.title) 已导出至 \(destination.path)"
             } catch {
                 // The worker replaces the target only after a complete export, so nothing partial is left.
                 statusMessage = cancelRequested ? "已取消导出。" : "导出失败：\(error.localizedDescription)"

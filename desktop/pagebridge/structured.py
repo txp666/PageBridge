@@ -80,6 +80,8 @@ def read_artifact(path, document):
                         or len(positioned) != len(set(positioned))
                         or not set(positioned).issubset({b["id"] for b in page["blocks"]})):
                     raise ValueError()
+            elif page.get("backgroundBlocks") not in (None, []):
+                raise ValueError()
             if "backgroundFillBlocks" in page:
                 filled = page["backgroundFillBlocks"]
                 if ("backgroundImage" not in page or not isinstance(filled, list)
@@ -180,7 +182,7 @@ def page_result(store, request):
                 width=rect.width, height=rect.height,
                 decorations=selected.get("decorations", []) if selected else [],
                 decorationsImage=decoration_image, decorations_error=decoration_error,
-                backgroundImage=background_image, backgroundBlocks=selected.get("backgroundBlocks", []) if selected else [],
+                backgroundImage=background_image, backgroundBlocks=selected.get("backgroundBlocks") if selected else None,
                 status=artifact["status"], page_status=selected.get("status", "completed") if selected else "not_selected",
                 error=selected.get("error") if selected else None, blocks=blocks,
                 source_sha256=doc["input_sha256"], artifact_sha256=doc["reading_sha256"])

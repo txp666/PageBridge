@@ -76,14 +76,15 @@ def _native_rows(words):
     return rows
 
 
-def _translation_context(label, rows):
-    """Give short labels their real row and column headings as source context."""
+def _translation_context(label, rows, section):
+    """Give short labels the local topic and their actual row and headings."""
     middle = (label["bbox"][1] + label["bbox"][3]) / 2
     index = min(range(len(rows)), key=lambda i: abs(rows[i]["middle"] - middle))
-    nearby = "\n".join(row["text"] for row in rows[max(0, index - 1):index + 2])
+    row = rows[index]["text"]
     headings = "\n".join(row["text"] for row in rows[:5])
-    return ("Native table rows around this label:\n" + nearby[:600]
-            + "\nNative table first rows and column headings:\n" + headings[:500])[:1200]
+    return (f"Text introducing the table:\n{section[:300]}\n"
+            f"Table column headings and first rows:\n{headings[:350]}\n"
+            f"Row containing this cell:\n{row[:450]}")
 
 
 def _label_runs(words):
@@ -111,20 +112,41 @@ def _label_runs(words):
     return runs
 
 
+def _outline_labels(page, tables, existing_text):
+    from reading_outlines import lettering_lines
+
+    labels = {table["id"]: [] for table in tables}
+    for lines in lettering_lines(page):
+        chars = [c for line in lines for c in line if not c["c"].isspace()]
+        if not chars:
+            continue
+        bounds = _bounds(chars)
+        if any(other.intersects(bounds) for other in existing_text):
+            continue
+        areas = [table for table in tables if pymupdf.Rect(table["bbox"]).contains(bounds)]
+        if len(areas) != 1:
+            continue
+        text = " ".join("".join(c["c"] for c in line).strip() for line in lines)
+        row = labels[areas[0]["id"]]
+        row.append({"sourceText": text, "bbox": list(bounds)})
+    return labels
+
+
 def refine_native_tables(input_path, page_number, page_result):
     """Add independent label blocks only where the PDF has actual text geometry."""
     tables = [block for block in page_result["blocks"] if block["kind"] == "table" and block.get("bbox")]
     if not tables:
         return
+    text_regions = [(pymupdf.Rect(block["bbox"]), block["sourceText"]) for block in page_result["blocks"]
+                    if block["kind"] in ("text", "heading", "list") and block.get("bbox")]
+    existing_text = [box for box, _ in text_regions]
     try:
         with pymupdf.open(input_path) as pdf:
-            words = native_words(pdf[page_number - 1])
+            page = pdf[page_number - 1]
+            words = native_words(page)
+            outlined = _outline_labels(page, tables, existing_text + [pymupdf.Rect(w["bbox"]) for w in words])
     except (OSError, ValueError, RuntimeError):
         return
-    if not words:
-        return
-    existing_text = [pymupdf.Rect(block["bbox"]) for block in page_result["blocks"]
-                     if block["kind"] in ("text", "heading", "list") and block.get("bbox")]
     labels, assigned = [], set()
     for table in tables:
         area = pymupdf.Rect(table["bbox"])
@@ -141,13 +163,20 @@ def refine_native_tables(input_path, page_number, page_result):
             if index not in assigned and not any(other.contains(center) for other in existing_text):
                 label_words.append(word)
                 assigned.add(index)
-        if not table_words:
+        cells = outlined[table["id"]]
+        if not table_words and not cells:
             continue
-        rows = _native_rows(table_words)
+        preceding = [(box.y1, text) for box, text in text_regions
+                     if box.y1 <= area.y0 and box.x0 < area.x1 and box.x1 > area.x0]
+        section = max(preceding, default=(0, ""))[1]
+        rows = _native_rows(table_words + [dict(text=cell["sourceText"], bbox=cell["bbox"]) for cell in cells])
+        # A paint run for a prose cell can include digits. Keep that passage
+        # together and leave separate numeric cells in place.
+        runs = _label_runs(label_words) + [cell for cell in cells if any(c.isalpha() for c in cell["sourceText"])]
         table.update(sourceText="\n".join(row["text"] for row in rows), sourceType="native_table", status="preserved")
-        for label in _label_runs(label_words):
+        for label in runs:
             label.update(id=f"p{page_number:05d}-b{len(page_result['blocks']) + len(labels) + 1:05d}",
                          kind="text", sourceType="table_cell", status="preserved",
-                         translationContext=_translation_context(label, rows))
+                         translationContext=_translation_context(label, rows, section))
             labels.append(label)
     page_result["blocks"].extend(labels)

@@ -60,7 +60,7 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
                       Set(blocks).count == blocks.count, Set(blocks).isSubset(of: allowed) else {
                     throw BridgeError.message("阅读稿的原页背景无效。")
                 }
-            } else if page.backgroundBlocks != nil {
+            } else if page.backgroundBlocks?.isEmpty == false {
                 throw BridgeError.message("阅读稿缺少原页背景。")
             }
             if let filled = page.backgroundFillBlocks {

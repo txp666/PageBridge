@@ -265,7 +265,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Only these blocks overlay text on the prepared backgroundImage. Clients do not repaint their backgrounds or original source regions."
+            "description": "Only these blocks overlay text on the prepared backgroundImage. An empty list allows the original page to be displayed directly."
           },
           "backgroundFillBlocks": {
             "type": "array",

@@ -383,13 +383,13 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
             sent.append(json.loads(request.content)["messages"][-1]["content"])
             return self.response(request)
 
-        first, draft, _ = await self.run_fixture(handler, [page(1)], self.request)
+        first, draft, _ = await self.run_fixture(handler, [page(1)], dict(self.request, translateTables=False))
         self.assertFalse(draft["translateTables"])
         _, updated, _ = await self.run_fixture(handler, [page(2)], dict(self.request, attemptId="append",
             pages="2", readingPath=first["readingPath"], appendPages=True))
         self.assertEqual(sent, ["Test paragraph"] * 2)
         self.assertTrue(all(block["status"] == "preserved" for page in updated["pages"] for block in page["blocks"][1:]))
-        _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables", translateTables=True))
+        _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables"))
         self.assertTrue(all(block["status"] == "translated" for block in enabled["pages"][0]["blocks"]))
 
     async def test_one_failed_block_keeps_other_translation_formula_and_code(self):
@@ -793,11 +793,12 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("translatedTemplate", block)
         self.assertNotIn("inlineMath", block)
 
-    async def test_table_context_is_not_sent_with_the_target_fragment(self):
+    async def test_table_context_supplies_labels_without_neighboring_numbers(self):
         context = "Previous row contains 3091 and a different description."
         block, payload = await self.translate("de lithium)", "锂的)", sourceType="table_cell", translationContext=context)
         self.assertEqual(block["status"], "translated")
-        self.assertEqual(payload["messages"][-1]["content"], "<SOURCE>\nde lithium)\n</SOURCE>")
+        self.assertEqual(payload["messages"][-1]["content"],
+                         "<CONTEXT>\nPrevious row contains  and a different description.\n</CONTEXT>\n<SOURCE>\nde lithium)\n</SOURCE>")
         self.assertEqual(len(payload["messages"]), 2)
         self.assertNotIn(context, json.dumps(payload))
         self.assertNotIn("3091", json.dumps(payload))
@@ -806,6 +807,25 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Traditional Chinese characters", reading.table_cell_messages("Label", "en", "zh-TW")[0]["content"])
         self.assertIn("Month names", payload["messages"][0]["content"])
         self.assertNotIn("PBM", payload["messages"][0]["content"])
+
+    async def test_table_answer_with_a_changed_number_is_retried_without_context(self):
+        calls = []
+
+        def handler(request):
+            calls.append(json.loads(request.content)["messages"][-1]["content"])
+            translated = "温度 -18.4 ℃" if len(calls) == 1 else "温度 -18.5 ℃"
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": translated}}]})
+
+        block = dict(kind="text", sourceType="table_cell", sourceText="Temperature -18.5 °C",
+                     translationContext="Room temperature 21.0 °C")
+        service = dict(provider="custom", kind="openai", model="test", baseURL="https://example.test/v1", apiKey="test-only")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await reading.translate_block(client, block, service, "en", "zh")
+        self.assertEqual(block["translatedText"], "温度 -18.5 ℃")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Room temperature", calls[0])
+        self.assertNotIn("21.0", calls[0])
+        self.assertNotIn("Room temperature", calls[1])
 
     async def test_unchanged_model_answer_counts_as_preserved(self):
         passage = "Whenever possible, use a program to modify the data."

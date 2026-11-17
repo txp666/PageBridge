@@ -14,6 +14,7 @@ import uuid
 import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from outline_fixture import make_outline_pdf, outline_metadata
 from reading_background import add_page_background
 import reading_export
 from structured_reading import ReadingError
@@ -161,6 +162,64 @@ class ReadingExportTests(unittest.TestCase):
             self.assertEqual(after.color_count(clip=pymupdf.IRect(160, 30, 180, 51)), 1)
             for point in [(250, 30), (30, 90), (30, 10)]:
                 self.assertEqual(before.pixel(*point), after.pixel(*point))
+
+    def test_outline_translation_preserves_the_photo_and_shared_form(self):
+        artwork = make_outline_pdf(self.root / "outline.pdf", photo=True, extra_font=True)
+        source = self.root / "two-page-form.pdf"
+        with pymupdf.open(artwork) as graphic, pymupdf.open() as pdf:
+            for _ in range(2):
+                page = pdf.new_page(width=graphic[0].rect.width, height=graphic[0].rect.height)
+                page.show_pdf_page(page.rect, graphic, 0)
+            pdf.save(source)
+        blocks = outline_metadata(source)["blocks"]
+        reading = draft(source, {1: blocks}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundBlocks"], [blocks[0]["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            self.assertEqual(result.page_count, 2)
+            self.assertIn("译文", result[0].get_text())
+            self.assertIn("Keep this source footer", result[0].get_text())
+            self.assertNotIn("Agi Agi", result[0].get_text())
+            self.assertEqual(result[1].get_pixmap().samples, original[1].get_pixmap().samples)
+            before, after = original[0].get_pixmap(), result[0].get_pixmap()
+            self.assertNotEqual(after.pixel(95, 31), before.pixel(95, 31))
+            for point in [(100, 70), (150, 50), (260, 35)]:
+                self.assertEqual(after.pixel(*point), before.pixel(*point))
+
+    def test_unverified_artwork_stays_on_its_original_page(self):
+        source = make_outline_pdf(self.root / "ambiguous.pdf", artwork=True)
+        reading = draft(source, {1: outline_metadata(source)["blocks"]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundBlocks"], [])
+        self.assertNotIn("backgroundImage", page)
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            self.assertEqual(result.page_count, original.page_count)
+            self.assertEqual(result[0].get_pixmap().samples, original[0].get_pixmap().samples)
+
+    def test_flat_scan_keeps_positioned_translation_and_clears_hidden_ocr(self):
+        source = self.root / "scan.pdf"
+        with pymupdf.open() as pdf, pymupdf.open() as raster:
+            photo = raster.new_page(width=300, height=180)
+            photo.insert_text((24, 50), "Scanned paragraph", fontsize=16)
+            page = pdf.new_page(width=300, height=180)
+            page.insert_image(page.rect, stream=photo.get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes("png"))
+            page.insert_text((24, 50), "Scanned paragraph", fontsize=16, render_mode=3)
+            pdf.save(source)
+        box = [22, 30, 185, 56]
+        reading = draft(source, {1: [dict(kind="text", bbox=box, sourceText="Scanned paragraph",
+                                         status="translated", translatedText="扫描段落")]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundFillBlocks"], [page["blocks"][0]["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(output) as result:
+            self.assertIn("扫描段落", result[0].get_text().replace("\n", ""))
+            self.assertNotIn("Scanned paragraph", result[0].get_text())
+            self.assertEqual(result[0].get_pixmap().color_count(clip=pymupdf.IRect(125, 30, 170, 56)), 1)
 
     def test_draft_of_another_source_is_rejected(self):
         blocks = native_blocks(DEMO, 2)

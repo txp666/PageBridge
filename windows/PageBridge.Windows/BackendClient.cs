@@ -232,7 +232,7 @@ public sealed class BackendClient : IDisposable
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Func<JsonObject, Task> onEvent,
         CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
-        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = false)
+        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = true)
     {
         // Only the profile ID crosses this interface. The bridge resolves
         // its saved credential privately through Windows Credential Manager.

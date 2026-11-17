@@ -87,7 +87,7 @@ internal sealed partial class StructuredReadingPane
         var blocks = result["blocks"]?.AsArray() ?? [];
         string backgroundPath = Text(result, "backgroundImage");
         bool hasBackground = backgroundPath.Length > 0;
-        var positioned = (result["backgroundBlocks"]?.AsArray() ?? []).Select(value => value!.GetValue<string>()).ToHashSet();
+        var positioned = result["backgroundBlocks"]?.AsArray().Select(value => value!.GetValue<string>()).ToHashSet();
         if (hasBackground)
         {
             // A URI source loads asynchronously and does not throw on decode failure.
@@ -116,7 +116,7 @@ internal sealed partial class StructuredReadingPane
             {
                 if (block?["bbox"] is not JsonArray { Count: 4 } bbox || IsSourceRegion(Text(block, "kind")) != sourceRegions) continue;
                 AddBlock(overlay, block, bbox, current, pageNumber, pageWidth, pageHeight, source,
-                    hasBackground, !hasBackground || positioned.Contains(Text(block, "id")));
+                    hasBackground, positioned is null || (hasBackground && positioned.Contains(Text(block, "id"))));
             }
         }
         if (hasBackground) AddRegions(true);
