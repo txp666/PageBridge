@@ -1,8 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using global::Windows.Storage.Pickers;
-using WinRT.Interop;
+using Microsoft.Windows.Storage.Pickers;
 
 namespace PageBridge.Windows;
 
@@ -151,28 +150,33 @@ public sealed partial class MainWindow
         import.Click += async (_, _) =>
         {
             if (!await Commit()) return;
-            var picker = new FileOpenPicker();
-            foreach (var extension in new[] { ".txt", ".csv", ".tsv" }) picker.FileTypeFilter.Add(extension);
-            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-            var files = await picker.PickMultipleFilesAsync();
-            string? last = null; var failures = new List<string>();
-            foreach (var file in files)
+            try
             {
-                try { last = Text(await backend.CallAsync("glossary_import", new JsonObject { ["path"] = file.Path }), "id"); }
-                catch (Exception error) { failures.Add(error.Message); }
+                var picker = new FileOpenPicker(AppWindow.Id);
+                foreach (var extension in new[] { ".txt", ".csv", ".tsv" }) picker.FileTypeFilter.Add(extension);
+                var files = await picker.PickMultipleFilesAsync();
+                string? last = null; var failures = new List<string>();
+                foreach (var file in files)
+                {
+                    try { last = Text(await backend.CallAsync("glossary_import", new JsonObject { ["path"] = file.Path }), "id"); }
+                    catch (Exception error) { failures.Add(error.Message); }
+                }
+                if (last is not null) await Refresh(last);
+                if (failures.Count > 0) { message.Text = string.Join(" ", failures); message.Opacity = 1; }
             }
-            if (last is not null) await Refresh(last);
-            if (failures.Count > 0) { message.Text = string.Join(" ", failures); message.Opacity = 1; }
+            catch (Exception error) { Fail(error); }
         };
         export.Click += async (_, _) =>
         {
             if (loadedId is null || !await Commit()) return;
-            var picker = new FileSavePicker { SuggestedFileName = loadedName };
-            picker.FileTypeChoices.Add("文本文件", new List<string> { ".txt" });
-            picker.FileTypeChoices.Add("表格文件（CSV）", new List<string> { ".csv" });
-            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-            if ((await picker.PickSaveFileAsync())?.Path is not { } path) return;
-            try { await backend.CallAsync("glossary_export", new JsonObject { ["glossary_id"] = loadedId, ["destination"] = path }); Show("已导出：" + path); }
+            try
+            {
+                var picker = new FileSavePicker(AppWindow.Id) { SuggestedFileName = loadedName, DefaultFileExtension = ".txt" };
+                picker.FileTypeChoices.Add("文本文件", new List<string> { ".txt" });
+                picker.FileTypeChoices.Add("表格文件（CSV）", new List<string> { ".csv" });
+                if ((await picker.PickSaveFileAsync())?.Path is not { } path) return;
+                await backend.CallAsync("glossary_export", new JsonObject { ["glossary_id"] = loadedId, ["destination"] = path }); Show("已导出：" + path);
+            }
             catch (Exception error) { Fail(error); }
         };
 
