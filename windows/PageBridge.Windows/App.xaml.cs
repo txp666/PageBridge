@@ -9,19 +9,26 @@ public partial class App : Application
     private Mutex? singleInstance;
     private readonly object lifecycleLock = new();
     private string? lifecyclePath;
+    private bool readerValidation;
 
     internal void RecordUpdateCheck(string state) => RecordLifecycle("startup-update-" + state);
+    internal void RecordUiException(Exception error) => RecordLifecycle("ui-operation-failed", error);
 
     private void RecordLifecycle(string kind, Exception? error = null)
     {
-        if (lifecyclePath is null) return;
-        // QA only: never serialize messages, RPC payloads or document contents.
+        if (lifecyclePath is null || (!readerValidation && error is null)) return;
+        // Never serialize messages, RPC payloads or document contents.
         try
         {
-            var entry = new { at = DateTimeOffset.UtcNow, processId = Environment.ProcessId, kind,
+            var entry = new { at = DateTimeOffset.UtcNow, processId = Environment.ProcessId, kind, version = AppVersion.Display,
+                windows = Environment.OSVersion.Version.ToString(),
                 exceptionType = error?.GetType().FullName, hresult = error?.HResult, stack = error?.StackTrace,
                 exitCode = kind == "process-exit" ? Environment.ExitCode : (int?)null };
-            lock (lifecycleLock) File.AppendAllText(lifecyclePath, JsonSerializer.Serialize(entry) + "\n");
+            lock (lifecycleLock)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(lifecyclePath)!);
+                File.AppendAllText(lifecyclePath, JsonSerializer.Serialize(entry) + "\n");
+            }
         }
         catch { /* Diagnostics must not change application exception behavior. */ }
     }
@@ -38,7 +45,7 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var arguments = Environment.GetCommandLineArgs();
-        bool readerValidation = arguments.Contains("--reader-validation", StringComparer.Ordinal);
+        readerValidation = arguments.Contains("--reader-validation", StringComparer.Ordinal);
         // Keep legacy/normal launches in their original single-instance group.
         // Reader QA has a fixed separate library and never attaches to user data.
         string instanceName = "Local\\PageBridge.Windows.Preview" + (readerValidation ? ".ReaderValidation" : "");
@@ -47,16 +54,13 @@ public partial class App : Application
         string? isolatedFolder = readerValidation ? "PageBridge-WindowsReaderValidation"
             : arguments.Contains("--ui-validation", StringComparer.Ordinal) ? "PageBridge-WindowsUIValidation" : null;
         string? isolatedRoot = isolatedFolder is null ? null : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), isolatedFolder);
-        if (readerValidation)
-        {
-            Directory.CreateDirectory(isolatedRoot!);
-            lifecyclePath = Path.Combine(isolatedRoot!, $"qa-lifecycle-{Environment.ProcessId}.ndjson");
-            RecordLifecycle("launch");
-            // Do not set Handled or consume either original exception.
-            UnhandledException += (_, eventArgs) => RecordLifecycle("xaml-unhandled", eventArgs.Exception);
-            AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => RecordLifecycle("domain-unhandled", eventArgs.ExceptionObject as Exception);
-            AppDomain.CurrentDomain.ProcessExit += (_, _) => RecordLifecycle("process-exit");
-        }
+        lifecyclePath = readerValidation ? Path.Combine(isolatedRoot!, $"qa-lifecycle-{Environment.ProcessId}.ndjson")
+            : Path.Combine(isolatedRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PageBridge"), "logs", "ui-errors.ndjson");
+        RecordLifecycle("launch");
+        // Record fatal exceptions without suppressing them or continuing a damaged UI.
+        UnhandledException += (_, eventArgs) => RecordLifecycle("xaml-unhandled", eventArgs.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => RecordLifecycle("domain-unhandled", eventArgs.ExceptionObject as Exception);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RecordLifecycle("process-exit");
         window = new MainWindow(isolatedRoot);
         if (readerValidation) window.Closed += (_, _) => RecordLifecycle("window-closed");
         window.Activate();

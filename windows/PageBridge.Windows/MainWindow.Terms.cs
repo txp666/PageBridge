@@ -106,8 +106,9 @@ public sealed partial class MainWindow
         {
             try
             {
-                var terms = await backend.SuggestTermsAsync(documentId, serviceId, preferredGlossary, evt => DispatcherQueue.TryEnqueue(() =>
+                var terms = await backend.SuggestTermsAsync(documentId, serviceId, preferredGlossary, evt => DispatchJobProgressAsync(() =>
                 {
+                    if (cancellation.IsCancellationRequested) return;
                     if (Text(evt, "message") is { Length: > 0 } message) busyText.Text = message;
                 }), cancellation.Token);
                 foreach (var term in terms.OfType<JsonObject>())
@@ -130,7 +131,7 @@ public sealed partial class MainWindow
                 dialog.IsPrimaryButtonEnabled = entries.Count > 0;
             }
             catch (OperationCanceledException) { }
-            catch (Exception failure) { busy.Visibility = Visibility.Collapsed; error.Text = failure.Message; }
+            catch (Exception failure) { if (Application.Current is App app) app.RecordUiException(failure); busy.Visibility = Visibility.Collapsed; error.Text = failure.Message; }
         };
         string? addedTo = null;
         dialog.PrimaryButtonClick += async (_, args) =>

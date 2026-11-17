@@ -107,11 +107,23 @@ public sealed partial class MainWindow : Window
         try { await action(); }
         catch (Exception error)
         {
+            if (Application.Current is App app) app.RecordUiException(error);
             if (windowClosed) return;
             status.Text = error.Message;
             await ShowDialogAsync(new ContentDialog { XamlRoot = root.XamlRoot, Title = "无法完成操作", Content = error.Message, CloseButtonText = "好" });
         }
         finally { activeUiOperations--; }
+    }
+    private Task DispatchJobProgressAsync(Action update)
+    {
+        // Await the UI callback so its exception reaches the operation's catch.
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            try { if (!windowClosed) update(); completion.SetResult(); }
+            catch (Exception error) { completion.SetException(error); }
+        })) completion.SetCanceled();
+        return completion.Task;
     }
     private async Task ReloadAsync(string? selectId = null)
     {
@@ -310,7 +322,7 @@ public sealed partial class MainWindow : Window
             RefreshList();
             try
             {
-                var completed = await backend.TranslateAsync(docId, serviceId, choice.Source, choice.Target, choice.Pages, evt => DispatcherQueue.TryEnqueue(() =>
+                var completed = await backend.TranslateAsync(docId, serviceId, choice.Source, choice.Target, choice.Pages, evt => DispatchJobProgressAsync(() =>
                 {
                     if (!ReferenceEquals(translationCancellation, cancellation)) return;
                     if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }

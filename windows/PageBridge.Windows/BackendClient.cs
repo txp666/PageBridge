@@ -230,7 +230,7 @@ public sealed class BackendClient : IDisposable
     }
 
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
-        string sourceLang, string targetLang, string? pages, Action<JsonObject> onEvent,
+        string sourceLang, string targetLang, string? pages, Func<JsonObject, Task> onEvent,
         CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
         IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = false)
     {
@@ -257,7 +257,7 @@ public sealed class BackendClient : IDisposable
 
     /// <summary>Writes the document's reading draft as a translated or bilingual PDF at an absolute path chosen by the user.</summary>
     public async Task<JsonObject> ExportReadingAsync(string documentId, string kind, string destination,
-        Action<JsonObject> onEvent, CancellationToken cancellationToken = default)
+        Func<JsonObject, Task> onEvent, CancellationToken cancellationToken = default)
     {
         var request = new JsonObject
         {
@@ -272,7 +272,7 @@ public sealed class BackendClient : IDisposable
 
     /// Asks the engine for candidate glossary terms of one document; nothing is saved.
     public async Task<JsonArray> SuggestTermsAsync(string documentId, string serviceId, string? glossaryId,
-        Action<JsonObject> onEvent, CancellationToken cancellationToken = default)
+        Func<JsonObject, Task> onEvent, CancellationToken cancellationToken = default)
     {
         var request = new JsonObject
         {
@@ -284,7 +284,7 @@ public sealed class BackendClient : IDisposable
     }
 
     // One translation or export at a time; each runs in its own bridge process.
-    private async Task<JsonObject> RunJobAsync(JsonObject request, string label, Action<JsonObject> onEvent,
+    private async Task<JsonObject> RunJobAsync(JsonObject request, string label, Func<JsonObject, Task> onEvent,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
@@ -353,7 +353,7 @@ public sealed class BackendClient : IDisposable
     }
 
     private static async Task<JsonObject> ReadJobAsync(Process process, string label,
-        Action<JsonObject> onEvent, CancellationToken cancellationToken)
+        Func<JsonObject, Task> onEvent, CancellationToken cancellationToken)
     {
         var reader = new BoundedLines(process.StandardOutput.BaseStream);
         string? job = null, attempt = null;
@@ -381,7 +381,7 @@ public sealed class BackendClient : IDisposable
             attempt ??= messageAttempt;
             lastSequence = sequence;
             if (kind is "result" or "error") terminal = message;
-            onEvent((JsonObject)message.DeepClone());
+            await onEvent((JsonObject)message.DeepClone()).WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         if (terminal is null)
