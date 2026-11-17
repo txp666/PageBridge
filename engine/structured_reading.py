@@ -575,6 +575,15 @@ def native_line_segments(chars, *, index):
     return [part for part in (prefix, chars, suffix) if part]
 
 
+def _outline_text_column(region, lines, body):
+    inside = [(box, chars) for box, chars in lines if region.contains((box.tl + box.br) / 2)]
+    inside.sort(key=lambda line: (line[0].y0, line[0].x0))
+    text = " ".join("".join(char["c"] for char in chars) for _, chars in inside)
+    if inside and text.split() == body.split():
+        return min(box.x0 for box, _ in inside)
+    return None
+
+
 def refine_list_geometry(input_path, page_number, page_result):
     """Replace list parents with actual PDF lines, never evenly divided rows."""
     if not any("_nativeListType" in b or (b["kind"] == "text" and b["sourceText"][1:2].isspace())
@@ -582,6 +591,7 @@ def refine_list_geometry(input_path, page_number, page_result):
         return
     native_lines = []
     markers = []
+    outline_lines = []
     try:
         import pymupdf
         with pymupdf.open(input_path) as pdf:
@@ -615,36 +625,44 @@ def refine_list_geometry(input_path, page_number, page_result):
                             if start is not None:
                                 first_line = "".join(c["c"] for c in chars[start:]).strip()
                                 markers.append((chars[0]["c"], first_line, pymupdf.Rect(chars[start]["bbox"])))
-            if not native_lines and any("_nativeListType" in block for block in page_result["blocks"]):
-                from reading_outlines import lettering_lines
+            from reading_outlines import lettering_lines
 
-                for passage in lettering_lines(page):
-                    for chars in passage:
-                        box = pymupdf.Rect()
-                        for char in chars:
+            for passage in lettering_lines(page):
+                for chars in passage:
+                    box = pymupdf.Rect()
+                    for char in chars:
+                        if not char["c"].isspace():
                             box |= pymupdf.Rect(char["bbox"])
-                        if not box.is_empty:
-                            native_lines.append((box, chars, False))
+                    if not box.is_empty:
+                        outline_lines.append((box, chars))
     except Exception:
         native_lines = []
         markers = []
+        outline_lines = []
+    if not native_lines:
+        native_lines = [(box, chars, False) for box, chars in outline_lines]
     refined, used = [], set()
     for block in page_result["blocks"]:
         native_type = block.pop("_nativeListType", None)
         if native_type is None:
             # MinerU may emit each list item as an ordinary multiline paragraph.
             # Keep its translation in one piece, starting at the actual text column.
-            if markers and block["kind"] == "text" and block.get("bbox") and block["sourceText"][1:2].isspace():
+            if block["kind"] == "text" and block.get("bbox") and block["sourceText"][1:2].isspace():
                 head, body = block["sourceText"][0], block["sourceText"][1:].lstrip()
                 box = pymupdf.Rect(block["bbox"])
-                for mark, words, first in markers:
-                    if head == mark and body.startswith(words) and box.contains((first.tl + first.br) / 2):
-                        block["sourceText"] = body
-                        if (template := block.get("sourceTemplate", "")).startswith(mark) and template[1:2].isspace():
-                            block["sourceTemplate"] = template[1:].lstrip()
-                        block["bbox"][0] = first.x0
-                        block.pop("firstLineIndent", None)
-                        break
+                left = next((first.x0 for mark, words, first in markers
+                             if head == mark and body.startswith(words) and box.contains((first.tl + first.br) / 2)), None)
+                if left is None:
+                    # A separate vector marker can be mistaken for a leading
+                    # character by OCR. The matched outlines must account for
+                    # the full body before discarding that prefix.
+                    left = _outline_text_column(box, outline_lines, body)
+                if left is not None:
+                    block["sourceText"] = body
+                    if (template := block.get("sourceTemplate", "")).startswith(head) and template[1:2].isspace():
+                        block["sourceTemplate"] = template[1:].lstrip()
+                    block["bbox"][0] = left
+                    block.pop("firstLineIndent", None)
             refined.append(block)
             continue
         parts = []

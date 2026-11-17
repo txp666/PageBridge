@@ -425,6 +425,9 @@ def add_page_background(input_source, page_result, *, include_image=True):
             if block["id"] in outlined:
                 # The search layer does not paint. Its nominal color and
                 # weight cannot describe the PDF paths that were visible.
+                # Start at the body glyphs so preserved list markers and other
+                # graphics in the parser's left margin stay clear of the text.
+                block["bbox"][0] = max(boxes[block["id"]].x0, min(glyph.local.x0 for glyph in chars))
                 block["foregroundColor"] = outlined[block["id"]]
                 block["sourceBold"] = block["kind"] == "heading"
                 background_ids.append(block["id"])

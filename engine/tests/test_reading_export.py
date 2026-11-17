@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from outline_fixture import make_outline_pdf, outline_metadata
 from reading_background import add_page_background
 import reading_export
-from structured_reading import ReadingError
+from structured_reading import ReadingError, refine_list_geometry
 
 DEMO = Path(__file__).resolve().parents[2] / "demos/pdfs/better-figures.pdf"
 CHINESE = re.compile(r"[㐀-鿿]")
@@ -187,6 +187,35 @@ class ReadingExportTests(unittest.TestCase):
             self.assertNotEqual(after.pixel(95, 31), before.pixel(95, 31))
             for point in [(100, 70), (150, 50), (260, 35)]:
                 self.assertEqual(after.pixel(*point), before.pixel(*point))
+
+    def test_vector_list_marker_stays_left_of_the_translated_body(self):
+        outlined = make_outline_pdf(self.root / "outline.pdf")
+        source = self.root / "vector-list.pdf"
+        marker = pymupdf.Rect(13, 39, 20, 46)
+        with pymupdf.open(outlined) as pdf:
+            pdf[0].draw_rect(marker, fill=(0, 0, 0), color=None)
+            pdf[0].insert_text((24, 90), "1 Agi Agi")
+            pdf.save(source)
+        block = dict(outline_metadata(source)["blocks"][0], kind="text", bbox=[12, 28, 100, 56],
+                     sourceText="1 Agi Agi", status="preserved")
+        numbered = dict(id="p00001-b00002", kind="text", bbox=[12, 75, 100, 94], sourceText="1 Agi Agi")
+        refine_list_geometry(source, 1, {"blocks": [block, numbered]})
+        self.assertEqual(block["sourceText"], "Agi Agi")
+        self.assertEqual(numbered["sourceText"], "1 Agi Agi")
+        self.assertAlmostEqual(block["bbox"][0], 24)
+
+        # An existing draft can still have the parser's original, wider box.
+        block.update(bbox=[12, 28, 100, 56], status="translated", translatedText="列表译文")
+        reading = draft(source, {1: [block]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertAlmostEqual(page["blocks"][0]["bbox"][0], 24)
+        self.assertEqual(page["backgroundBlocks"], [block["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            text_box, = result[0].search_for("列表译文")
+            self.assertGreaterEqual(text_box.x0, 24)
+            self.assertEqual(result[0].get_pixmap(clip=marker).samples, original[0].get_pixmap(clip=marker).samples)
 
     def test_unverified_artwork_stays_on_its_original_page(self):
         source = make_outline_pdf(self.root / "ambiguous.pdf", artwork=True)
