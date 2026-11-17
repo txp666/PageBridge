@@ -162,7 +162,7 @@ public sealed partial class MainWindow
         status.Text = "正在准备导出…";
         try
         {
-            await backend.ExportReadingAsync(id, kind, path, evt => DispatcherQueue.TryEnqueue(() =>
+            await backend.ExportReadingAsync(id, kind, path, evt => DispatchJobProgressAsync(() =>
             {
                 if (!ReferenceEquals(exportCancellation, cancellation) || cancellation.IsCancellationRequested) return;
                 if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
