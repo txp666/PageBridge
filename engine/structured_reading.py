@@ -31,6 +31,11 @@ ENGINE = Path(__file__).resolve().parent
 PARSE_TIMEOUT = 300
 MODEL_STALL_SECONDS = 120
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+DEPENDENCY_INDEXES = (
+    ("清华镜像", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"),
+    ("PyPI 官方源", "https://pypi.org/simple"),
+    ("阿里云镜像", "https://mirrors.aliyun.com/pypi/simple"),
+)
 
 
 class ReadingError(Exception):
@@ -272,6 +277,66 @@ async def download_models(root, env, events, log=None):
     raise ReadingError("MinerU 模型未能从 Hugging Face 或 ModelScope 完整下载，请检查网络或代理后重试。")
 
 
+def dependency_install_failure(output):
+    text = " ".join(output.lower().split())
+    disk_codes = (39, 112) if sys.platform == "win32" else (28,)
+    if any(value in text for value in ("no space left", "disk full", "disk quota exceeded", "not enough space on the disk")) or any(f"(os error {code})" in text for code in disk_codes):
+        return "disk"
+    if any(value in text for value in ("permission denied", "access is denied")) or f"os error {5 if sys.platform == 'win32' else 13})" in text:
+        return "permission"
+    # uv can report an unsatisfiable dependency graph when the index returned
+    # 403. The underlying network failure takes precedence over that summary.
+    if any(value in text for value in (
+            "401 unauthorized", "403 forbidden", "http status client error", "http status server error",
+            "error sending request", "client error (connect)", "timed out")):
+        return "network"
+    if any(value in text for value in ("no solution found", "requirements are unsatisfiable", "no matching distribution", "not found in the package registry")):
+        return "dependencies"
+    return "unknown"
+
+
+async def install_dependencies(uv, python, env, events, log):
+    indexes = list(DEPENDENCY_INDEXES)
+    if override := env.get("PAGEBRIDGE_PYPI_INDEX", "").strip():
+        indexes = [("自定义源", override)] + [(name, url) for name, url in indexes if url.rstrip("/") != override.rstrip("/")]
+    # Keep each attempt on one source, including when uv has global settings.
+    install_env = dict(env)
+    for key in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS", "UV_NO_INDEX", "UV_CONFIG_FILE"):
+        install_env.pop(key, None)
+    for attempt, (name, index) in enumerate(indexes):
+        message = f"正在从{name}安装 MinerU 依赖。" if attempt == 0 else f"正在切换到{name}安装 MinerU 依赖。"
+        events.emit("stage", stage="prepare", message=message)
+        # Do not echo a custom index URL, which may contain credentials.
+        log.write(f"\n[PageBridge] {message}\n".encode("utf-8")); log.flush()
+        start = log.tell()
+        try:
+            code = await run_process([uv, "pip", "install", "--no-config", "--default-index", index,
+                                      "--python", python, "-r", ENGINE / "mineru-requirements.txt"],
+                                     env=install_env, timeout=1800, log=log)
+        except TimeoutError:
+            code = None
+        if code == 0:
+            return
+        # Inspect only this attempt, retaining every source's output in setup.log.
+        log.flush()
+        log.seek(start)
+        output = log.read().decode("utf-8", errors="replace")
+        log.seek(0, os.SEEK_END)
+        failure = "timeout" if code is None else dependency_install_failure(output)
+        log.write(f"\n[PageBridge] {name}: {failure}\n".encode("utf-8")); log.flush()
+        if failure in ("disk", "permission"):
+            break
+    message = {
+        "disk": "MinerU 依赖安装失败：磁盘空间不足，请清理组件和缓存所在磁盘后重试。",
+        "permission": "MinerU 依赖安装失败：无法写入运行环境或缓存目录，请检查目录权限。",
+        "network": "MinerU 依赖下载失败：安装源访问异常或网络连接失败，请检查网络或代理后重试。",
+        "dependencies": "未能找到满足版本要求的 MinerU 依赖，可能是安装源未同步或依赖版本冲突。",
+        "timeout": "MinerU 依赖安装超时，已保留下载缓存，请稍后重试。",
+        "unknown": "MinerU 依赖安装失败，尚未确定具体原因。",
+    }[failure]
+    raise ReadingError(message + " 详细信息见组件目录中的 setup.log。")
+
+
 async def ensure_runtime(events):
     root = runtime_directory()
     if runtime_ready(root):
@@ -284,7 +349,7 @@ async def ensure_runtime(events):
             env = runtime_environment(root, offline=False)
             python = runtime_python(root)
             # The latest attempt's installer output, for diagnosing failed setups.
-            with (root / "setup.log").open("wb") as log:
+            with (root / "setup.log").open("w+b") as log:
                 valid = python.is_file() and await run_process(
                     [python, ENGINE / "mineru_bridge.py", "--check"], env=env, timeout=90, log=log) == 0
                 if not valid:
@@ -296,11 +361,7 @@ async def ensure_runtime(events):
                                                  env=env, timeout=600, log=log)
                         if code:
                             raise ReadingError("无法创建 MinerU 运行环境，请检查磁盘空间后重试。")
-                    code = await run_process([uv, "pip", "install", "--default-index", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-                                              "--python", python, "-r", ENGINE / "mineru-requirements.txt"],
-                                             env=env, timeout=1800, log=log)
-                    if code:
-                        raise ReadingError("MinerU 依赖下载或安装失败，请检查网络与磁盘空间后重试。")
+                    await install_dependencies(uv, python, env, events, log)
                 if not await asyncio.to_thread(models_available, root, verify=True):
                     events.emit("stage", stage="prepare", message="正在下载官方 MinerU Basic 模型。")
                     await download_models(root, env, events, log)
