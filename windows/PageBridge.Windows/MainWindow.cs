@@ -2,8 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using global::Windows.Storage.Pickers;
-using WinRT.Interop;
+using Microsoft.Windows.Storage.Pickers;
 
 namespace PageBridge.Windows;
 
@@ -258,14 +257,15 @@ public sealed partial class MainWindow : Window
     private Task ChangePage(int delta) { page.Value = Math.Clamp(page.Value + delta, 1, page.Maximum); return Task.CompletedTask; }
     private async Task ImportAsync()
     {
-        var picker = new FileOpenPicker(); picker.FileTypeFilter.Add(".pdf"); InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        var picker = new FileOpenPicker(AppWindow.Id);
+        picker.FileTypeFilter.Add(".pdf");
         var files = await picker.PickMultipleFilesAsync();
         await ImportPathsAsync(files.Select(file => file.Path));
     }
     private async Task<string?> PickSavePathAsync(string name, string kind, string extension)
     {
-        var picker = new FileSavePicker { SuggestedFileName = name };
-        picker.FileTypeChoices.Add(kind, new List<string> { extension }); InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        var picker = new FileSavePicker(AppWindow.Id) { SuggestedFileName = name, DefaultFileExtension = extension };
+        picker.FileTypeChoices.Add(kind, new List<string> { extension });
         return (await picker.PickSaveFileAsync())?.Path;
     }
     private async Task ExportAsync(string kind)
