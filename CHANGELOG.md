@@ -1,5 +1,19 @@
 # 版本记录
 
+## 0.7.5 / build 23 — 改善 Windows 稳定性与 OpenAI 兼容性
+
+- MinerU 依赖安装优先使用清华镜像，失败后依次尝试官方 PyPI 和阿里云镜像。错误提示会区分网络、依赖版本、磁盘空间和目录权限问题。（#19）
+- 修复 Windows 的 PDF 导入和术语表导入、导出时可能出现的文件选择器错误。（#18）
+- Windows 改善界面进度回调的异常处理并记录诊断信息。#20 的闪退仍在排查。
+- 修复 GPT-6 Astra 和 GPT-6.1 Sol 因推理强度不兼容而返回 HTTP 400 的问题。Windows 和 macOS 可为受支持的模型选择推理强度，设置用于连接测试、翻译和文档助手。（#24）
+
+**English**
+
+- MinerU dependency installation tries official PyPI and the Aliyun mirror if the Tsinghua mirror fails. Error messages distinguish network, dependency version, disk space, and directory permission issues. (#19)
+- Fix Windows file picker errors that could affect PDF imports and glossary imports or exports. (#18)
+- Handle exceptions in Windows UI progress callbacks and record diagnostic details. The crash reported in #20 is still under investigation.
+- Fix HTTP 400 errors caused by an unsupported reasoning setting for GPT-6 Astra and GPT-6.1 Sol. Windows and macOS offer reasoning settings for supported models and use the saved setting for connection tests, translation, and the document assistant. (#24)
+
 ## 0.7.4 / build 22 — 启动自动检查更新
 
 - Mac 开启“自动检查更新”后，每次启动都会在后台检查一次；只有发现新版才提示，关闭自动检查的设置继续生效。
