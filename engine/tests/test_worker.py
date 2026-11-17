@@ -300,10 +300,14 @@ class ProviderSettingsTests(unittest.TestCase):
                 worker.normalized_service(self.service(**update))
 
     def test_probe_modern_openai_uses_completion_limit(self):
-        service = worker.normalized_service(self.service("openAI"))
-        options = worker.provider_request_options(service, probe=True)
-        self.assertEqual(options, {"max_completion_tokens": 1024, "reasoning_effort": "none"})
-        custom = worker.normalized_service(self.service("custom", model="gpt-6-luna"))
+        for model, effort in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
+                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")]:
+            service = worker.normalized_service(self.service("openAI", model=model))
+            with self.subTest(model=model):
+                self.assertEqual(worker.provider_request_options(service, probe=True),
+                                 {"max_completion_tokens": 1024, "reasoning_effort": effort})
+                self.assertEqual(worker.provider_request_options(service), {"reasoning_effort": effort})
+        custom = worker.normalized_service(self.service("custom", model="gpt-6.1-sol"))
         self.assertEqual(worker.provider_request_options(custom, probe=True), {"max_tokens": 1024})
 
     def test_known_presets_disable_thinking(self):
@@ -311,8 +315,17 @@ class ProviderSettingsTests(unittest.TestCase):
             service = worker.normalized_service(self.service(provider))
             self.assertEqual(worker.provider_request_options(service), expected)
 
+    def test_explicit_reasoning_effort_reaches_probe_and_translation(self):
+        for effort in ("low", "medium", "high", "xhigh", "max"):
+            service = worker.normalized_service(self.service("openAI", model="gpt-6-astra", reasoningEffort=effort))
+            self.assertEqual(service["reasoningEffort"], effort)
+            self.assertEqual(worker.provider_request_options(service)["reasoning_effort"], effort)
+            self.assertEqual(worker.provider_request_options(service, probe=True)["reasoning_effort"], effort)
+        with self.assertRaisesRegex(worker.WorkerError, "推理强度"):
+            worker.normalized_service(self.service("openAI", model="gpt-6.1-sol", reasoningEffort="none"))
+
     def test_ollama_disables_presence_penalty_and_custom_keeps_own_options(self):
-        ollama = worker.normalized_service({"kind": "ollama", "baseURL": "http://localhost:11434/v1", "model": "fixture"})
+        ollama = worker.normalized_service({"kind": "ollama", "baseURL": "http://localhost:11434/v1", "model": "gpt-6-astra"})
         self.assertEqual(worker.provider_request_options(ollama), {"reasoning_effort": "none", "presence_penalty": 0, "max_tokens": 8192})
         custom = worker.normalized_service({"kind": "openai", "baseURL": "http://localhost:11434/v1", "model": "fixture", "apiKey": "fixture"})
         self.assertEqual(worker.provider_request_options(custom), {})

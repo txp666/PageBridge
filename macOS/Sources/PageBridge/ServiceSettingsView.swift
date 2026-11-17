@@ -67,7 +67,10 @@ struct ServiceSettingsView: View {
             if let service = model.activeService ?? model.services.first { load(service) }
             else { newService(.ollama) }
         }
-        .onChange(of: draft) { _, _ in invalidateTest(); if dirty { notice = nil } }
+        .onChange(of: draft) { _, _ in
+            if !draft.availableReasoningEfforts.contains(draft.reasoningEffort) { draft.reasoningEffort = .automatic }
+            invalidateTest(); if dirty { notice = nil }
+        }
         .onChange(of: apiKey) { _, value in
             invalidateTest(); invalidateModels(); if dirty { notice = nil }
             if !value.isEmpty { keyLoadFailed = false; formError = nil }
@@ -212,6 +215,16 @@ struct ServiceSettingsView: View {
             Text(modelListNotice ?? (modelListLoaded ? "已获取此账户的模型列表。" : "可直接使用预设模型；填入密钥后点击“获取模型”更新列表。"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error = modelListError { errorLabel(error) }
+            if draft.availableReasoningEfforts.count > 1 {
+                field("推理强度", hint: "自动使用模型支持的最低强度；更高强度通常需要更长时间。") {
+                    Picker("推理强度", selection: $draft.reasoningEffort) {
+                        ForEach(draft.availableReasoningEfforts, id: \.self) { effort in
+                            Text(effort.title).tag(effort)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                }
+            }
             if draft.kind == .openAI {
                 field("API Key", hint: "仅保存在 macOS 钥匙串。获取模型和测试连接均由你点击后发送。") {
                     HStack(spacing: 7) {

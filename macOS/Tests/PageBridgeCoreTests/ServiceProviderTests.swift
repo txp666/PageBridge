@@ -31,6 +31,7 @@ final class ServiceProviderTests: XCTestCase {
             XCTAssertEqual(config.id, id)
             XCTAssertEqual(config.baseURL, endpoint)
             XCTAssertEqual(config.model, "saved-model")
+            XCTAssertEqual(config.reasoningEffort, .automatic)
             XCTAssertEqual(config.timeoutSeconds, 90)
             XCTAssertEqual(config.concurrency, 3)
         }
@@ -115,6 +116,34 @@ final class ServiceProviderTests: XCTestCase {
                 XCTAssertNil(body["thinking"])
             }
         }
+    }
+
+    func testOpenAIModelsUseSupportedReasoningEffort() throws {
+        for (model, effort) in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
+                                ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")] {
+            var config = ServiceConfiguration.preset(.openAI)
+            config.model = model
+            let request = try ServiceConnectionTester.testRequest(service: config, apiKey: "fixture")
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+            XCTAssertEqual(body["reasoning_effort"] as? String, effort, model)
+            XCTAssertEqual(body["max_completion_tokens"] as? Int, 1024)
+            XCTAssertNil(body["temperature"])
+            XCTAssertEqual(config.availableReasoningEfforts.contains(.none), effort == "none")
+        }
+    }
+
+    func testReasoningChoicePersistsAndReachesRequestsAndEngine() throws {
+        var config = ServiceConfiguration.preset(.openAI)
+        config.model = "gpt-6-astra"; config.reasoningEffort = .high
+        let restored = try JSONDecoder().decode(ServiceConfiguration.self, from: JSONEncoder().encode(config))
+        XCTAssertEqual(restored.reasoningEffort, .high)
+        XCTAssertEqual(EngineService(configuration: restored, apiKey: "fixture").reasoningEffort, "high")
+        let request = try ServiceConnectionTester.testRequest(service: restored, apiKey: "fixture")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["reasoning_effort"] as? String, "high")
+        config.reasoningEffort = .none
+        XCTAssertThrowsError(try config.validate()) { XCTAssertEqual($0 as? ServiceConfigurationError, .invalidReasoningEffort) }
+        XCTAssertEqual(config.selectingProvider(.deepSeek).reasoningEffort, .automatic)
     }
 
     func testModelResponseDeduplicatesAndRejectsInvalidIDs() throws {
