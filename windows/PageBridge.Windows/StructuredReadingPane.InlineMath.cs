@@ -61,7 +61,7 @@ internal sealed partial class StructuredReadingPane
     }
 
     private static (FrameworkElement Content, bool Overflow) TranslatedContent(JsonNode block, double width, double height,
-        double pageWidth, double pageHeight, ImageSource source, global::Windows.UI.Color background)
+        double pageWidth, double pageHeight, ImageSource source, global::Windows.UI.Color background, string? alignment)
     {
         bool heading = Text(block, "kind") == "heading";
         double reference = ReferenceFontSize(block);
@@ -69,6 +69,8 @@ internal sealed partial class StructuredReadingPane
         var color = (background.R * .299 + background.G * .587 + background.B * .114) < 128 ? Colors.White : Colors.Black;
         color = ReadColor(block["foregroundColor"], color);
         var foreground = new SolidColorBrush(color);
+        TextAlignment? textAlignment = alignment switch { "center" => TextAlignment.Center, "right" => TextAlignment.Right,
+            "left" => TextAlignment.Left, _ => null };
         // Small print (references, citations, footers) is often below the reader minimum, and
         // Chinese runs wider per character: let it shrink to 85% of its original size. Body
         // text of 9.4 pt or more keeps the reader minimum.
@@ -88,11 +90,13 @@ internal sealed partial class StructuredReadingPane
             var plain = new TextBlock { Text = Text(block, "translatedText"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis,
                 FontFamily = new FontFamily("Microsoft YaHei UI"), FontWeight = weight, Foreground = foreground,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight, IsHitTestVisible = false };
+            if (textAlignment.HasValue) plain.TextAlignment = textAlignment.Value;
             bool overflow = !FitContent(plain, width, height, initial, size => { plain.FontSize = size; plain.LineHeight = size * 1.15; }, minimum);
             plain.Width = width; plain.Height = height; return (plain, overflow);
         }
         var rich = new RichTextBlock { TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, FontFamily = new FontFamily("Microsoft YaHei UI"),
             FontWeight = weight, Foreground = foreground, IsTextSelectionEnabled = false, IsHitTestVisible = false };
+        if (textAlignment.HasValue) rich.TextAlignment = textAlignment.Value;
         var paragraph = AddParagraph(rich);
         var pictures = new List<(Viewbox View, double Width, double Height)>();
         IEnumerable<MathFragment> fragments = hasMath ? MathFragments(template, spans!) : [new MathFragment(Text(block, "translatedText"), null)];

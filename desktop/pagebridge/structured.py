@@ -19,7 +19,7 @@ from .core import AppError, _inside, _unredirected, atomic_file, sha256
 
 # The source checkout and the installed bridge share the same sibling engine.
 sys.path.append(str(Path(__file__).resolve().parents[2] / "engine"))
-from reading_layout import estimated_font_size, saved_line_right_edges
+from reading_layout import estimated_font_size, saved_layouts
 
 ARTIFACT_TYPE = "structured-reading"
 MAX_READING_BYTES = 64 * 1024 * 1024
@@ -93,6 +93,16 @@ def read_artifact(path, document):
                         or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 < v <= page["width"]
                                for v in edges.values())):
                     raise ValueError()
+            if "cellLayouts" in page:
+                cells = page["cellLayouts"]
+                allowed = {b["id"] for b in page["blocks"] if b.get("sourceType") == "table_cell"}
+                if not isinstance(cells, dict) or not set(cells).issubset(allowed.intersection(page.get("backgroundBlocks", []))):
+                    raise ValueError()
+                for cell in cells.values():
+                    if (not isinstance(cell, dict) or cell.get("alignment") not in ("left", "center", "right")
+                            or any(type(cell.get(k)) not in (int, float) for k in ("left", "right"))
+                            or not 0 <= cell["left"] < cell["right"] <= page["width"]):
+                        raise ValueError()
             if "backgroundFillBlocks" in page:
                 filled = page["backgroundFillBlocks"]
                 if ("backgroundImage" not in page or not isinstance(filled, list)
@@ -182,6 +192,7 @@ def page_result(store, request):
         source = pdf[number]
         rect = source.rect
         _add_source_font_sizes(source, blocks)
+        edges, cells = saved_layouts(selected, source) if selected else ({}, {})
     decoration_image, decoration_error = None, None
     background_image = _background_image(store, doc, selected) if selected and selected.get("backgroundImage") else None
     if selected and selected.get("decorations") and not background_image:
@@ -194,7 +205,7 @@ def page_result(store, request):
                 decorations=selected.get("decorations", []) if selected else [],
                 decorationsImage=decoration_image, decorations_error=decoration_error,
                 backgroundImage=background_image, backgroundBlocks=selected.get("backgroundBlocks") if selected else None,
-                layoutRightEdges=saved_line_right_edges(selected) if background_image else {},
+                layoutRightEdges=edges, cellLayouts=cells,
                 status=artifact["status"], page_status=selected.get("status", "completed") if selected else "not_selected",
                 error=selected.get("error") if selected else None, blocks=blocks,
                 source_sha256=doc["input_sha256"], artifact_sha256=doc["reading_sha256"])

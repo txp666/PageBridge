@@ -16,7 +16,7 @@ import pymupdf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from outline_fixture import make_outline_pdf, outline_metadata
 from reading_background import add_page_background
-from reading_layout import line_right_edges, saved_line_right_edges
+from reading_layout import line_right_edges, saved_layouts
 import reading_export
 from structured_reading import ReadingError, refine_list_geometry
 
@@ -86,7 +86,8 @@ class ReadingExportTests(unittest.TestCase):
         measured = meta.pop("layoutRightEdges")
         self.assertGreater(measured[narrow["id"]] - narrow["bbox"][0], 4 * 18)
         self.assertLess(narrow["bbox"][2] - narrow["bbox"][0], 24)
-        self.assertEqual(saved_line_right_edges(meta), measured)
+        with pymupdf.open(source) as pdf:
+            self.assertEqual(saved_layouts(meta, pdf[0])[0], measured)
         reading.write_text(json.dumps(data))  # Older drafts have only source bounds.
         export(source, reading, output, "translated")
         with pymupdf.open(output) as pdf:
@@ -110,6 +111,49 @@ class ReadingExportTests(unittest.TestCase):
         data = dict(width=200, height=100, blocks=rows, backgroundBlocks=[b["id"] for b in rows])
         edges = line_right_edges(data, pixmap)
         self.assertEqual(edges, {"short": 64, "rule": 76})
+
+    def test_visible_table_grid_preserves_merged_center_left_and_right_aligned_labels(self):
+        source, output = self.root / "cells.pdf", self.root / "translated.pdf"
+        rows = [("Test schedule", "检验日程", 160, 35, "center"), ("ID", "样本编号", 70, 75, "center"),
+                ("Operational condition", "运行", 220, 75, "center"), ("Label", "项目", 18, 115, "left"),
+                ("Total", "合计", 302, 115, "right")]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=320, height=180)
+            page.draw_rect((10, 10, 310, 170))
+            for y in (50, 90, 130):
+                page.draw_line((10, y), (310, y))
+            page.draw_line((130, 50), (130, 170))
+            for text, _, x, y, anchor in rows:
+                width = pymupdf.get_text_length(text, fontsize=12)
+                start = x - (width / 2 if anchor == "center" else width if anchor == "right" else 0)
+                page.insert_text((start, y), text, fontsize=12)
+            page.insert_text((170, 155), "1234", fontsize=12)
+            pdf.save(source)
+        blocks = [dict(kind="table", sourceType="native_table", sourceText="Measurements", status="preserved",
+                       bbox=[10, 10, 310, 170])]
+        with pymupdf.open(source) as pdf:
+            for text, target, *_ in rows:
+                blocks.append(dict(kind="text", sourceType="table_cell", sourceText=text, translatedText=target,
+                                   status="translated", bbox=list(pdf[0].search_for(text)[0])))
+        reading = draft(source, {1: blocks}, self.root)
+        data = json.loads(reading.read_text())
+        meta = data["pages"][0]
+        placements = meta.pop("cellLayouts")
+        with pymupdf.open(source) as pdf:
+            self.assertEqual(saved_layouts(meta, pdf[0])[1], placements)
+        reading.write_text(json.dumps(data))
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as translated:
+            spans = {s["text"]: s for b in translated[0].get_text("dict")["blocks"]
+                     for line in b.get("lines", []) for s in line["spans"]}
+            for block, (_, target, x, _, anchor) in zip(meta["blocks"][1:], rows):
+                plan = placements[block["id"]]
+                self.assertEqual(plan["alignment"], anchor)
+                rect = pymupdf.Rect(spans[target]["bbox"])
+                actual = {"center": (rect.x0 + rect.x1) / 2, "left": rect.x0, "right": rect.x1}[anchor]
+                self.assertAlmostEqual(actual, x, delta=1)
+            for clip in [(125, 50, 136, 168), (160, 135, 230, 167)]:
+                self.assertEqual(original[0].get_pixmap(clip=clip).samples, translated[0].get_pixmap(clip=clip).samples)
 
     def test_pdf_first_line_follows_the_source_indent(self):
         source = self.root / "indent-source.pdf"

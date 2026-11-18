@@ -48,6 +48,41 @@ final class StructuredReadingBackgroundTests: XCTestCase {
         XCTAssertNil(StructuredReadingBackground.pngData(oversized.base64EncodedString()))
     }
 
+    @MainActor func testPreparedPageReusesBackgroundButKeepsOriginalForFormulasAndNewDrafts() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var box = CGRect(x: 0, y: 0, width: 200, height: 300)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        context.beginPDFPage(nil)
+        context.setFillColor(NSColor.red.cgColor)
+        context.fill(box)
+        context.endPDFPage()
+        context.closePDF()
+
+        var metadata = try artifact().1.pages[0]
+        let pages = ReadingSourcePages()
+        let first = ReadingPageRequest(url: url, page: 1, readingPath: "/one/reading.json")
+        let loaded = await pages.page(first, metadata: metadata)
+        let result = try XCTUnwrap(loaded)
+        XCTAssertTrue(result.image === result.backgroundImage)
+        let cached = await pages.page(first, metadata: metadata)
+        XCTAssertTrue(result === cached)
+
+        let second = ReadingPageRequest(url: url, page: 1, readingPath: "/two/reading.json")
+        metadata.blocks[0].inlineMath = [.init(token: "[[PBM0]]", bbox: [10, 10, 25, 20])]
+        let updated = await pages.page(second, metadata: metadata)
+        let withMath = try XCTUnwrap(updated)
+        XCTAssertEqual(withMath.request, second)
+        XCTAssertNotNil(withMath.backgroundImage)
+        XCTAssertFalse(withMath.image === withMath.backgroundImage)
+        let crops = StructuredReadingMathImages.crops(for: metadata.blocks[0], image: withMath.image, pageSize: withMath.size)
+        XCTAssertNotNil(crops["[[PBM0]]"])
+
+        let original = await pages.page(.init(url: url, page: 1, readingPath: nil), metadata: nil)
+        XCTAssertEqual(original?.size, box.size)
+        XCTAssertNil(original?.backgroundImage)
+    }
+
     func testBackgroundRequiresKnownTranslatedBlocksAndValidCoordinateSpace() throws {
         let (document, valid) = try artifact()
         var reading = valid

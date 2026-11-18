@@ -26,6 +26,51 @@ def estimated_font_size(block):
     return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
 
 
+def _uniform(pixmap, left, top, right, bottom):
+    if left >= right or top >= bottom:
+        return False
+    samples, stride, channels = pixmap.samples_mv, pixmap.stride, pixmap.n
+    start = top * stride + left * channels
+    row = bytes(samples[start:start + channels]) * (right - left)
+    return all(samples[i:i + len(row)] == row for i in range(start, start + (bottom - top) * stride, stride))
+
+
+def cell_layouts(page, background, cells):
+    """Preserve the source alignment in a measured cell on a clear horizontal strip."""
+    result = {}
+    positioned = set(page.get("backgroundBlocks", ()))
+    sx, sy = background.width / page["width"], background.height / page["height"]
+    for block in page["blocks"]:
+        cell = cells.get(block["id"])
+        if cell is None or block["id"] not in positioned:
+            continue
+        box, area = source_rect(block.get("bbox")), cell.bounds
+        if box is None:
+            continue
+        before, after = max(0, box.x0 - area.x0), max(0, area.x1 - box.x1)
+        margin = box.height / 2
+        if abs(before - after) <= box.height / 2:
+            inset = min(margin, before, after)
+            left, right, align = area.x0 + inset, area.x1 - inset, "center"
+        elif before < after:
+            left, right, align = box.x0, area.x1 - min(margin, after), "left"
+        else:
+            left, right, align = area.x0 + min(margin, before), box.x1, "right"
+        left, right = max(0, left), min(page["width"], right)
+        top, bottom = max(0, math.floor(box.y0 * sy)), min(background.height, math.ceil(box.y1 * sy))
+
+        # The source box has already been cleared. Only newly occupied space must be
+        # clear; a painted seam at the original leading edge does not limit the far margin.
+        def clear(start, end):
+            return _uniform(background, max(0, math.floor(start * sx)), top,
+                            min(background.width, math.ceil(end * sx)), bottom)
+
+        if ((left >= box.x0 or clear(left, box.x0 + 1 / sx))
+                and (right <= box.x1 or clear(box.x1 - 1 / sx, right))):
+            result[block["id"]] = dict(left=left, right=right, alignment=align)
+    return result
+
+
 def line_right_edges(page, background):
     """Use the width of aligned rows, stopping at other blocks and nonuniform pixels."""
     positioned = set(page.get("backgroundBlocks", ()))
@@ -59,14 +104,8 @@ def line_right_edges(page, background):
         if start >= stop or top >= bottom:
             continue
 
-        # Compare whole scanlines as byte buffers; do not build a colour histogram.
-        samples, stride, channels = background.samples_mv, background.stride, background.n
-        offset = top * stride + start * channels
-        pixel = bytes(samples[offset:offset + channels])
-
         def clear(end):
-            row = pixel * (end - start)
-            return all(samples[i:i + len(row)] == row for i in range(offset, offset + (bottom - top) * stride, stride))
+            return _uniform(background, start, top, end, bottom)
 
         if not clear(stop):
             lo, hi = start, stop
@@ -82,15 +121,24 @@ def line_right_edges(page, background):
     return result
 
 
-def saved_line_right_edges(page):
-    if "layoutRightEdges" in page:
-        return page["layoutRightEdges"]
-    if not page.get("backgroundImage") or not page.get("backgroundBlocks"):
-        return {}
+def saved_layouts(page, source):
+    """Read stored plans or measure missing ones for an immutable older draft."""
+    from reading_tables import table_cells
+    edges, cells = page.get("layoutRightEdges"), page.get("cellLayouts")
+    has_cells = any(b.get("sourceType") == "table_cell" for b in page["blocks"])
+    if not has_cells:
+        cells = {}
+    if (edges is not None and cells is not None) or not page.get("backgroundBlocks") or not page.get("backgroundImage"):
+        return edges or {}, cells or {}
     data = base64.b64decode(page["backgroundImage"], validate=True)
     if len(data) < 24 or not data.startswith(b"\x89PNG\r\n\x1a\n") or data[12:16] != b"IHDR":
-        return {}
+        return edges or {}, cells or {}
     width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
     if not 0 < width * height <= 16_000_000:
-        return {}
-    return line_right_edges(page, pymupdf.Pixmap(data))
+        return edges or {}, cells or {}
+    pixmap = pymupdf.Pixmap(data)
+    if edges is None:
+        edges = line_right_edges(page, pixmap)
+    if cells is None:
+        cells = cell_layouts(page, pixmap, table_cells(source, page["blocks"]))
+    return edges, cells

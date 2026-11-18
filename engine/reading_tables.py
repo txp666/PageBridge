@@ -6,6 +6,10 @@ No inferred cell grid or model-produced numeric table is used for native PDFs.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass
+import re
+from threading import Lock
 import unicodedata
 
 import pymupdf
@@ -87,6 +91,31 @@ def _translation_context(label, rows, section):
             f"Row containing this cell:\n{row[:450]}")
 
 
+def _introduction(area, text_regions):
+    preceding = ((box.y1, text) for box, text in text_regions
+                 if box.y1 <= area.y0 and box.x0 < area.x1 and box.x1 > area.x0)
+    return max(preceding, default=(0, ""))[1][:300]
+
+
+def _table_topics(blocks):
+    areas = [pymupdf.Rect(b["bbox"]) for b in blocks if b.get("kind") == "table" and b.get("bbox")]
+    captions = defaultdict(list)
+    text_regions = []
+    for block in blocks:
+        if not block.get("bbox") or block.get("kind") not in ("text", "heading", "list") or block.get("sourceType") == "table_cell":
+            continue
+        box, text = pymupdf.Rect(block["bbox"]), block["sourceText"]
+        text_regions.append((box, text))
+        if block.get("sourceType") in ("table_caption", "table_footnote"):
+            # A caption or key can be above or below its table. Bind it to the nearest table in its column.
+            candidates = [i for i, area in enumerate(areas) if box.x0 < area.x1 and area.x0 < box.x1]
+            if candidates:
+                owner = min(candidates, key=lambda i: max(0, areas[i].y0 - box.y1, box.y0 - areas[i].y1))
+                captions[owner].append((box.y0, text))
+    return [(area, "\n".join(text for _, text in sorted(captions[i]))[:1200] or _introduction(area, text_regions))
+            for i, area in enumerate(areas)]
+
+
 def _label_runs(words):
     current, runs, previous = [], [], None
 
@@ -166,9 +195,7 @@ def refine_native_tables(input_path, page_number, page_result):
         cells = outlined[table["id"]]
         if not table_words and not cells:
             continue
-        preceding = [(box.y1, text) for box, text in text_regions
-                     if box.y1 <= area.y0 and box.x0 < area.x1 and box.x1 > area.x0]
-        section = max(preceding, default=(0, ""))[1]
+        section = _introduction(area, text_regions)
         rows = _native_rows(table_words + [dict(text=cell["sourceText"], bbox=cell["bbox"]) for cell in cells])
         # A paint run for a prose cell can include digits. Keep that passage
         # together and leave separate numeric cells in place.
@@ -180,3 +207,87 @@ def refine_native_tables(input_path, page_number, page_result):
                          translationContext=_translation_context(label, rows, section))
             labels.append(label)
     page_result["blocks"].extend(labels)
+
+
+@dataclass
+class TableCell:
+    bounds: pymupdf.Rect
+    field: tuple
+    introduction: str = ""
+
+
+# MuPDF's table finder uses process-wide character and edge buffers.
+_finder_lock = Lock()
+
+
+def table_cells(source, blocks):
+    """Map whole labels to actual grid cells. Number-only cells and split runs stay in place."""
+    labels = [(b, pymupdf.Rect(b["bbox"])) for b in blocks if b.get("sourceType") == "table_cell" and b.get("bbox")]
+    if not labels:
+        return {}
+    origin = source.rect.tl
+    # Take a plain copy while the finder still owns its buffers.
+    with _finder_lock:
+        try:
+            grids = [[row.cells for row in t.rows] for t in source.find_tables().tables]
+        except (ValueError, RuntimeError):
+            return {}
+    if not grids:
+        return {}
+    topics = _table_topics(blocks)
+    words = [pymupdf.Rect(w["bbox"]) for w in native_words(source)]
+    centers = [(word.tl + word.br) / 2 for word in words]
+    label_words = {b["id"]: {i for i, p in enumerate(centers) if box.contains(p)} for b, box in labels}
+    mapped = {}
+    for number, rows in enumerate(grids):
+        if not rows:
+            continue
+        owners = {}
+        for row in rows:
+            for cell in filter(None, row):
+                rect = pymupdf.Rect(cell) - (origin.x, origin.y, origin.x, origin.y)
+                inside = [(b, box) for b, box in labels if rect.contains((box.tl + box.br) / 2)]
+                if len(inside) == 1:
+                    block, box = inside[0]
+                    # Font ascenders, descenders and bearings can cross a painted cell edge.
+                    # Require the same actual words on both sides of the assignment. Outlined
+                    # text has no native words, so it still needs a fully contained box.
+                    cell_words = {i for i, p in enumerate(centers) if rect.contains(p)}
+                    if cell_words == label_words[block["id"]] and (cell_words or rect.contains(box)):
+                        owners[cell] = (block, rect)
+        if not owners:
+            continue
+        def label(cell):
+            return owners[cell][0]["sourceText"].strip() if cell in owners else ""
+        # Stacked tables share a field only when both their header pattern and
+        # ordered row keys agree. Identical words in unrelated fields stay independent.
+        header = tuple(re.sub(r"\d+", "#", label(cell)) for cell in rows[0])
+        keys = tuple(label(row[0]) for row in rows[1:])
+        family = (header, keys) if any(header) and len(set(keys) - {""}) > 1 else (number,)
+        starts = sorted({cell[0] for row in rows for cell in row if cell})
+        for row in rows:
+            for index, cell in enumerate(row):
+                if cell in owners:
+                    block, rect = owners[cell]
+                    span = sum(cell[0] <= x < cell[2] for x in starts)
+                    center = (rect.tl + rect.br) / 2
+                    introduction = next((topic for area, topic in topics if area.contains(center)), "")
+                    mapped[block["id"]] = TableCell(rect, (family, index, span), introduction)
+    return mapped
+
+
+def passage_groups(blocks, cells):
+    """Keep prose and individual table fields in separate translation and review contexts."""
+    groups = defaultdict(list)
+    equivalents = {}
+    for block in blocks:
+        cell = cells.get(block["id"])
+        if cell and not block.get("inlineMath"):
+            key = (cell.field, block["sourceText"])
+            if key not in equivalents:
+                equivalents[key] = []
+                groups[cell.field].append(block)
+            equivalents[key].append(block)
+        else:
+            groups["cells" if block.get("sourceType") == "table_cell" else "prose"].append(block)
+    return list(groups.values()), [group for group in equivalents.values() if len(group) > 1]

@@ -375,6 +375,26 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((left["translatedText"], left["reviewed"]), ("弹簧", True))
         self.assertEqual((right["translatedText"], right["reviewed"]), ("工作压力为 16 kPa。", False))
 
+    async def test_table_field_review_requires_every_requested_label(self):
+        labels = [("a", "Mode 1", "模式 1", "模式1"), ("b", "Mode 2", "模式 2", "模式2")]
+        for complete in (False, True):
+            blocks = [dict(id=key, sourceText=source, translatedText=draft, status="translated", sourceType="table_cell")
+                      for key, source, draft, _ in labels]
+            def review(request):
+                payload = json.loads(request.content)
+                schema = payload["response_format"]["json_schema"]["schema"]
+                self.assertEqual(schema["required"], ["translations"])
+                self.assertEqual(json.loads(payload["messages"][-1]["content"]),
+                                 {"caption": "Operating modes", "labels":
+                                  [{"id": key, "source": source} for key, source, _, _ in labels]})
+                rows = [{"id": key, "text": final} for key, _, _, final in labels]
+                return self.response(request, json.dumps({"translations": rows if complete else rows[:1]}))
+            async with self.original_client(transport=httpx.MockTransport(review)) as client:
+                batch = next(reading.review_batches(blocks))
+                await reading.review_translations(client, batch, self.request["service"], "en", "zh", (), table_caption="Operating modes")
+            self.assertEqual([b["reviewed"] for b in blocks], [complete, complete])
+            self.assertEqual([b["translatedText"] for b in blocks], [final if complete else draft for _, _, draft, final in labels])
+
     async def test_unavailable_page_review_keeps_first_pass_translation(self):
         def unavailable(request):
             return httpx.Response(503, request=request)

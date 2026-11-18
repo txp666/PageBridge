@@ -20,7 +20,7 @@ public enum StructuredReadingBackground {
     public static func image(_ encoded: String) -> NSImage? {
         guard let data = pngData(encoded),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
         return NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
     }
 }

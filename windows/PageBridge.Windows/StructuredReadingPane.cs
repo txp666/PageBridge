@@ -118,7 +118,7 @@ internal sealed partial class StructuredReadingPane
                 string id = Text(block, "id");
                 AddBlock(overlay, block, bbox, current, pageNumber, pageWidth, pageHeight, source,
                     hasBackground, positioned is null || (hasBackground && positioned.Contains(id)),
-                    result["layoutRightEdges"]?[id]?.GetValue<double>());
+                    result["layoutRightEdges"]?[id]?.GetValue<double>(), result["cellLayouts"]?[id]);
             }
         }
         if (hasBackground) AddRegions(true);
@@ -178,12 +178,17 @@ internal sealed partial class StructuredReadingPane
     }
 
     private void AddBlock(Canvas overlay, JsonNode block, JsonArray bbox, int current, int pageNumber, double pageWidth, double pageHeight,
-        ImageSource source, bool hasBackground, bool positioned, double? layoutRight)
+        ImageSource source, bool hasBackground, bool positioned, double? layoutRight, JsonNode? cellLayout)
     {
         double x = bbox[0]!.GetValue<double>(), y = bbox[1]!.GetValue<double>();
         double width = Math.Min(pageWidth, bbox[2]!.GetValue<double>()) - x, height = Math.Min(pageHeight, bbox[3]!.GetValue<double>()) - y;
         if (width <= 0 || height <= 0) return;
-        if (hasBackground && positioned && layoutRight is double right)
+        if (hasBackground && positioned && cellLayout is not null)
+        {
+            x = cellLayout["left"]!.GetValue<double>();
+            width = cellLayout["right"]!.GetValue<double>() - x;
+        }
+        else if (hasBackground && positioned && layoutRight is double right)
             width = Math.Max(width, Math.Min(right, pageWidth) - x);
         string kind = Text(block, "kind"), status = Text(block, "status"), translated = Text(block, "translatedText");
         var area = new Grid { Width = width, Height = height, Background = new SolidColorBrush(Colors.Transparent), Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) } };
@@ -199,7 +204,8 @@ internal sealed partial class StructuredReadingPane
         {
             var color = ReadColor(block["backgroundColor"], Colors.White);
             if (!hasBackground) area.Background = new SolidColorBrush(color);
-            var translatedContent = TranslatedContent(block, width, height, pageWidth, pageHeight, source, color);
+            var translatedContent = TranslatedContent(block, width, height, pageWidth, pageHeight, source, color,
+                cellLayout?["alignment"]?.GetValue<string>());
             overflow = translatedContent.Overflow;
             area.Children.Add(translatedContent.Content);
         }

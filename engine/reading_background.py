@@ -14,7 +14,8 @@ from typing import NamedTuple
 import pymupdf
 
 from reading_outlines import clear_outlines, outline_colors, verified_outlines
-from reading_layout import line_right_edges, source_rect as _rect
+from reading_layout import cell_layouts, line_right_edges, source_rect as _rect
+from reading_tables import table_cells
 
 REDACTION_BATCH = 25
 
@@ -387,11 +388,13 @@ def add_page_background(input_source, page_result, *, include_image=True):
     page_result.pop("backgroundBlocks", None)
     page_result.pop("backgroundFillBlocks", None)
     page_result["layoutRightEdges"] = {}
+    page_result["cellLayouts"] = {}
     translated = translated_blocks(page_result)
     if not translated:
         return []
     with open_source() as pdf:
         source = pdf[page_result["pageNumber"] - 1]
+        cells = table_cells(source, page_result["blocks"])
         origin = source.rect.tl
         scale = min(1800 / source.rect.width, 2400 / source.rect.height)
         matrix = pymupdf.Matrix(scale, scale).pretranslate(-origin.x, -origin.y)
@@ -405,6 +408,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
                 page_result["backgroundFillBlocks"] = fills
             page_result["backgroundBlocks"] = ids
             page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
+            page_result["cellLayouts"] = cell_layouts(page_result, pixmap, cells)
             page_result.pop("decorations", None)
             return []
         boxes = {b["id"]: pymupdf.Rect(b["bbox"]) for b in translated}
@@ -506,6 +510,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
             page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
         page_result["backgroundBlocks"] = background_ids
         page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
+        page_result["cellLayouts"] = cell_layouts(page_result, pixmap, cells)
         # Their original pixels already exist in the page background. Keeping
         # thousands of duplicate vector commands inflates artifacts and would
         # invite clients to paint the old content over the translated text.

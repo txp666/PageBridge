@@ -407,14 +407,16 @@ final class AppModel: ObservableObject {
                     readingNavigationRequest = PDFPageNavigation(page: first)
                 }
                 // Older immutable drafts already contain the cleared background needed to measure their lines.
-                if reading.pages.contains(where: { $0.layoutRightEdges == nil && $0.backgroundBlocks?.isEmpty == false }) {
+                if reading.pages.contains(where: \.needsLayoutMeasurement) {
                     let request = WorkerRequest(action: "reading_layout", inputPath: record.inputPath, readingPath: url.path)
                     guard let result = try? await EngineRunner(location: try EngineLocation.find()).run(request),
                           let edges = result.layoutRightEdges, selectedID == record.id,
                           selectedDocument?.readingPath == record.readingPath else { return }
                     for index in reading.pages.indices {
-                        if let measured = edges[String(reading.pages[index].pageNumber)] {
+                        let key = String(reading.pages[index].pageNumber)
+                        if let measured = edges[key] {
                             reading.pages[index].layoutRightEdges = measured
+                            reading.pages[index].cellLayouts = result.cellLayouts?[key]
                         }
                     }
                     structuredReading = reading

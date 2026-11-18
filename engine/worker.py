@@ -436,16 +436,18 @@ async def run(request, events, control_input=None):
         await export(request, events)
     elif request["action"] == "reading_layout":
         import pymupdf
-        from reading_layout import saved_line_right_edges
+        from reading_layout import saved_layouts
         from structured_reading import load_reading, sha256
         with pymupdf.open(request["inputPath"]) as source:
             reading = load_reading(request["readingPath"], sha256(request["inputPath"]), len(source))
-        edges = {}
-        for page in reading["pages"]:
-            if "layoutRightEdges" not in page and page.get("backgroundBlocks"):
-                edges[str(page["pageNumber"])] = saved_line_right_edges(page)
-            await asyncio.sleep(0)
-        events.emit("result", layoutRightEdges=edges)
+            edges, cells = {}, {}
+            for page in reading["pages"]:
+                has_cells = any(b.get("sourceType") == "table_cell" for b in page["blocks"])
+                if page.get("backgroundBlocks") and ("layoutRightEdges" not in page or has_cells and "cellLayouts" not in page):
+                    number = page["pageNumber"]
+                    edges[str(number)], cells[str(number)] = saved_layouts(page, source[number - 1])
+                await asyncio.sleep(0)
+        events.emit("result", layoutRightEdges=edges, cellLayouts=cells)
     elif request["action"] == "suggest_terms":
         from term_suggestions import suggest
         await suggest(request, events)

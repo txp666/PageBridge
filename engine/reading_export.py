@@ -96,15 +96,16 @@ def _embolden(page):
         doc.update_stream(xref, stream)
 
 
-def _css(block, size, background, indent):
+def _css(block, size, background, indent, alignment):
     color = _color(block.get("foregroundColor"))
     if color is None:
         # Reader rule: light text on a dark filled region, otherwise black.
         rgb = background or [255, 255, 255]
         color = [255] * 3 if rgb[0] * .299 + rgb[1] * .587 + rgb[2] * .114 < 128 else [0] * 3
     line_height = 1.35 if block.get("inlineMath") else 1.15
+    alignment_style = f"text-align: {alignment}; " if alignment else ""
     return (f"body {{margin: 0; padding: 0; font-family: sans-serif; line-height: {line_height}; "
-            f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
+            f"{alignment_style}font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
             f" p {{margin: 0; text-indent: {indent:.3f}pt}}")
 
 
@@ -205,7 +206,10 @@ def translate_page(document, index, page_result, keep, outlines=()):
         # Clearing, source font measurement and fills use the original glyph box.
         right = page_result.get("layoutRightEdges", {}).get(block["id"], rect.x1)
         layout = pymupdf.Rect(rect.x0, rect.y0, right, rect.y1)
-        items[bold].append((layout, body, _css(block, size, background, indent)))
+        alignment = None
+        if cell := page_result.get("cellLayouts", {}).get(block["id"]):
+            layout.x0, layout.x1, alignment = cell["left"], cell["right"], cell["alignment"]
+        items[bold].append((layout, body, _css(block, size, background, indent, alignment)))
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     weights = [bold for bold in items if items[bold]]
