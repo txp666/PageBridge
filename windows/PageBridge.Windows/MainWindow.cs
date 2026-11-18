@@ -210,9 +210,22 @@ public sealed partial class MainWindow : Window
         structuredActive = HasReading && mode.SelectedIndex == 2;
         if (!bindingPages && selected is not null)
         {
-            if (structuredActive) structuredReading.MoveTo(anchor);
-            else originalPages.MoveTo(anchor);
-            SynchronizeReaders();
+            // ChangeView clamps against the measured extent. A wider pane can
+            // put the saved page beyond the previous extent until layout finishes.
+            bindingPages = true;
+            try
+            {
+                reader.UpdateLayout();
+                if (structuredActive) structuredReading.MoveTo(anchor);
+                else
+                {
+                    originalPages.MoveTo(anchor);
+                    if (mode.SelectedIndex == 1 && sync.IsOn && HasReading)
+                        structuredReading.MoveTo(anchor);
+                }
+            }
+            finally { bindingPages = false; }
+            AcceptReadingPosition(structuredActive ? structuredReading.CurrentPage : originalPages.CurrentPage);
         }
     }
     private void JumpToPage(int value)
