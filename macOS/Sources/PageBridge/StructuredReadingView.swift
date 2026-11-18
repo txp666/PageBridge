@@ -11,7 +11,7 @@ struct StructuredReadingView: View {
     let synchronizesScrolling: Bool
     let synchronizer: ReadingScrollSynchronizer
     let onLocate: (Int, [Double]?) -> Void
-    @StateObject private var sourcePages = ReadingSourcePages()
+    @State private var sourcePages = ReadingSourcePages()
     @State private var showsUnlocated = false
 
     private var readingPage: StructuredReadingPage? { model.structuredReading?.page(pageNumber) }
@@ -43,14 +43,12 @@ struct StructuredReadingView: View {
             ReadingContinuousScrollView(url: document.originalURL, page: $pageNumber, navigation: navigation,
                 acceptsNavigation: acceptsNavigation, zoom: model.zoom,
                 synchronizesScrolling: synchronizesScrolling, synchronizer: synchronizer) { number, scale in
-                    AnyView(StructuredReadingPageContent(model: model, sourcePages: sourcePages,
+                    AnyView(StructuredReadingPageContent(model: model, sourcePages: sourcePages, url: document.originalURL,
                         pageNumber: number, scale: scale, onLocate: onLocate).id("\(document.id)-\(number)"))
                 }
         }
         .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { sourcePages.open(document.originalURL) }
-        .onChange(of: document.inputPath) { _, _ in sourcePages.open(document.originalURL) }
         .onChange(of: pageNumber) { _, _ in showsUnlocated = false }
     }
 
@@ -59,29 +57,50 @@ struct StructuredReadingView: View {
             Button("未定位内容（\(unlocated.count)）") { showsUnlocated.toggle() }
                 .buttonStyle(.link).font(.system(size: 10.5))
                 .popover(isPresented: $showsUnlocated) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            Text("以下内容没有页内坐标，保留原页位置。")
-                                .font(.caption).foregroundStyle(.secondary)
-                            ForEach(unlocated) { block in
-                                StructuredReadingBlockDetails(model: model, block: block, pageNumber: pageNumber,
-                                    source: sourcePages.page(pageNumber, metadata: readingPage),
-                                    preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? 12,
-                                    onLocate: { showsUnlocated = false; onLocate(pageNumber, block.bbox) },
-                                    onAddTerm: { showsUnlocated = false; model.addTermRequest = .init(source: "", context: block.sourceText) })
-                                Divider()
-                            }
-                        }.padding(18)
-                    }.lineLimit(nil).frame(width: 490, height: 500)
+                    let request = ReadingPageRequest(url: document.originalURL, page: pageNumber, readingPath: document.readingPath)
+                    ReadingPageAssets(sourcePages: sourcePages, request: request, metadata: readingPage) { source in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 18) {
+                                Text("以下内容没有页内坐标，保留原页位置。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                ForEach(unlocated) { block in
+                                    StructuredReadingBlockDetails(model: model, block: block, pageNumber: pageNumber,
+                                        source: source, preferredFontSize: source?.fontSizes[block.id] ?? block.estimatedFontSize ?? 12,
+                                        onLocate: { showsUnlocated = false; onLocate(pageNumber, block.bbox) },
+                                        onAddTerm: { showsUnlocated = false; model.addTermRequest = .init(source: "", context: block.sourceText) })
+                                    Divider()
+                                }
+                            }.padding(18)
+                        }.lineLimit(nil).frame(width: 490, height: 500)
+                    }
                 }
         }
+    }
+}
+
+/// A mounted page holds its images even if the shared cache evicts a neighbour.
+/// Fast navigation cancels work for pages that have left the viewport.
+private struct ReadingPageAssets<Content: View>: View {
+    let sourcePages: ReadingSourcePages
+    let request: ReadingPageRequest
+    let metadata: StructuredReadingPage?
+    @ViewBuilder let content: (ReadingSourcePage?) -> Content
+    @State private var source: ReadingSourcePage?
+
+    var body: some View {
+        content(source?.request == request ? source : nil)
+            .task(id: request) {
+                let result = await sourcePages.page(request, metadata: metadata)
+                if !Task.isCancelled { source = result }
+            }
     }
 }
 
 /// The continuous native scroll view mounts only visible pages and their neighbors.
 private struct StructuredReadingPageContent: View {
     @ObservedObject var model: AppModel
-    @ObservedObject var sourcePages: ReadingSourcePages
+    let sourcePages: ReadingSourcePages
+    let url: URL
     let pageNumber: Int
     let scale: CGFloat
     let onLocate: (Int, [Double]?) -> Void
@@ -90,18 +109,30 @@ private struct StructuredReadingPageContent: View {
     private var metadata: StructuredReadingPage? { model.structuredReading?.page(pageNumber) }
 
     var body: some View {
-        if let source = sourcePages.page(pageNumber, metadata: metadata) {
-            pageCanvas(source)
-        } else {
-            Color.white.overlay { Text("正在读取原页…").font(.caption).foregroundStyle(.secondary) }
+        let page = metadata
+        let request = ReadingPageRequest(url: url, page: pageNumber, readingPath: page == nil ? nil : model.selectedDocument?.readingPath)
+        ReadingPageAssets(sourcePages: sourcePages, request: request, metadata: page) { source in
+            if let source {
+                pageCanvas(source, metadata: page)
+            } else {
+                Color.white.overlay { Text("正在读取原页…").font(.caption).foregroundStyle(.secondary) }
+            }
         }
     }
 
-    private func pageCanvas(_ source: ReadingSourcePage) -> some View {
+    private func pageCanvas(_ source: ReadingSourcePage, metadata: StructuredReadingPage?) -> some View {
         let placements = (metadata?.blocks ?? []).compactMap { block -> ReadingCanvasPlacement? in
-            guard let rect = StructuredReadingPageGeometry.rect(block.bbox, pageSize: source.size) else { return nil }
+            guard var rect = StructuredReadingPageGeometry.rect(block.bbox, pageSize: source.size) else { return nil }
+            let cell = source.backgroundImage != nil ? metadata?.cellLayouts?[block.id] : nil
+            if let cell {
+                rect.origin.x = cell.left
+                rect.size.width = cell.right - cell.left
+            } else if source.backgroundImage != nil, let right = metadata?.layoutRightEdges?[block.id] {
+                rect.size.width = max(rect.width, min(right, source.size.width) - rect.minX)
+            }
             return ReadingCanvasPlacement(block: block, rect: rect,
-                preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? (block.kind == "heading" ? 18 : 12))
+                preferredFontSize: source.fontSizes[block.id] ?? block.estimatedFontSize ?? (block.kind == "heading" ? 18 : 12),
+                alignment: cell?.alignment)
         }
         return ZStack(alignment: .topLeading) {
             ReadingPageCanvas(image: source.image, pageSize: source.size, placements: placements,

@@ -335,19 +335,80 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.folder.cleanup()
 
-    def mock_client(self, handler):
+    def mock_client(self, handler, review_handler=None):
+        def dispatch(request):
+            system = json.loads(request.content)["messages"][0]["content"]
+            if system.startswith("Proofread the translations"):
+                return review_handler(request) if review_handler else self.response(request, '{"corrections":[]}')
+            return handler(request)
         return patch.object(httpx, "AsyncClient", side_effect=lambda **kwargs: self.original_client(
-            transport=httpx.MockTransport(handler), **kwargs))
+            transport=httpx.MockTransport(dispatch), **kwargs))
 
     def response(self, request, text="完整中文译文。", finish="stop"):
         return httpx.Response(200, request=request, json={"choices": [{"finish_reason": finish, "message": {"content": text}}]})
 
-    async def run_fixture(self, handler, pages=None, request=None):
+    async def run_fixture(self, handler, pages=None, request=None, review_handler=None):
         events = Events()
-        with patch.object(reading, "parse_pages", new=AsyncMock(return_value=copy.deepcopy(pages or [blocks_page()]))), self.mock_client(handler):
+        with patch.object(reading, "parse_pages", new=AsyncMock(return_value=copy.deepcopy(pages or [blocks_page()]))), self.mock_client(handler, review_handler):
             await reading.translate(request or self.request, events)
         result = events.items[-1]
         return result, json.loads(Path(result["readingPath"]).read_text()), events
+
+    async def test_page_review_corrects_untranslated_label_and_preserves_numeric_content(self):
+        page = blocks_page()
+        page["blocks"] = page["blocks"][:2]
+        label, prose = page["blocks"]
+        label["sourceText"] = "Spring"
+        prose["sourceText"] = "Operating pressure: 16 kPa."
+        def translate(request):
+            source = json.loads(request.content)["messages"][-1]["content"]
+            return self.response(request, source if source == "Spring" else "工作压力为 16 kPa。")
+        def review(request):
+            payload = json.loads(request.content)
+            items = json.loads(payload["messages"][-1]["content"])
+            self.assertEqual(payload["response_format"]["type"], "json_schema")
+            self.assertEqual([x["source"] for x in items], [label["sourceText"], prose["sourceText"]])
+            return self.response(request, json.dumps({"corrections": [
+                {"id": label["id"], "text": "弹簧"}, {"id": prose["id"], "text": "工作压力为 60 kPa。"}]}))
+        _, updated, _ = await self.run_fixture(translate, [page], review_handler=review)
+        left, right = updated["pages"][0]["blocks"]
+        self.assertEqual((left["translatedText"], left["reviewed"]), ("弹簧", True))
+        self.assertEqual((right["translatedText"], right["reviewed"]), ("工作压力为 16 kPa。", False))
+
+    async def test_table_field_review_requires_every_requested_label(self):
+        labels = [("a", "Mode 1", "模式 1", "模式1"), ("b", "Mode 2", "模式 2", "模式2")]
+        for complete in (False, True):
+            blocks = [dict(id=key, sourceText=source, translatedText=draft, status="translated", sourceType="table_cell")
+                      for key, source, draft, _ in labels]
+            def review(request):
+                payload = json.loads(request.content)
+                schema = payload["response_format"]["json_schema"]["schema"]
+                self.assertEqual(schema["required"], ["translations"])
+                self.assertEqual(json.loads(payload["messages"][-1]["content"]),
+                                 {"caption": "Operating modes", "labels":
+                                  [{"id": key, "source": source} for key, source, _, _ in labels]})
+                rows = [{"id": key, "text": final} for key, _, _, final in labels]
+                return self.response(request, json.dumps({"translations": rows if complete else rows[:1]}))
+            async with self.original_client(transport=httpx.MockTransport(review)) as client:
+                batch = next(reading.review_batches(blocks))
+                await reading.review_translations(client, batch, self.request["service"], "en", "zh", (), table_caption="Operating modes")
+            self.assertEqual([b["reviewed"] for b in blocks], [complete, complete])
+            self.assertEqual([b["translatedText"] for b in blocks], [final if complete else draft for _, _, draft, final in labels])
+
+    async def test_unavailable_page_review_keeps_first_pass_translation(self):
+        def unavailable(request):
+            return httpx.Response(503, request=request)
+        _, updated, _ = await self.run_fixture(lambda req: self.response(req), review_handler=unavailable)
+        for block in updated["pages"][0]["blocks"][:2]:
+            self.assertEqual((block["status"], block["reviewed"]), ("translated", False))
+
+    async def test_review_with_a_text_only_provider(self):
+        def review(request):
+            if "response_format" in json.loads(request.content):
+                return httpx.Response(400, request=request)
+            return self.response(request, '{"corrections":[]}')
+        _, updated, _ = await self.run_fixture(lambda req: self.response(req), review_handler=review)
+        self.assertTrue(all(b["reviewed"] for b in updated["pages"][0]["blocks"][:2]))
 
     async def test_ignored_glossary_term_gets_one_revision_request(self):
         # A local model translated a keep-as-written title term anyway.
@@ -383,13 +444,13 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
             sent.append(json.loads(request.content)["messages"][-1]["content"])
             return self.response(request)
 
-        first, draft, _ = await self.run_fixture(handler, [page(1)], self.request)
+        first, draft, _ = await self.run_fixture(handler, [page(1)], dict(self.request, translateTables=False))
         self.assertFalse(draft["translateTables"])
         _, updated, _ = await self.run_fixture(handler, [page(2)], dict(self.request, attemptId="append",
             pages="2", readingPath=first["readingPath"], appendPages=True))
         self.assertEqual(sent, ["Test paragraph"] * 2)
         self.assertTrue(all(block["status"] == "preserved" for page in updated["pages"] for block in page["blocks"][1:]))
-        _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables", translateTables=True))
+        _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables"))
         self.assertTrue(all(block["status"] == "translated" for block in enabled["pages"][0]["blocks"]))
 
     async def test_one_failed_block_keeps_other_translation_formula_and_code(self):
@@ -653,17 +714,25 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     def mock_client(self, calls):
         def handler(request):
-            calls.append(json.loads(request.content))
+            payload = json.loads(request.content)
+            review = payload["messages"][0]["content"].startswith("Proofread the translations")
+            if not review:
+                calls.append(payload)
             return httpx.Response(200, request=request, json={"choices": [
-                {"finish_reason": "stop", "message": {"content": "测试译文"}}]})
+                {"finish_reason": "stop", "message": {"content": '{"corrections":[]}' if review else "测试译文"}}]})
         return patch.object(httpx, "AsyncClient", side_effect=lambda **kwargs:
                             self.original_client(transport=httpx.MockTransport(handler), **kwargs))
 
     async def fake_parser(self, command, **kwargs):
         number = int(command[command.index("--page") + 1])
         folder = Path(command[command.index("--output") + 1]); folder.mkdir()
-        raw = {"pages": [{"page_idx": number - 1, "blocks": [
-            {"type": "text", "bbox": [0.1, 0.1, 0.8, 0.4], "content": "One parsed paragraph."}]}]}
+        with pymupdf.open(self.source) as pdf:
+            page = pdf[number - 1]
+            blocks = [{"type": "text", "bbox": [x0 / page.rect.width, y0 / page.rect.height,
+                        x1 / page.rect.width, y1 / page.rect.height], "content": text.strip()}
+                      for x0, y0, x1, y1, text, _, kind in page.get_text("blocks") if kind == 0]
+        raw = {"pages": [{"page_idx": number - 1, "blocks": blocks or [
+            {"type": "text", "bbox": [0.1, 0.1, 0.8, 0.4], "content": "One scanned paragraph."}]}]}
         (folder / "middle_json.json").write_text(json.dumps(raw))
         return 0
 
@@ -695,8 +764,8 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
         with pymupdf.open(self.source) as pdf:
             self.assertTrue(any("\ufb50" <= c <= "\ufeff" for c in pdf[0].get_text()))
         document, setup, parse, calls = await self.run_translation()
-        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 1)
-        self.assertEqual(document["pages"][0]["blocks"][0]["status"], "translated")
+        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 2)
+        self.assertTrue(all(b["status"] == "translated" and b["reviewed"] for b in document["pages"][0]["blocks"]))
 
     async def test_english_scan_keeps_existing_parser_and_model_path(self):
         self.make_pdf(["scan"])
@@ -707,7 +776,7 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_mixed_arabic_document_only_parses_page_with_native_letters(self):
         self.make_pdf(["scan", "native", "digits"])
         document, setup, parse, calls = await self.run_translation()
-        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 1)
+        setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 2)
         command = parse.await_args.args[0]
         self.assertEqual(command[command.index("--page") + 1], 2)
         self.assertEqual([page["status"] for page in document["pages"]], ["source_fallback", "completed", "source_fallback"])
@@ -793,11 +862,12 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("translatedTemplate", block)
         self.assertNotIn("inlineMath", block)
 
-    async def test_table_context_is_not_sent_with_the_target_fragment(self):
+    async def test_table_context_supplies_labels_without_neighboring_numbers(self):
         context = "Previous row contains 3091 and a different description."
         block, payload = await self.translate("de lithium)", "锂的)", sourceType="table_cell", translationContext=context)
         self.assertEqual(block["status"], "translated")
-        self.assertEqual(payload["messages"][-1]["content"], "<SOURCE>\nde lithium)\n</SOURCE>")
+        self.assertEqual(payload["messages"][-1]["content"],
+                         "<CONTEXT>\nPrevious row contains  and a different description.\n</CONTEXT>\n<SOURCE>\nde lithium)\n</SOURCE>")
         self.assertEqual(len(payload["messages"]), 2)
         self.assertNotIn(context, json.dumps(payload))
         self.assertNotIn("3091", json.dumps(payload))
@@ -806,6 +876,25 @@ class FormulaPlaceholderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Traditional Chinese characters", reading.table_cell_messages("Label", "en", "zh-TW")[0]["content"])
         self.assertIn("Month names", payload["messages"][0]["content"])
         self.assertNotIn("PBM", payload["messages"][0]["content"])
+
+    async def test_table_answer_with_a_changed_number_is_retried_without_context(self):
+        calls = []
+
+        def handler(request):
+            calls.append(json.loads(request.content)["messages"][-1]["content"])
+            translated = "温度 -18.4 ℃" if len(calls) == 1 else "温度 -18.5 ℃"
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": translated}}]})
+
+        block = dict(kind="text", sourceType="table_cell", sourceText="Temperature -18.5 °C",
+                     translationContext="Room temperature 21.0 °C")
+        service = dict(provider="custom", kind="openai", model="test", baseURL="https://example.test/v1", apiKey="test-only")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await reading.translate_block(client, block, service, "en", "zh")
+        self.assertEqual(block["translatedText"], "温度 -18.5 ℃")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Room temperature", calls[0])
+        self.assertNotIn("21.0", calls[0])
+        self.assertNotIn("Room temperature", calls[1])
 
     async def test_unchanged_model_answer_counts_as_preserved(self):
         passage = "Whenever possible, use a program to modify the data."

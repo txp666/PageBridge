@@ -3,6 +3,15 @@ import XCTest
 @testable import PageBridgeCore
 
 final class StructuredReadingMathTests: XCTestCase {
+    func testPlainTextNeverRasterizesThePageToLookForMath() {
+        let block = StructuredReadingBlock(id: "body", kind: "text", sourceText: "Plain paragraph", status: "preserved")
+        let image = NSImage(size: NSSize(width: 100, height: 100), flipped: false) { _ in
+            XCTFail("Text without inline formulas must not request any source pixels")
+            return false
+        }
+        XCTAssertTrue(StructuredReadingMathImages.crops(for: block, image: image, pageSize: image.size).isEmpty)
+    }
+
     private func image(width: Int = 100, height: Int = 100) throws -> NSImage {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,

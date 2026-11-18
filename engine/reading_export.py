@@ -3,7 +3,7 @@
 Each translated page starts from the original page itself, so photos, line art
 and untranslated text stay vector. Only the glyphs the reader draws over are
 removed, exactly as for the reading background; translations become real,
-searchable text fitted into their source boxes. No service or network is used.
+searchable text fitted into the available space on the same line. No service or network is used.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import html
 import io
-import math
 import os
 from pathlib import Path
 import re
@@ -19,7 +18,10 @@ import tempfile
 
 import pymupdf
 
-from reading_background import _rect, glyph_owners, remove_text, source_bold, spans_in, translated_blocks, visible_glyphs
+from reading_background import (_rect, add_page_background, glyph_owners, remove_text, source_bold,
+                                spans_in, translated_blocks, visible_glyphs)
+from reading_layout import estimated_font_size
+from reading_outlines import clear_outlines, outline_colors
 from structured_reading import ReadingError, load_reading
 
 ARTIFACT_TYPE = "reading-export"
@@ -94,29 +96,17 @@ def _embolden(page):
         doc.update_stream(xref, stream)
 
 
-def _css(block, size, background, indent):
+def _css(block, size, background, indent, alignment):
     color = _color(block.get("foregroundColor"))
     if color is None:
         # Reader rule: light text on a dark filled region, otherwise black.
         rgb = background or [255, 255, 255]
         color = [255] * 3 if rgb[0] * .299 + rgb[1] * .587 + rgb[2] * .114 < 128 else [0] * 3
     line_height = 1.35 if block.get("inlineMath") else 1.15
+    alignment_style = f"text-align: {alignment}; " if alignment else ""
     return (f"body {{margin: 0; padding: 0; font-family: sans-serif; line-height: {line_height}; "
-            f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
+            f"{alignment_style}font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
             f" p {{margin: 0; text-indent: {indent:.3f}pt}}")
-
-
-def estimated_font_size(block):
-    """Font size from the region's area and character count, for text without a text layer
-    (scans); within ±25% of the real size on the demo pages."""
-    text = (block.get("sourceText") or "").strip()
-    bbox = block.get("bbox")
-    if block.get("kind") not in {"text", "heading", "list"} or len(text) < 3 or not bbox or len(bbox) != 4:
-        return None
-    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    if width <= 0 or height <= 0:
-        return None
-    return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
 
 
 def _start_size(block, glyphs):
@@ -144,7 +134,7 @@ def _subtract(rect, holes):
     return parts
 
 
-def translate_page(document, index, page_result, keep):
+def translate_page(document, index, page_result, keep, outlines=()):
     """Replace one page's translated regions in place."""
     page = document[index]
     area = pymupdf.Rect(0, 0, page.rect.width, page.rect.height)
@@ -178,7 +168,7 @@ def translate_page(document, index, page_result, keep):
                     probes.append(pymupdf.Rect(x - .05, y - .05, x + .05, y + .05))
             if probes:
                 remove_text(page, probes, [], [])
-    else:
+    if not native or not glyphs:
         # A scan: cover each region with its sampled colour, as the reader does.
         # An invisible OCR layer under it is removed so search finds only the translation.
         rotation, origin = page.rotation_matrix, page.rect.tl
@@ -189,7 +179,10 @@ def translate_page(document, index, page_result, keep):
     archive = pymupdf.Archive()
     crops = [_formula_images(page, block, archive, index) for index, block in enumerate(drawn)]
     if native:
-        remove_text(page, [glyph.native for glyph in owned], spans_in(page, spans, regions), formulas, keep)
+        outlined = outline_colors(outlines)
+        native_regions = [rect for block, rect in zip(drawn, regions) if block["id"] not in outlined]
+        clear_outlines(page, outlines)
+        remove_text(page, [glyph.native for glyph in owned], spans_in(page, spans, native_regions), formulas, keep)
     items, fills = {False: [], True: []}, []
     holes = [_rect(block.get("bbox")) for block in page_result["blocks"] if block.get("kind") in SOURCE_REGIONS]
     for block, rect, images in zip(drawn, regions, crops):
@@ -210,7 +203,13 @@ def translate_page(document, index, page_result, keep):
         body = _body(block, images)
         if indent:
             body = "<p>" + body.replace("<br>", "</p><p>") + "</p>"
-        items[bold].append((rect, body, _css(block, size, background, indent)))
+        # Clearing, source font measurement and fills use the original glyph box.
+        right = page_result.get("layoutRightEdges", {}).get(block["id"], rect.x1)
+        layout = pymupdf.Rect(rect.x0, rect.y0, right, rect.y1)
+        alignment = None
+        if cell := page_result.get("cellLayouts", {}).get(block["id"]):
+            layout.x0, layout.x1, alignment = cell["left"], cell["right"], cell["alignment"]
+        items[bold].append((layout, body, _css(block, size, background, indent, alignment)))
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     weights = [bold for bold in items if items[bold]]
@@ -283,12 +282,28 @@ async def export(request, events):
         for index in range(count):
             for xref, *_ in work[index].get_images(full=True):
                 usage.setdefault(xref, set()).add(index)
+        coverage = dict(positionedBlocks=0, unplacedBlocks=0, unchangedBlocks=0, failedBlocks=0,
+                        failedPages=0, unreviewedBlocks=0)
+        unplaced_pages = []
         try:
             for position, number in enumerate(selected):
                 events.emit("progress", stage="export", progress=0.9 * position / len(selected),
                             message=f"正在导出第 {position + 1} / {len(selected)} 页")
-                translate_page(work, number - 1, pages[number],
-                               {xref for xref, used in usage.items() if used != {number - 1}})
+                page_result = pages[number]
+                outlines = add_page_background(data, page_result, include_image=False)
+                positioned = set(page_result.get("backgroundBlocks", []))
+                blocks = page_result["blocks"]
+                unplaced = sum(b.get("status") == "translated" and b["id"] not in positioned for b in blocks)
+                if unplaced:
+                    unplaced_pages.append(number)
+                coverage["positionedBlocks"] += len(positioned)
+                coverage["unplacedBlocks"] += unplaced
+                coverage["unchangedBlocks"] += sum(b.get("status") == "preserved" and bool(b.get("model")) for b in blocks)
+                coverage["failedBlocks"] += sum(b.get("status") == "source_fallback" for b in blocks)
+                coverage["failedPages"] += page_result.get("status") == "source_fallback"
+                coverage["unreviewedBlocks"] += sum(b.get("reviewed") is False for b in blocks)
+                translate_page(work, number - 1, page_result,
+                               {xref for xref, used in usage.items() if used != {number - 1}}, outlines)
                 await _checkpoint()
             events.emit("stage", stage="save", progress=0.9, message="正在保存导出 PDF。")
             if request["kind"] == "bilingual":
@@ -324,5 +339,16 @@ async def export(request, events):
         finally:
             if temporary and os.path.exists(temporary):
                 os.remove(temporary)
+    title = "双语" if request["kind"] == "bilingual" else "译文"
+    message = f"{title} PDF 已导出。"
+    if unplaced_pages:
+        locations = "、".join(map(str, unplaced_pages[:8])) + (" 等" if len(unplaced_pages) > 8 else "")
+        message += f"第 {locations} 页共有 {coverage['unplacedBlocks']} 处已有译文但保留原文，可在阅读稿中查看。"
+    if coverage["unchangedBlocks"]:
+        message += f"模型对 {coverage['unchangedBlocks']} 处原样返回。"
+    if coverage["failedBlocks"] or coverage["failedPages"]:
+        message += f"有 {coverage['failedPages']} 页解析失败、{coverage['failedBlocks']} 处翻译失败。"
+    if coverage["unreviewedBlocks"]:
+        message += f"有 {coverage['unreviewedBlocks']} 处使用初译，校对未完成。"
     events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, outputPath=str(output), pageCount=expected,
-                message="双语 PDF 已导出。" if request["kind"] == "bilingual" else "译文 PDF 已导出。")
+                coverage=coverage, message=message)

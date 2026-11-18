@@ -60,8 +60,21 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
                       Set(blocks).count == blocks.count, Set(blocks).isSubset(of: allowed) else {
                     throw BridgeError.message("阅读稿的原页背景无效。")
                 }
-            } else if page.backgroundBlocks != nil {
+            } else if page.backgroundBlocks?.isEmpty == false {
                 throw BridgeError.message("阅读稿缺少原页背景。")
+            }
+            if let edges = page.layoutRightEdges {
+                guard Set(edges.keys).isSubset(of: Set(page.backgroundBlocks ?? [])),
+                      edges.values.allSatisfy({ $0.isFinite && $0 > 0 && $0 <= page.width }) else {
+                    throw BridgeError.message("阅读稿的译文行宽无效。")
+                }
+            }
+            if let cells = page.cellLayouts {
+                let allowed = Set(page.blocks.filter { $0.sourceType == "table_cell" }.map(\.id))
+                    .intersection(page.backgroundBlocks ?? [])
+                guard Set(cells.keys).isSubset(of: allowed), cells.values.allSatisfy({
+                    $0.left >= 0 && $0.left < $0.right && $0.right <= page.width
+                }) else { throw BridgeError.message("阅读稿的表格排版范围无效。") }
             }
             if let filled = page.backgroundFillBlocks {
                 let colors = Set(page.blocks.filter { $0.backgroundColor != nil }.map(\.id))
@@ -126,8 +139,21 @@ public struct StructuredReadingPage: Codable, Sendable, Equatable, Identifiable 
     public var decorationsCoordinateSpace: String?
     public var backgroundImage: String?
     public var backgroundBlocks: [String]?
+    public var layoutRightEdges: [String: Double]?
+    public var cellLayouts: [String: StructuredReadingCellLayout]?
     public var backgroundFillBlocks: [String]?
     public var id: Int { pageNumber }
+    public var needsLayoutMeasurement: Bool {
+        backgroundBlocks?.isEmpty == false && (layoutRightEdges == nil
+            || (cellLayouts == nil && blocks.contains { $0.sourceType == "table_cell" }))
+    }
+}
+
+public struct StructuredReadingCellLayout: Codable, Sendable, Equatable {
+    public enum Alignment: String, Codable, Sendable { case left, center, right }
+    public var left: Double
+    public var right: Double
+    public var alignment: Alignment
 }
 
 public struct StructuredReadingBlock: Codable, Sendable, Equatable, Identifiable {

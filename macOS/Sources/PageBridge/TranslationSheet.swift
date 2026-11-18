@@ -12,7 +12,7 @@ struct TranslationSheet: View {
     @State private var glossaryIDs: [String] = []
     @State private var glossaryManagerPresented = false
     @State private var append = true
-    @State private var translateTables = false
+    @State private var translateTables = true
 
     static let languages: [(String, String)] = [
         ("en", "英语"), ("zh", "简体中文"), ("zh-TW", "繁体中文"),

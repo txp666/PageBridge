@@ -320,7 +320,7 @@ final class AppModel: ObservableObject {
                       PDFDocument(url: destination)?.pageCount == count else {
                     throw BridgeError.message("导出的 PDF 未通过完整性检查。")
                 }
-                statusMessage = "\(kind.title) 已导出至 \(destination.path)"
+                statusMessage = result.message ?? "\(kind.title) 已导出至 \(destination.path)"
             } catch {
                 // The worker replaces the target only after a complete export, so nothing partial is left.
                 statusMessage = cancelRequested ? "已取消导出。" : "导出失败：\(error.localizedDescription)"
@@ -398,13 +398,28 @@ final class AppModel: ObservableObject {
             guard selectedID == record.id, selectedDocument?.readingPath == record.readingPath else { return }
             readingLoading = false
             switch result {
-            case .success(let reading):
+            case .success(var reading):
                 structuredReading = reading
                 if navigateToFirst, let first = reading.selectedPages.first {
                     page = first
                     // Page reports from scrolling do not move PDFKit. Completion
                     // must also issue an explicit navigation request for the source.
                     readingNavigationRequest = PDFPageNavigation(page: first)
+                }
+                // Older immutable drafts already contain the cleared background needed to measure their lines.
+                if reading.pages.contains(where: \.needsLayoutMeasurement) {
+                    let request = WorkerRequest(action: "reading_layout", inputPath: record.inputPath, readingPath: url.path)
+                    guard let result = try? await EngineRunner(location: try EngineLocation.find()).run(request),
+                          let edges = result.layoutRightEdges, selectedID == record.id,
+                          selectedDocument?.readingPath == record.readingPath else { return }
+                    for index in reading.pages.indices {
+                        let key = String(reading.pages[index].pageNumber)
+                        if let measured = edges[key] {
+                            reading.pages[index].layoutRightEdges = measured
+                            reading.pages[index].cellLayouts = result.cellLayouts?[key]
+                        }
+                    }
+                    structuredReading = reading
                 }
             case .failure(let error): readingLoadError = error.localizedDescription
             }

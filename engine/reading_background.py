@@ -13,6 +13,10 @@ from typing import NamedTuple
 
 import pymupdf
 
+from reading_outlines import clear_outlines, outline_colors, verified_outlines
+from reading_layout import cell_layouts, line_right_edges, source_rect as _rect
+from reading_tables import table_cells
+
 REDACTION_BATCH = 25
 
 
@@ -98,14 +102,6 @@ def coalesce_text_redactions(source, rectangles):
             result.append(pymupdf.Rect(rect))
         previous_numeric = numeric
     return result
-
-
-def _rect(value):
-    if (isinstance(value, list) and len(value) == 4
-            and all(type(v) in (int, float) and math.isfinite(v) for v in value)):
-        rect = pymupdf.Rect(value)
-        return None if rect.is_empty else rect
-    return None
 
 
 def translated_blocks(page_result):
@@ -234,7 +230,7 @@ def remove_text(page, glyph_boxes, span_boxes, formula_boxes, keep=()):
         page.apply_redactions(images=0, graphics=0, text=0)
 
 
-def residual_text_fills(before, after, blocks, owners, protected, scale, load_native_mask):
+def residual_text_fills(before, after, blocks, owners, protected, scale, load_native_mask, uncleared=None):
     """Find duplicated raster/outline text that native redaction cannot clear.
 
     A searchable scan may paint text both as glyphs and as pixels. Only use the
@@ -274,14 +270,20 @@ def residual_text_fills(before, after, blocks, owners, protected, scale, load_na
             continue
         ink = remaining = 0
         for glyph in owners[block["id"]]:
+            glyph_ink = glyph_remaining = 0
             left, top, right, bottom = bounds(glyph.local)
             for y in range(top, bottom, max(1, (bottom - top) // 10)):
                 for x in range(left, right, max(1, (right - left) // 10)):
                     if close(pixel(original, x, y), foreground):
                         ink += 1
+                        glyph_ink += 1
                         # A lower-resolution duplicate is antialiased: its
                         # visible grey edges need not equal the native ink RGB.
-                        remaining += (background[pivot] - pixel(cleared, x, y)[pivot]) / delta[pivot] > .25
+                        survives = (background[pivot] - pixel(cleared, x, y)[pivot]) / delta[pivot] > .25
+                        remaining += survives
+                        glyph_remaining += close(pixel(cleared, x, y), foreground)
+            if uncleared is not None and glyph_ink >= 4 and glyph_remaining >= glyph_ink * .8:
+                uncleared.add(block["id"])
         if ink < 16 or remaining < ink * .8:
             continue
         left, top, right, bottom = bounds((box + (-1.5, -1.5, 1.5, 1.5)) & page_area)
@@ -327,26 +329,108 @@ def residual_text_fills(before, after, blocks, owners, protected, scale, load_na
     return fills
 
 
-def add_page_background(input_path, page_result):
+def region_changed(before, after, rect, scale):
+    """Require visible evidence of removal, independently of PDF font or producer."""
+    box = (pymupdf.Rect(rect) * pymupdf.Matrix(scale, scale)).irect & before.irect
+    if box.is_empty:
+        return False
+    original, cleared = before.samples_mv, after.samples_mv
+    for y in range(box.y0, box.y1):
+        start, end = y * before.stride + box.x0 * 3, y * before.stride + box.x1 * 3
+        if original[start:end] != cleared[start:end]:
+            return True
+    return False
+
+
+def _place_on_flat_paper(pixmap, matrix, page_result, translated):
+    """Keep the OCR overlay for detected text on a solid scanned background."""
+    placed, filled = [], []
+    for block in translated:
+        box = pymupdf.Rect(block["bbox"])
+        pixels = (box * matrix).irect & pixmap.irect
+        if pixels.is_empty:
+            continue
+        coverage, paper = pixmap.color_topusage(clip=pixels)
+        if coverage < .8:
+            continue
+        if coverage < 1:
+            if any(other is not block and (area := _rect(other.get("bbox"))) is not None and box.intersects(area)
+                   for other in page_result["blocks"]):
+                continue
+            border = (pixels + (-1, -1, 1, 1)) & pixmap.irect
+            sides = (pymupdf.IRect(border.x0, border.y0, border.x1, border.y0 + 1),
+                     pymupdf.IRect(border.x0, border.y1 - 1, border.x1, border.y1),
+                     pymupdf.IRect(border.x0, border.y0, border.x0 + 1, border.y1),
+                     pymupdf.IRect(border.x1 - 1, border.y0, border.x1, border.y1))
+            if any(pixmap.color_topusage(clip=side) != (1, paper) for side in sides):
+                continue
+            pixmap.set_rect(pixels, paper)
+            filled.append(block["id"])
+        block["backgroundColor"] = list(paper)
+        dark = sum(value * weight for value, weight in zip(paper, (.299, .587, .114))) < 128
+        block["foregroundColor"] = [255 if dark else 0] * 3
+        placed.append(block["id"])
+    return placed, filled
+
+
+def add_page_background(input_source, page_result, *, include_image=True):
+    """Prepare an atomic backdrop and return the verified outline removal plan.
+
+    Export can use the same preparation from its immutable source bytes,
+    without serializing a PNG that it will never display.
+    """
+    def open_source():
+        if isinstance(input_source, bytes):
+            return pymupdf.open(stream=input_source, filetype="pdf")
+        return pymupdf.open(input_source)
+
     page_result.pop("backgroundImage", None)
     page_result.pop("backgroundBlocks", None)
     page_result.pop("backgroundFillBlocks", None)
+    page_result["layoutRightEdges"] = {}
+    page_result["cellLayouts"] = {}
     translated = translated_blocks(page_result)
     if not translated:
-        return
-    with pymupdf.open(input_path) as pdf:
+        return []
+    with open_source() as pdf:
         source = pdf[page_result["pageNumber"] - 1]
+        cells = table_cells(source, page_result["blocks"])
         origin = source.rect.tl
+        scale = min(1800 / source.rect.width, 2400 / source.rect.height)
+        matrix = pymupdf.Matrix(scale, scale).pretranslate(-origin.x, -origin.y)
         visible, native_spans = visible_glyphs(source)
         if not visible:
-            return
+            pixmap = source.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
+            ids, fills = _place_on_flat_paper(pixmap, pymupdf.Matrix(scale, scale), page_result, translated)
+            if ids and include_image:
+                page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+            if fills:
+                page_result["backgroundFillBlocks"] = fills
+            page_result["backgroundBlocks"] = ids
+            page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
+            page_result["cellLayouts"] = cell_layouts(page_result, pixmap, cells)
+            page_result.pop("decorations", None)
+            return []
         boxes = {b["id"]: pymupdf.Rect(b["bbox"]) for b in translated}
         owners = glyph_owners(visible, translated)
+        outlines = verified_outlines(source, [block for block in translated if owners[block["id"]]])
+        outlined = outline_colors(outlines)
 
         redactions, background_ids = [], []
         for block in translated:
             chars = owners[block["id"]]
             if not chars:
+                continue
+            if block["id"] in outlined:
+                # The search layer does not paint. Its nominal color and
+                # weight cannot describe the PDF paths that were visible.
+                # Start at the body glyphs so preserved list markers and other
+                # graphics in the parser's left margin stay clear of the text.
+                block["bbox"][0] = max(boxes[block["id"]].x0, min(glyph.local.x0 for glyph in chars))
+                block["foregroundColor"] = outlined[block["id"]]
+                block["sourceBold"] = block["kind"] == "heading"
+                background_ids.append(block["id"])
+                redactions.extend(g.native for g in chars)
                 continue
             if block.get("kind") == "heading" and len({g.rgb for g in chars}) > 1:
                 # A combined heading can contain a white badge on a black bar
@@ -370,37 +454,65 @@ def add_page_background(input_path, page_result):
             redactions.extend(g.native for g in chars)
 
         selected = [block for block in translated if block["id"] in background_ids]
-        scale = min(1800 / source.rect.width, 2400 / source.rect.height)
-        matrix = pymupdf.Matrix(scale, scale).pretranslate(-origin.x, -origin.y)
-        remove_text(source, redactions, spans_in(source, native_spans, [boxes[block["id"]] for block in selected]),
-                    [formula["bbox"] for block in selected for formula in block.get("inlineMath", [])])
-        pixmap = source.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
-        if selected:
+        def clear(page, blocks, glyph_boxes):
+            clear_outlines(page, outlines)
+            native_blocks = [b for b in blocks if b["id"] not in outlined]
+            remove_text(page, glyph_boxes, spans_in(page, native_spans, [boxes[b["id"]] for b in native_blocks]),
+                        [f["bbox"] for b in native_blocks for f in b.get("inlineMath", [])])
+            return page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
+
+        pixmap = clear(source, selected, redactions)
+        native_selected = [b for b in selected if b["id"] not in outlined]
+        if native_selected:
             # Render the immutable reference separately, after the cleared page,
             # so comparison does not warm that page's image caches before redaction.
-            with pymupdf.open(input_path) as reference_pdf:
+            with open_source() as reference_pdf:
                 before = reference_pdf[page_result["pageNumber"] - 1].get_pixmap(
                     matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
             protected = [rect for block in page_result["blocks"] if block["id"] not in background_ids
                          if (rect := _rect(block.get("bbox"))) is not None]
             def native_mask():
                 try:
-                    with pymupdf.open(input_path) as mask_pdf:
+                    with open_source() as mask_pdf:
                         page = mask_pdf[page_result["pageNumber"] - 1]
                         page.add_redact_annot(page.rect * page.derotation_matrix, fill=False, cross_out=False)
                         page.apply_redactions(images=1, graphics=2, text=1)
                         return page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=True, annots=False)
                 except (pymupdf.mupdf.FzErrorBase, RuntimeError, ValueError):
                     return None
-            fills = residual_text_fills(before, pixmap, selected, owners, protected, scale, native_mask)
+            uncleared = set()
+            changed = region_changed(before, pixmap, [0, 0, page_result["width"], page_result["height"]], scale)
+            mask = native_mask() if not changed else None
+            if not changed and (mask is None or (mask.is_unicolor and mask.pixel(0, 0)[3] == 0)):
+                # The text operations painted no removable ink. No font or
+                # producer identification is needed to reject these overlays.
+                fills, retained = [], {block["id"] for block in native_selected}
+            else:
+                fills = residual_text_fills(before, pixmap, native_selected, owners, protected, scale, native_mask, uncleared)
+                filled_ids = {block["id"] for block in fills}
+                retained = {block["id"] for block in native_selected if block["id"] not in filled_ids
+                            and (block["id"] in uncleared or any(not region_changed(before, pixmap, glyph.local, scale)
+                                                                for glyph in owners[block["id"]]))}
+            if retained:
+                # Rebuild from the source so retained passages keep all of
+                # their original text and formulas.
+                background_ids = [identifier for identifier in background_ids if identifier not in retained]
+                selected = [block for block in selected if block["id"] not in retained]
+                with open_source() as clean_pdf:
+                    pixmap = clear(clean_pdf[page_result["pageNumber"] - 1], selected,
+                                   [g.native for block in selected for g in owners[block["id"]]])
             for block in fills:
                 pixels = (pymupdf.Rect(block["bbox"]) * pymupdf.Matrix(scale, scale)).irect & pixmap.irect
                 pixmap.set_rect(pixels, tuple(round(v) for v in block["backgroundColor"]))
             if fills:
                 page_result["backgroundFillBlocks"] = [block["id"] for block in fills]
-        page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+        if background_ids and include_image:
+            page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
         page_result["backgroundBlocks"] = background_ids
+        page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
+        page_result["cellLayouts"] = cell_layouts(page_result, pixmap, cells)
         # Their original pixels already exist in the page background. Keeping
         # thousands of duplicate vector commands inflates artifacts and would
         # invite clients to paint the old content over the translated text.
         page_result.pop("decorations", None)
+        return outlines

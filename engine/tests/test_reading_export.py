@@ -14,17 +14,22 @@ import uuid
 import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from outline_fixture import make_outline_pdf, outline_metadata
 from reading_background import add_page_background
+from reading_layout import line_right_edges, saved_layouts
 import reading_export
-from structured_reading import ReadingError
+from structured_reading import ReadingError, refine_list_geometry
 
 DEMO = Path(__file__).resolve().parents[2] / "demos/pdfs/better-figures.pdf"
 CHINESE = re.compile(r"[㐀-鿿]")
 
 
 class Events:
+    result = None
+
     def emit(self, kind, **fields):
-        pass
+        if kind == "result":
+            self.result = fields
 
 
 def native_blocks(path, number):
@@ -52,8 +57,10 @@ def draft(path, pages, folder, digest=None):
 
 
 def export(source, reading, output, kind):
+    events = Events()
     asyncio.run(reading_export.export({"inputPath": str(source), "readingPath": str(reading),
-                                       "outputPath": str(output), "kind": kind}, Events()))
+                                       "outputPath": str(output), "kind": kind}, events))
+    return events.result
 
 
 class ReadingExportTests(unittest.TestCase):
@@ -61,6 +68,92 @@ class ReadingExportTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+
+    def test_short_labels_use_column_width_at_their_own_source_size(self):
+        source, output = self.root / "labels.pdf", self.root / "translated.pdf"
+        rows = [("ID", "样本编号"), ("Collection time", "采样时间")]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=300, height=200)
+            for i, (text, _) in enumerate(rows):
+                page.insert_text((38, 50 + 40 * i), text, fontsize=18)
+            pdf.save(source)
+        boxes = native_blocks(source, 1)
+        reading = draft(source, {1: [dict(kind="text", bbox=boxes[src], sourceText=src,
+                                          translatedText=target, status="translated") for src, target in rows]}, self.root)
+        data = json.loads(reading.read_text())
+        meta = data["pages"][0]
+        narrow = meta["blocks"][0]
+        measured = meta.pop("layoutRightEdges")
+        self.assertGreater(measured[narrow["id"]] - narrow["bbox"][0], 4 * 18)
+        self.assertLess(narrow["bbox"][2] - narrow["bbox"][0], 24)
+        with pymupdf.open(source) as pdf:
+            self.assertEqual(saved_layouts(meta, pdf[0])[0], measured)
+        reading.write_text(json.dumps(data))  # Older drafts have only source bounds.
+        export(source, reading, output, "translated")
+        with pymupdf.open(output) as pdf:
+            lines = [s for b in pdf[0].get_text("dict")["blocks"] for l in b.get("lines", [])
+                     for s in l["spans"] if s["text"].strip()]
+            self.assertEqual([s["text"] for s in lines], [target for _, target in rows])
+            self.assertAlmostEqual(lines[0]["size"], lines[1]["size"], delta=.1)
+            self.assertGreater(lines[0]["size"], 14)
+            self.assertAlmostEqual(lines[0]["origin"][0], lines[1]["origin"][0], delta=.01)
+
+    def test_line_extensions_stop_at_occupied_regions_and_visible_rules(self):
+        pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 100), False)
+        pixmap.clear_with(255)
+        pixmap.set_rect(pymupdf.IRect(76, 40, 78, 55), (80, 20, 0))
+        def row(identifier, x0, x1, y, text):
+            return dict(id=identifier, kind="text", bbox=[x0, y, x1, y + 12], sourceText=text)
+        rows = [row("wide", 10, 160, 5, "A longer label"), row("short", 10, 23, 25, "ID"),
+                row("column2", 65, 93, 25, "Day"), row("rule", 10, 29, 40, "Key"),
+                row("small", 10, 28, 60, "low"), row("multi", 10, 30, 80, "A\nB")]
+        rows[4]["bbox"][3] = 66  # Genuine smaller source type has no aligned peer.
+        data = dict(width=200, height=100, blocks=rows, backgroundBlocks=[b["id"] for b in rows])
+        edges = line_right_edges(data, pixmap)
+        self.assertEqual(edges, {"short": 64, "rule": 76})
+
+    def test_visible_table_grid_preserves_merged_center_left_and_right_aligned_labels(self):
+        source, output = self.root / "cells.pdf", self.root / "translated.pdf"
+        rows = [("Test schedule", "检验日程", 160, 35, "center"), ("ID", "样本编号", 70, 75, "center"),
+                ("Operational condition", "运行", 220, 75, "center"), ("Label", "项目", 18, 115, "left"),
+                ("Total", "合计", 302, 115, "right")]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=320, height=180)
+            page.draw_rect((10, 10, 310, 170))
+            for y in (50, 90, 130):
+                page.draw_line((10, y), (310, y))
+            page.draw_line((130, 50), (130, 170))
+            for text, _, x, y, anchor in rows:
+                width = pymupdf.get_text_length(text, fontsize=12)
+                start = x - (width / 2 if anchor == "center" else width if anchor == "right" else 0)
+                page.insert_text((start, y), text, fontsize=12)
+            page.insert_text((170, 155), "1234", fontsize=12)
+            pdf.save(source)
+        blocks = [dict(kind="table", sourceType="native_table", sourceText="Measurements", status="preserved",
+                       bbox=[10, 10, 310, 170])]
+        with pymupdf.open(source) as pdf:
+            for text, target, *_ in rows:
+                blocks.append(dict(kind="text", sourceType="table_cell", sourceText=text, translatedText=target,
+                                   status="translated", bbox=list(pdf[0].search_for(text)[0])))
+        reading = draft(source, {1: blocks}, self.root)
+        data = json.loads(reading.read_text())
+        meta = data["pages"][0]
+        placements = meta.pop("cellLayouts")
+        with pymupdf.open(source) as pdf:
+            self.assertEqual(saved_layouts(meta, pdf[0])[1], placements)
+        reading.write_text(json.dumps(data))
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as translated:
+            spans = {s["text"]: s for b in translated[0].get_text("dict")["blocks"]
+                     for line in b.get("lines", []) for s in line["spans"]}
+            for block, (_, target, x, _, anchor) in zip(meta["blocks"][1:], rows):
+                plan = placements[block["id"]]
+                self.assertEqual(plan["alignment"], anchor)
+                rect = pymupdf.Rect(spans[target]["bbox"])
+                actual = {"center": (rect.x0 + rect.x1) / 2, "left": rect.x0, "right": rect.x1}[anchor]
+                self.assertAlmostEqual(actual, x, delta=1)
+            for clip in [(125, 50, 136, 168), (160, 135, 230, 167)]:
+                self.assertEqual(original[0].get_pixmap(clip=clip).samples, translated[0].get_pixmap(clip=clip).samples)
 
     def test_pdf_first_line_follows_the_source_indent(self):
         source = self.root / "indent-source.pdf"
@@ -161,6 +254,119 @@ class ReadingExportTests(unittest.TestCase):
             self.assertEqual(after.color_count(clip=pymupdf.IRect(160, 30, 180, 51)), 1)
             for point in [(250, 30), (30, 90), (30, 10)]:
                 self.assertEqual(before.pixel(*point), after.pixel(*point))
+
+    def test_outline_translation_preserves_the_photo_and_shared_form(self):
+        artwork = make_outline_pdf(self.root / "outline.pdf", photo=True, extra_font=True)
+        source = self.root / "two-page-form.pdf"
+        with pymupdf.open(artwork) as graphic, pymupdf.open() as pdf:
+            for _ in range(2):
+                page = pdf.new_page(width=graphic[0].rect.width, height=graphic[0].rect.height)
+                page.show_pdf_page(page.rect, graphic, 0)
+            pdf.save(source)
+        blocks = outline_metadata(source)["blocks"]
+        reading = draft(source, {1: blocks}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundBlocks"], [blocks[0]["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            self.assertEqual(result.page_count, 2)
+            self.assertIn("译文", result[0].get_text())
+            self.assertIn("Keep this source footer", result[0].get_text())
+            self.assertNotIn("Agi Agi", result[0].get_text())
+            self.assertEqual(result[1].get_pixmap().samples, original[1].get_pixmap().samples)
+            before, after = original[0].get_pixmap(), result[0].get_pixmap()
+            self.assertNotEqual(after.pixel(95, 31), before.pixel(95, 31))
+            for point in [(100, 70), (150, 50), (260, 35)]:
+                self.assertEqual(after.pixel(*point), before.pixel(*point))
+
+    def test_vector_list_marker_stays_left_of_the_translated_body(self):
+        outlined = make_outline_pdf(self.root / "outline.pdf")
+        source = self.root / "vector-list.pdf"
+        marker = pymupdf.Rect(13, 39, 20, 46)
+        with pymupdf.open(outlined) as pdf:
+            pdf[0].draw_rect(marker, fill=(0, 0, 0), color=None)
+            pdf[0].insert_text((24, 90), "1 Agi Agi")
+            pdf.save(source)
+        block = dict(outline_metadata(source)["blocks"][0], kind="text", bbox=[12, 28, 100, 56],
+                     sourceText="1 Agi Agi", status="preserved")
+        numbered = dict(id="p00001-b00002", kind="text", bbox=[12, 75, 100, 94], sourceText="1 Agi Agi")
+        refine_list_geometry(source, 1, {"blocks": [block, numbered]})
+        self.assertEqual(block["sourceText"], "Agi Agi")
+        self.assertEqual(numbered["sourceText"], "1 Agi Agi")
+        self.assertAlmostEqual(block["bbox"][0], 24)
+
+        # An existing draft can still have the parser's original, wider box.
+        block.update(bbox=[12, 28, 100, 56], status="translated", translatedText="列表译文")
+        reading = draft(source, {1: [block]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertAlmostEqual(page["blocks"][0]["bbox"][0], 24)
+        self.assertEqual(page["backgroundBlocks"], [block["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            text_box, = result[0].search_for("列表译文")
+            self.assertGreaterEqual(text_box.x0, 24)
+            self.assertEqual(result[0].get_pixmap(clip=marker).samples, original[0].get_pixmap(clip=marker).samples)
+
+    def test_offset_glyph_metrics_still_require_matching_visible_lettering(self):
+        original = make_outline_pdf(self.root / "outline.pdf", photo=True)
+        source = self.root / "offset.pdf"
+        with pymupdf.open(original) as pdf:
+            font = next(f[0] for f in pdf[0].get_fonts() if f[2] == "Type3")
+            for glyph in ("A", "g", "i"):
+                program = int(pdf.xref_get_key(font, "CharProcs/" + glyph)[1].split()[0])
+                metrics = pdf.xref_stream(program).split()
+                for index in (2, 4):
+                    metrics[index] = str(float(metrics[index]) + .08).encode()
+                pdf.update_stream(program, b" ".join(metrics))
+            pdf.save(source)
+        block = outline_metadata(source)["blocks"][0]
+        reading = draft(source, {1: [block]}, self.root)
+        self.assertEqual(json.loads(reading.read_text())["pages"][0]["backgroundBlocks"], [block["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original_pdf, pymupdf.open(output) as result:
+            self.assertIn("译文", result[0].get_text())
+            self.assertNotIn("Agi Agi", result[0].get_text())
+            art = pymupdf.Rect(235, 15, 285, 65)
+            self.assertEqual(original_pdf[0].get_pixmap(clip=art).samples, result[0].get_pixmap(clip=art).samples)
+
+    def test_unverified_artwork_stays_on_its_original_page(self):
+        source = make_outline_pdf(self.root / "ambiguous.pdf", artwork=True)
+        reading = draft(source, {1: outline_metadata(source)["blocks"]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundBlocks"], [])
+        self.assertNotIn("backgroundImage", page)
+        output = self.root / "translated.pdf"
+        result_event = export(source, reading, output, "translated")
+        self.assertEqual(result_event["coverage"]["positionedBlocks"], 0)
+        self.assertEqual(result_event["coverage"]["unplacedBlocks"], 1)
+        self.assertIn("第 1 页", result_event["message"])
+        with pymupdf.open(source) as original, pymupdf.open(output) as result:
+            self.assertEqual(result.page_count, original.page_count)
+            self.assertEqual(result[0].get_pixmap().samples, original[0].get_pixmap().samples)
+
+    def test_flat_scan_keeps_positioned_translation_and_clears_hidden_ocr(self):
+        source = self.root / "scan.pdf"
+        with pymupdf.open() as pdf, pymupdf.open() as raster:
+            photo = raster.new_page(width=300, height=180)
+            photo.insert_text((24, 50), "Scanned paragraph", fontsize=16)
+            page = pdf.new_page(width=300, height=180)
+            page.insert_image(page.rect, stream=photo.get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes("png"))
+            page.insert_text((24, 50), "Scanned paragraph", fontsize=16, render_mode=3)
+            pdf.save(source)
+        box = [22, 30, 185, 56]
+        reading = draft(source, {1: [dict(kind="text", bbox=box, sourceText="Scanned paragraph",
+                                         status="translated", translatedText="扫描段落")]}, self.root)
+        page = json.loads(reading.read_text())["pages"][0]
+        self.assertEqual(page["backgroundFillBlocks"], [page["blocks"][0]["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(output) as result:
+            self.assertIn("扫描段落", result[0].get_text().replace("\n", ""))
+            self.assertNotIn("Scanned paragraph", result[0].get_text())
+            self.assertEqual(result[0].get_pixmap().color_count(clip=pymupdf.IRect(125, 30, 170, 56)), 1)
 
     def test_draft_of_another_source_is_rejected(self):
         blocks = native_blocks(DEMO, 2)

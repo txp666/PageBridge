@@ -199,21 +199,34 @@ public sealed partial class MainWindow : Window
     private void ApplyMode()
     {
         var anchor = ActiveReadingPosition;
-        ResetDocumentSearch();
-        UpdateModeButtons();
-        leftPane.Visibility = mode.SelectedIndex == 2 ? Visibility.Collapsed : Visibility.Visible;
-        rightPane.Visibility = mode.SelectedIndex == 0 ? Visibility.Collapsed : Visibility.Visible;
-        originalPages.SetActive(mode.SelectedIndex != 2);
-        structuredReading.SetActive(mode.SelectedIndex != 0 && HasReading);
-        reader.ColumnDefinitions[0].Width = mode.SelectedIndex == 2 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        reader.ColumnDefinitions[1].Width = mode.SelectedIndex == 0 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        structuredActive = HasReading && mode.SelectedIndex == 2;
-        if (!bindingPages && selected is not null)
+        bool wasBinding = bindingPages;
+        bindingPages = true;
+        try
         {
+            ResetDocumentSearch();
+            UpdateModeButtons();
+            leftPane.Visibility = mode.SelectedIndex == 2 ? Visibility.Collapsed : Visibility.Visible;
+            rightPane.Visibility = mode.SelectedIndex == 0 ? Visibility.Collapsed : Visibility.Visible;
+            originalPages.SetActive(mode.SelectedIndex != 2);
+            structuredReading.SetActive(mode.SelectedIndex != 0 && HasReading);
+            reader.ColumnDefinitions[0].Width = mode.SelectedIndex == 2 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            reader.ColumnDefinitions[1].Width = mode.SelectedIndex == 0 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            structuredActive = HasReading && mode.SelectedIndex == 2;
+            if (wasBinding || selected is null) return;
+            // ChangeView clamps against the measured extent. A wider pane can
+            // put the saved page beyond the previous extent until layout finishes.
+            reader.UpdateLayout();
             if (structuredActive) structuredReading.MoveTo(anchor);
-            else originalPages.MoveTo(anchor);
-            SynchronizeReaders();
+            else
+            {
+                originalPages.MoveTo(anchor);
+                if (mode.SelectedIndex == 1 && sync.IsOn && HasReading)
+                    structuredReading.MoveTo(anchor);
+            }
         }
+        // ChangeView reports the final offset through ViewChanged. Reading it
+        // synchronously here would publish the previous, clamped page number.
+        finally { bindingPages = wasBinding; }
     }
     private void JumpToPage(int value)
     {

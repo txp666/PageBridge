@@ -26,6 +26,7 @@ final class StructuredReadingBackgroundTests: XCTestCase {
     func testEmbeddedBackgroundSurvivesEncodingAndKeepsTranslatedBlockIdentity() throws {
         var (document, reading) = try artifact()
         reading.pages[0].backgroundFillBlocks = ["p1-b1"]
+        reading.pages[0].layoutRightEdges = ["p1-b1": 175]
         reading.pages[0].blocks[0].backgroundColor = [255, 255, 255]
         let decoded = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
         XCTAssertNoThrow(try decoded.validate(for: document))
@@ -34,6 +35,8 @@ final class StructuredReadingBackgroundTests: XCTestCase {
         XCTAssertEqual(image.size, CGSize(width: 8, height: 6))
         XCTAssertEqual(decoded.pages[0].backgroundBlocks, ["p1-b1"])
         XCTAssertEqual(decoded.pages[0].backgroundFillBlocks, ["p1-b1"])
+        XCTAssertEqual(decoded.pages[0].layoutRightEdges, ["p1-b1": 175])
+        XCTAssertEqual(decoded.pages[0].blocks[0].bbox, [10, 10, 100, 30])
     }
 
     func testBackgroundNeverLoadsPathsURLsOrOversizedImageHeaders() throws {
@@ -43,6 +46,41 @@ final class StructuredReadingBackgroundTests: XCTestCase {
         var oversized = try png()
         oversized.replaceSubrange(16..<20, with: [0, 1, 0, 0])
         XCTAssertNil(StructuredReadingBackground.pngData(oversized.base64EncodedString()))
+    }
+
+    @MainActor func testPreparedPageReusesBackgroundButKeepsOriginalForFormulasAndNewDrafts() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var box = CGRect(x: 0, y: 0, width: 200, height: 300)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        context.beginPDFPage(nil)
+        context.setFillColor(NSColor.red.cgColor)
+        context.fill(box)
+        context.endPDFPage()
+        context.closePDF()
+
+        var metadata = try artifact().1.pages[0]
+        let pages = ReadingSourcePages()
+        let first = ReadingPageRequest(url: url, page: 1, readingPath: "/one/reading.json")
+        let loaded = await pages.page(first, metadata: metadata)
+        let result = try XCTUnwrap(loaded)
+        XCTAssertTrue(result.image === result.backgroundImage)
+        let cached = await pages.page(first, metadata: metadata)
+        XCTAssertTrue(result === cached)
+
+        let second = ReadingPageRequest(url: url, page: 1, readingPath: "/two/reading.json")
+        metadata.blocks[0].inlineMath = [.init(token: "[[PBM0]]", bbox: [10, 10, 25, 20])]
+        let updated = await pages.page(second, metadata: metadata)
+        let withMath = try XCTUnwrap(updated)
+        XCTAssertEqual(withMath.request, second)
+        XCTAssertNotNil(withMath.backgroundImage)
+        XCTAssertFalse(withMath.image === withMath.backgroundImage)
+        let crops = StructuredReadingMathImages.crops(for: metadata.blocks[0], image: withMath.image, pageSize: withMath.size)
+        XCTAssertNotNil(crops["[[PBM0]]"])
+
+        let original = await pages.page(.init(url: url, page: 1, readingPath: nil), metadata: nil)
+        XCTAssertEqual(original?.size, box.size)
+        XCTAssertNil(original?.backgroundImage)
     }
 
     func testBackgroundRequiresKnownTranslatedBlocksAndValidCoordinateSpace() throws {

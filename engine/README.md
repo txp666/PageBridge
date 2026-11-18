@@ -49,6 +49,7 @@ Start one worker process per request and write one UTF-8 JSON line to stdin. API
 | `prepare_reading` | Installs the MinerU runtime if needed; no service required |
 | `translate` | Validates input and pages, parses and translates a reading draft and publishes a result directory atomically |
 | `export_reading` | Writes a translated or bilingual PDF from a committed reading draft; no service or network |
+| `reading_layout` | Measures missing line widths from the prepared backgrounds in an older reading draft |
 | `suggest_terms` | Counts candidate terms in a PDF or reading draft and asks the service to pick and translate domain terms; nothing is saved |
 
 `kind` is `ollama` or `openai`. Ollama accepts only loopback hosts and uses its OpenAI-compatible `/v1` endpoint. Remote services require HTTPS and a key; supply the Base URL, not a `/chat/completions` URL. Timeouts are 10–600 seconds and concurrency 1–8. Optional `provider` names a preset (`deepSeek`, `alibaba`, `siliconFlow`, `openAI`, `ollama`, `custom`); known online presets must match their official endpoint, and other regions or gateways use `custom`. Known provider/model pairs receive matching request options; arbitrary model IDs carry no compatibility claim. Model-list discovery is a host request, not a worker action.
@@ -72,6 +73,8 @@ Every stdout line includes `protocolVersion`, `jobId`, `attemptId`, a monotonic 
 ```
 
 `kind` is `translated` (same page count and order; unselected pages are copied unchanged) or `bilingual` (every page of the original, each selected page followed by its translation). The draft must be a structured-reading artifact (`schemaVersion` 1) whose `sourceSHA256` and `pageCount` match the PDF. `outputPath` must end in `.pdf`, have an existing parent folder and differ from `inputPath`. The PDF is written to a temporary file in the target folder, reopened to check its page count and then renamed over the target, so the target is never half-written. Events are one `progress` per selected page (`正在导出第 n / N 页`), a `save` stage, then `result` with `artifactType: "reading-export"`, `outputPath` and `pageCount`. How pages are built is described in [ARCHITECTURE.md](../docs/ARCHITECTURE.md#导出译文-pdf-与双语-pdf).
+
+The export result includes a `coverage` object for the selected pages. `positionedBlocks` counts translations drawn on their original pages. `unplacedBlocks` counts translated passages available only in the reading draft. `unchangedBlocks` counts model responses identical to the source, including correctly preserved names. The remaining fields are `failedBlocks`, `failedPages` and `unreviewedBlocks`. Earlier drafts without review metadata contribute no review count.
 
 ## Cancellation, diagnostics and storage
 

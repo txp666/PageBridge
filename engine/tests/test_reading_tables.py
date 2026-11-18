@@ -8,10 +8,55 @@ import unittest
 import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reading_tables import refine_native_tables
+from outline_fixture import make_outline_pdf
+from reading_tables import TableCell, passage_groups, refine_native_tables, table_cells
 
 
 class NativeTableTests(unittest.TestCase):
+    def test_cell_ownership_uses_words_when_font_metrics_cross_a_row_edge(self):
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=220, height=100)
+            page.draw_rect((10, 10, 210, 90))
+            page.draw_line((10, 50), (210, 50))
+            page.draw_line((110, 10), (110, 90))
+            page.insert_text((19, 51), "Label", fontsize=10)
+            page.insert_text((77, 51), "32", fontsize=10)
+            page.insert_text((135, 51), "Header", fontsize=10)
+            blocks = [dict(id=text, sourceType="table_cell", sourceText=text, bbox=list(page.search_for(text)[0]))
+                      for text in ("Label", "Header")]
+            self.assertGreater(blocks[1]["bbox"][3], 50)
+            blocks += [dict(kind="table", bbox=[10, 10, 210, 90]),
+                       dict(kind="text", sourceType="table_caption", sourceText="Measurements", bbox=[10, 1, 100, 8]),
+                       dict(kind="text", sourceType="table_footnote", sourceText="Units in millimetres", bbox=[20, 92, 180, 99])]
+            # The number belongs to Label's cell. Moving that label as a whole would hide the number.
+            cells = table_cells(page, blocks)
+            self.assertEqual(set(cells), {"Header"})
+            self.assertEqual(cells["Header"].introduction, "Measurements\nUnits in millimetres")
+
+    def test_identical_labels_share_only_their_own_selected_field(self):
+        blocks = [dict(id=str(i), sourceText="Current", sourceType=source_type) for i, source_type in
+                  enumerate(["table_cell", "table_cell", "table_cell", "text"])]
+        fields = {str(i): TableCell(pymupdf.Rect(0, 0, 50, 20), ("record", column)) for i, column in enumerate((0, 0, 1))}
+        groups, repeats = passage_groups(blocks, fields)
+        self.assertEqual(groups, [[blocks[0]], [blocks[2]], [blocks[3]]])
+        self.assertEqual(repeats, [blocks[:2]])
+        self.assertEqual(passage_groups([blocks[1]], fields), ([[blocks[1]]], []))
+
+    def test_outlined_label_and_native_number_share_one_table(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outlined = make_outline_pdf(Path(folder) / "outline.pdf", extra_font=True)
+            source = Path(folder) / "table.pdf"
+            with pymupdf.open(outlined) as pdf:
+                pdf[0].insert_text((200, 50), "12,345", fontsize=14)
+                pdf.save(source)
+            data = {"blocks": [dict(id="p00001-b00001", kind="table", sourceText="old", status="preserved", bbox=[20, 20, 245, 61])]}
+            refine_native_tables(source, 1, data)
+            table, label = data["blocks"]
+            self.assertEqual(table["sourceType"], "native_table")
+            self.assertIn("12,345", table["sourceText"])
+            self.assertEqual((label["sourceType"], label["sourceText"]), ("table_cell", "Agi Agi"))
+            self.assertLess(label["bbox"][2], 100)
+
     def test_native_labels_keep_value_columns_out_of_model_text(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "table.pdf"

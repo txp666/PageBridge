@@ -84,6 +84,8 @@ jobs:
           Remove-Item Env:PYTHONPATH
           & engine/.venv/Scripts/python.exe -B -m unittest discover -s scripts -p 'test_windows*.py' -v *> validation/windows/packaging-tests.log
           if ($LASTEXITCODE -ne 0) { throw 'Packaging boundary tests failed.' }
+          dotnet run --project windows/PageBridge.BackendChecks -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Local RPC STA regression check failed.' }
       - name: Compile WinUI, package ZIP and compile Setup.exe with Inno Setup
         run: |
           & scripts/build-windows.ps1 -SkipEngineSetup *> validation/windows/build.log

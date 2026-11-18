@@ -1,5 +1,4 @@
 import AppKit
-import PDFKit
 import SwiftUI
 import PageBridgeCore
 
@@ -7,6 +6,7 @@ struct ReadingCanvasPlacement: Equatable, Identifiable {
     let block: StructuredReadingBlock
     let rect: CGRect
     let preferredFontSize: CGFloat
+    var alignment: StructuredReadingCellLayout.Alignment?
     var id: String { block.id }
     var overlaysTranslation: Bool {
         ["text", "heading", "list"].contains(block.kind) && block.status == "translated"
@@ -67,7 +67,7 @@ final class ReadingPageCanvasView: NSView {
                 backgroundColor: block.backgroundColor, foregroundColor: block.foregroundColor,
                 template: crops.count == block.inlineMath?.count ? block.translatedTemplate : nil,
                 inlineImages: crops, minimumFontSize: block.sourceType == "table_cell" ? 6.5 : 8,
-                firstLineIndent: block.firstLineIndent ?? 0, sourceBold: block.sourceBold))
+                firstLineIndent: block.firstLineIndent ?? 0, sourceBold: block.sourceBold, alignment: placement.alignment))
         })
         needsDisplay = true
     }
@@ -135,77 +135,5 @@ final class ReadingPageCanvasView: NSView {
         let style = NSMutableParagraphStyle(); style.alignment = .center
         NSAttributedString(string: symbol, attributes: [.font: NSFont.boldSystemFont(ofSize: max(5, size - 2)),
             .foregroundColor: NSColor.white, .paragraphStyle: style]).draw(in: badge)
-    }
-}
-
-struct ReadingSourcePage {
-    let image: NSImage
-    let size: CGSize
-    var backgroundImage: NSImage?
-}
-
-@MainActor final class ReadingSourcePages: ObservableObject {
-    private var pdf: PDFDocument?
-    private var path: String?
-    private let images = NSCache<NSString, NSImage>()
-    private let backgrounds = NSCache<NSString, NSImage>()
-    private var fonts: [String: CGFloat] = [:]
-
-    init() { images.countLimit = 3; backgrounds.countLimit = 3 }
-
-    func open(_ url: URL) {
-        guard path != url.path else { return }
-        objectWillChange.send()
-        path = url.path; pdf = PDFDocument(url: url)
-        images.removeAllObjects(); backgrounds.removeAllObjects(); fonts.removeAll()
-    }
-
-    func page(_ number: Int, metadata: StructuredReadingPage?) -> ReadingSourcePage? {
-        guard let page = pdf?.page(at: number - 1) else { return nil }
-        let bounds = page.bounds(for: .cropBox)
-        let rotated = abs(page.rotation % 180) == 90
-        let size = metadata.map { CGSize(width: $0.width, height: $0.height) }
-            ?? CGSize(width: rotated ? bounds.height : bounds.width, height: rotated ? bounds.width : bounds.height)
-        let key = "\(number)-\(size.width)-\(size.height)" as NSString
-        var background: NSImage?
-        if let encoded = metadata?.backgroundImage {
-            let backgroundKey = "\(number)-\(encoded.hashValue)" as NSString
-            background = backgrounds.object(forKey: backgroundKey)
-            if background == nil, let decoded = StructuredReadingBackground.image(encoded) {
-                backgrounds.setObject(decoded, forKey: backgroundKey); background = decoded
-            }
-        }
-        if let image = images.object(forKey: key) { return ReadingSourcePage(image: image, size: size, backgroundImage: background) }
-        let scale = min(3, 3000 / max(size.width, size.height))
-        let image = page.thumbnail(of: CGSize(width: size.width * scale, height: size.height * scale), for: .cropBox)
-        images.setObject(image, forKey: key)
-        return ReadingSourcePage(image: image, size: size, backgroundImage: background)
-    }
-
-    func fontSize(for block: StructuredReadingBlock, pageNumber: Int) -> CGFloat? {
-        guard ["text", "heading", "list"].contains(block.kind),
-              let box = block.bbox, box.count == 4, let page = pdf?.page(at: pageNumber - 1),
-              page.rotation % 360 == 0 else { return nil }
-        let key = "\(pageNumber)-\(box)"
-        if let cached = fonts[key] { return cached }
-        let crop = page.bounds(for: .cropBox)
-        let rect = CGRect(x: crop.minX + box[0], y: crop.maxY - box[3], width: box[2] - box[0], height: box[3] - box[1])
-            .intersection(crop)
-        guard let text = page.selection(for: rect)?.attributedString else { return nil }
-        var sizes: [(CGFloat, Int)] = []
-        text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
-            if let font = value as? NSFont, font.pointSize.isFinite, font.pointSize > 0 {
-                sizes.append((font.pointSize, range.length))
-            }
-        }
-        guard !sizes.isEmpty else { return nil }
-        sizes.sort { $0.0 < $1.0 }
-        let middle = sizes.reduce(0) { $0 + $1.1 } / 2
-        var count = 0
-        for (size, length) in sizes {
-            count += length
-            if count > middle { fonts[key] = size; return size }
-        }
-        return nil
     }
 }

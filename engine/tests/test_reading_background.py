@@ -128,7 +128,6 @@ class NativeBackgroundTests(unittest.TestCase):
         with pymupdf.open() as pdf:
             source = pdf.new_page(width=width, height=height)
             source.insert_image(source.rect, stream=pymupdf.Pixmap(pymupdf.csRGB, width, height, pixels, False).tobytes('png'))
-            expected = source.get_pixmap(matrix=pymupdf.Matrix(9, 9), alpha=False)
             source.insert_text((20, 35), 'Hello world', fontsize=12)
             source.insert_text((20, 100), 'www.example.org', fontsize=8)
             pdf.save(path)
@@ -136,10 +135,8 @@ class NativeBackgroundTests(unittest.TestCase):
         page['blocks'][0]['backgroundColor'] = [255, 255, 255]
         add_page_background(path, page)
         self.assertIsNone(page.get('backgroundFillBlocks'))
-        actual = pymupdf.Pixmap(base64.b64decode(page['backgroundImage']))
-        # Check the artwork only: the deliberately preserved URL is below it.
-        clip = pymupdf.IRect(15 * 9, 15 * 9, 100 * 9, 45 * 9)
-        self.assertEqual(actual.color_count(clip=clip, colors=True), expected.color_count(clip=clip, colors=True))
+        self.assertEqual(page['backgroundBlocks'], [])
+        self.assertNotIn('backgroundImage', page)
 
     def test_nonzero_origin_matches_page_local_raster(self):
         path = self.make_source(origin=True)
@@ -199,11 +196,9 @@ class NativeBackgroundTests(unittest.TestCase):
         metadata = dict(pageNumber=1, width=200, height=100, blocks=[dict(
             id='p00001-b00001', kind='heading', status='translated',
             sourceText='Part I Certification', translatedText='第一部分 证明', bbox=[10, 15, 180, 35])])
-        before = self.raster(path)
         add_page_background(path, metadata)
-        after = pymupdf.Pixmap(base64.b64decode(metadata['backgroundImage']))
         self.assertEqual(metadata['backgroundBlocks'], [])
-        self.assertEqual(before.samples, after.samples)
+        self.assertNotIn('backgroundImage', metadata)
         self.assertEqual(metadata['blocks'][0]['translatedText'], '第一部分 证明')
 
 

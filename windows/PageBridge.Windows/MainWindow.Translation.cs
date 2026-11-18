@@ -7,7 +7,7 @@ namespace PageBridge.Windows;
 public sealed partial class MainWindow
 {
     private sealed record TranslationChoice(string Source, string Target, string? Pages, IReadOnlyList<string>? GlossaryIds = null,
-        bool Append = false, bool TranslateTables = false);
+        bool Append = false, bool TranslateTables = true);
     private readonly Button exportCancel = new() { Content = "取消导出", FontSize = 11, MinHeight = 0, Height = 24, Padding = new Thickness(8, 1, 8, 1), Visibility = Visibility.Collapsed };
     private CancellationTokenSource? exportCancellation;
     private bool ReadingExportAvailable => selected is not null && HasReading && translationCancellation is null && !translationPreparing && exportCancellation is null;
@@ -40,7 +40,7 @@ public sealed partial class MainWindow
         var append = new CheckBox { Content = $"追加到现有阅读稿（保留已译的 {draftPages.Count} 页）", IsChecked = initial?.Append ?? true, FontSize = 13 };
         var appendRow = new StackPanel { Children = { append } };
         bool draftTables = selected?["reading_translate_tables"]?.GetValue<bool>() ?? true;
-        bool chosenTables = initial?.TranslateTables ?? false;
+        bool chosenTables = initial?.TranslateTables ?? true;
         var tables = new CheckBox { Content = "自动翻译表格", IsChecked = chosenTables, FontSize = 13 };
         tables.Click += (_, _) => chosenTables = tables.IsChecked == true;
         void UpdateAppend()
@@ -162,13 +162,14 @@ public sealed partial class MainWindow
         status.Text = "正在准备导出…";
         try
         {
-            await backend.ExportReadingAsync(id, kind, path, evt => DispatchJobProgressAsync(() =>
+            var result = await backend.ExportReadingAsync(id, kind, path, evt => DispatchJobProgressAsync(() =>
             {
                 if (!ReferenceEquals(exportCancellation, cancellation) || cancellation.IsCancellationRequested) return;
                 if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
                 var message = Text(evt, "message"); if (message != "") status.Text = message;
             }), cancellation.Token);
-            status.Text = (kind == "bilingual" ? "双语" : "译文") + " PDF 已导出：" + path;
+            var message = Text(result, "message");
+            status.Text = message.Length > 0 ? message : "PDF 已导出到 " + path;
         }
         catch (OperationCanceledException) { status.Text = "导出已取消。"; }
         finally

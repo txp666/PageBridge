@@ -189,16 +189,21 @@
                 "sourceType": {
                   "enum": [
                     "page_number",
+                    "native_text",
                     "native_table",
                     "table_cell",
                     "table_caption",
                     "table_footnote"
                   ],
-                  "description": "Identifies a non-body text role for layout and translation. native_table keeps the native values and grid. table_cell is a separately positioned native label."
+                  "description": "native_text is a positioned source passage recovered outside the parser's text regions. native_table keeps native values and grid. table_cell is a separately positioned native label."
                 },
                 "sourceBold": {
                   "type": "boolean",
                   "description": "Predominant bold or regular weight of the visible source glyphs in this region, when available."
+                },
+                "reviewed": {
+                  "type": "boolean",
+                  "description": "Whether this model translation completed the page-context review. Absent on older drafts and blocks without a model result."
                 },
                 "firstLineIndent": {
                   "type": "number",
@@ -265,7 +270,25 @@
             "items": {
               "type": "string"
             },
-            "description": "Only these blocks overlay text on the prepared backgroundImage. Clients do not repaint their backgrounds or original source regions."
+            "description": "Only these blocks overlay text on the prepared backgroundImage. An empty list allows the original page to be displayed directly."
+          },
+          "layoutRightEdges": {
+            "type": "object",
+            "additionalProperties": {"type": "number", "exclusiveMinimum": 0},
+            "description": "Optional map of positioned block IDs to the clear right extent of their line, measured in page points. Source bbox remains the region for text removal and locating the original."
+          },
+          "cellLayouts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["left", "right", "alignment"],
+              "properties": {
+                "left": {"type": "number", "minimum": 0},
+                "right": {"type": "number", "exclusiveMinimum": 0},
+                "alignment": {"enum": ["left", "center", "right"]}
+              }
+            },
+            "description": "Verified horizontal text area and source alignment of a translated whole cell, in page points."
           },
           "backgroundFillBlocks": {
             "type": "array",

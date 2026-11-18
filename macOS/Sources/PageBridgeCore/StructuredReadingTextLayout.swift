@@ -9,11 +9,11 @@ public struct StructuredReadingInlineImage {
 
 public enum StructuredReadingMathImages {
     public static func crops(for block: StructuredReadingBlock, image: NSImage, pageSize: CGSize) -> [String: StructuredReadingInlineImage] {
-        guard pageSize.width > 0, pageSize.height > 0,
+        guard let formulas = block.inlineMath, !formulas.isEmpty, pageSize.width > 0, pageSize.height > 0,
               let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return [:] }
         let sx = CGFloat(bitmap.width) / pageSize.width, sy = CGFloat(bitmap.height) / pageSize.height
         var result: [String: StructuredReadingInlineImage] = [:]
-        for formula in block.inlineMath ?? [] {
+        for formula in formulas {
             guard let original = StructuredReadingPageGeometry.rect(formula.bbox, pageSize: pageSize) else { continue }
             // OCR boxes may touch accent tips. This is a fixed rendering margin,
             // not a guessed formula boundary, and never changes stored coordinates.
@@ -49,9 +49,15 @@ public final class StructuredReadingTextLayout {
 
     private init(text: String, width: CGFloat, fontSize: CGFloat, weight: NSFont.Weight, foregroundColor: NSColor,
                  template: String?, images: [String: StructuredReadingInlineImage], referenceFontSize: CGFloat,
-                 firstLineIndent: CGFloat) {
+                 firstLineIndent: CGFloat, alignment: StructuredReadingCellLayout.Alignment?) {
         self.fontSize = fontSize
         let paragraph = NSMutableParagraphStyle()
+        switch alignment {
+        case .left: paragraph.alignment = .left
+        case .center: paragraph.alignment = .center
+        case .right: paragraph.alignment = .right
+        case nil: break
+        }
         paragraph.lineBreakMode = .byWordWrapping
         paragraph.firstLineHeadIndent = firstLineIndent * fontSize / max(1, referenceFontSize)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -81,7 +87,8 @@ public final class StructuredReadingTextLayout {
                            backgroundColor: [Double]? = nil, foregroundColor: [Double]? = nil, template: String? = nil,
                            inlineImages: [String: StructuredReadingInlineImage] = [:],
                            referenceFontSize: CGFloat? = nil, minimumFontSize: CGFloat = 8,
-                           firstLineIndent: CGFloat = 0, sourceBold: Bool? = nil) -> StructuredReadingTextLayout {
+                           firstLineIndent: CGFloat = 0, sourceBold: Bool? = nil,
+                           alignment: StructuredReadingCellLayout.Alignment? = nil) -> StructuredReadingTextLayout {
         // Small print (references, citations, footers) is often below the reader minimum, and
         // Chinese runs wider per character: let it shrink to 85% of its original size. Body
         // text of 9.4 pt or more keeps the reader minimum.
@@ -99,7 +106,8 @@ public final class StructuredReadingTextLayout {
             StructuredReadingTextLayout(text: text, width: bounds.width, fontSize: size,
                                         weight: sourceBold.map { $0 ? .bold : .regular } ?? (heading ? .semibold : .regular),
                                         foregroundColor: foreground, template: template, images: inlineImages,
-                                        referenceFontSize: referenceFontSize ?? preferredFontSize, firstLineIndent: firstLineIndent)
+                                        referenceFontSize: referenceFontSize ?? preferredFontSize, firstLineIndent: firstLineIndent,
+                                        alignment: alignment)
         }
         func fits(_ value: StructuredReadingTextLayout) -> Bool {
             value.measuredSize.height <= bounds.height && value.measuredSize.width <= bounds.width

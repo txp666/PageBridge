@@ -126,7 +126,9 @@ public sealed class BackendClient : IDisposable
         LocalSession? session = null;
         try
         {
-            await localRpcGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            // A free gate completes inline. Keep the process liveness check off the
+            // XAML thread: Process.HasExited can pump STA messages even with a zero timeout.
+            await localRpcGate.WaitAsync(lifetime.Token).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
             acquired = true;
             lifetime.Token.ThrowIfCancellationRequested();
             session = localSession;
@@ -232,7 +234,7 @@ public sealed class BackendClient : IDisposable
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Func<JsonObject, Task> onEvent,
         CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
-        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = false)
+        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = true)
     {
         // Only the profile ID crosses this interface. The bridge resolves
         // its saved credential privately through Windows Credential Manager.

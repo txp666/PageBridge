@@ -63,6 +63,7 @@ $env:PYTHONPATH = "$PWD/desktop"
 Remove-Item Env:PYTHONPATH
 ./engine/.venv/Scripts/python.exe -B -m unittest discover -s scripts -p 'test_windows*.py' -v
 dotnet run --project windows/PageBridge.GeometryChecks
+dotnet run --project windows/PageBridge.BackendChecks -c Release
 ./engine/.venv/Scripts/python.exe scripts/verify-windows-engine.py `
   --engine dist/PageBridge-<版本>-windows-x64/resources/engine `
   --output validation/windows/packaged-engine.json
