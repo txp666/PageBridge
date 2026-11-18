@@ -126,7 +126,9 @@ public sealed class BackendClient : IDisposable
         LocalSession? session = null;
         try
         {
-            await localRpcGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            // A free gate completes inline. Keep the process liveness check off the
+            // XAML thread: Process.HasExited can pump STA messages even with a zero timeout.
+            await localRpcGate.WaitAsync(lifetime.Token).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
             acquired = true;
             lifetime.Token.ThrowIfCancellationRequested();
             session = localSession;
