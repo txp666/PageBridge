@@ -489,7 +489,8 @@ def export_reading(request, root):
             events.finish("error", stage="failed", message="导出结果与保存位置不一致，请重新导出。")
         else:
             events.finish("result", progress=1.0, artifactType=result.get("artifactType"), kind=kind, outputPath=str(target),
-                          pageCount=result["pageCount"], message=result.get("message") or "PDF 已导出。")
+                          pageCount=result["pageCount"], message=result.get("message") or "PDF 已导出。",
+                          **({"coverage": result["coverage"]} if "coverage" in result else {}))
     except BaseException as error:
         if task and task.running:
             task.cancel()

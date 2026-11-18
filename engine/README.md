@@ -73,6 +73,8 @@ Every stdout line includes `protocolVersion`, `jobId`, `attemptId`, a monotonic 
 
 `kind` is `translated` (same page count and order; unselected pages are copied unchanged) or `bilingual` (every page of the original, each selected page followed by its translation). The draft must be a structured-reading artifact (`schemaVersion` 1) whose `sourceSHA256` and `pageCount` match the PDF. `outputPath` must end in `.pdf`, have an existing parent folder and differ from `inputPath`. The PDF is written to a temporary file in the target folder, reopened to check its page count and then renamed over the target, so the target is never half-written. Events are one `progress` per selected page (`正在导出第 n / N 页`), a `save` stage, then `result` with `artifactType: "reading-export"`, `outputPath` and `pageCount`. How pages are built is described in [ARCHITECTURE.md](../docs/ARCHITECTURE.md#导出译文-pdf-与双语-pdf).
 
+The export result includes a `coverage` object for the selected pages. `positionedBlocks` counts translations drawn on their original pages. `unplacedBlocks` counts translated passages available only in the reading draft. `unchangedBlocks` counts model responses identical to the source, including correctly preserved names. The remaining fields are `failedBlocks`, `failedPages` and `unreviewedBlocks`. Earlier drafts without review metadata contribute no review count.
+
 ## Cancellation, diagnostics and storage
 
 On macOS the worker leads its own process group; cancellation sends SIGTERM, then SIGKILL after the host's deadline. On Windows, a host keeps stdin open and may send this control line (also accepted on macOS):

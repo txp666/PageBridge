@@ -288,7 +288,9 @@ async def export(request, events):
         for index in range(count):
             for xref, *_ in work[index].get_images(full=True):
                 usage.setdefault(xref, set()).add(index)
-        retained = 0
+        coverage = dict(positionedBlocks=0, unplacedBlocks=0, unchangedBlocks=0, failedBlocks=0,
+                        failedPages=0, unreviewedBlocks=0)
+        unplaced_pages = []
         try:
             for position, number in enumerate(selected):
                 events.emit("progress", stage="export", progress=0.9 * position / len(selected),
@@ -296,8 +298,16 @@ async def export(request, events):
                 page_result = pages[number]
                 outlines = add_page_background(data, page_result, include_image=False)
                 positioned = set(page_result.get("backgroundBlocks", []))
-                retained += sum(block.get("status") == "translated" and block["id"] not in positioned
-                                for block in page_result["blocks"])
+                blocks = page_result["blocks"]
+                unplaced = sum(b.get("status") == "translated" and b["id"] not in positioned for b in blocks)
+                if unplaced:
+                    unplaced_pages.append(number)
+                coverage["positionedBlocks"] += len(positioned)
+                coverage["unplacedBlocks"] += unplaced
+                coverage["unchangedBlocks"] += sum(b.get("status") == "preserved" and bool(b.get("model")) for b in blocks)
+                coverage["failedBlocks"] += sum(b.get("status") == "source_fallback" for b in blocks)
+                coverage["failedPages"] += page_result.get("status") == "source_fallback"
+                coverage["unreviewedBlocks"] += sum(b.get("reviewed") is False for b in blocks)
                 translate_page(work, number - 1, page_result,
                                {xref for xref, used in usage.items() if used != {number - 1}}, outlines)
                 await _checkpoint()
@@ -337,6 +347,14 @@ async def export(request, events):
                 os.remove(temporary)
     title = "双语" if request["kind"] == "bilingual" else "译文"
     message = f"{title} PDF 已导出。"
-    if retained:
-        message += f"有 {retained} 处已译内容在 PDF 中保留原文，可在阅读稿中查看译文。"
-    events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, outputPath=str(output), pageCount=expected, message=message)
+    if unplaced_pages:
+        locations = "、".join(map(str, unplaced_pages[:8])) + (" 等" if len(unplaced_pages) > 8 else "")
+        message += f"第 {locations} 页共有 {coverage['unplacedBlocks']} 处已有译文但保留原文，可在阅读稿中查看。"
+    if coverage["unchangedBlocks"]:
+        message += f"模型对 {coverage['unchangedBlocks']} 处原样返回。"
+    if coverage["failedBlocks"] or coverage["failedPages"]:
+        message += f"有 {coverage['failedPages']} 页解析失败、{coverage['failedBlocks']} 处翻译失败。"
+    if coverage["unreviewedBlocks"]:
+        message += f"有 {coverage['unreviewedBlocks']} 处使用初译，校对未完成。"
+    events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, outputPath=str(output), pageCount=expected,
+                coverage=coverage, message=message)

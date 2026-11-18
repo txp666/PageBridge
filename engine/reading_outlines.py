@@ -172,10 +172,15 @@ def _matched_lines(drawing, ink, lines, baselines, size):
             controls[baselines[best]].append(control)
         else:
             unmatched.append((contour, control))
-    # A declared glyph box can be larger than the visible ink. Require
-    # substantial coverage of each box rather than equality of its edges.
-    aligned = sum((_envelope(parts) & ink[i]).get_area() >= ink[i].get_area() * .7
-                  for i, parts in matched.items())
+    # PDF metrics and paths can be slightly offset. Use the same positional
+    # tolerance in both directions. Cap overlap by the actual contour size so
+    # padding cannot turn a tiny decoration into a full glyph.
+    aligned = 0
+    for i, parts in matched.items():
+        actual = _envelope(parts)
+        overlap = ink[i] & (actual + padding)
+        area = min(actual.width, overlap.width) * min(actual.height, overlap.height)
+        aligned += area >= ink[i].get_area() * .7
     if aligned < len(ink) * .85 or sum(r.get_area() for r, _ in unmatched) > sum(r.get_area() for r in ink) * .02:
         return ()
     # Small accents or rules can be painted as part of a line of text. An

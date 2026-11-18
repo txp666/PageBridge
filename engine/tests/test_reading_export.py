@@ -24,8 +24,11 @@ CHINESE = re.compile(r"[㐀-鿿]")
 
 
 class Events:
+    result = None
+
     def emit(self, kind, **fields):
-        pass
+        if kind == "result":
+            self.result = fields
 
 
 def native_blocks(path, number):
@@ -53,8 +56,10 @@ def draft(path, pages, folder, digest=None):
 
 
 def export(source, reading, output, kind):
+    events = Events()
     asyncio.run(reading_export.export({"inputPath": str(source), "readingPath": str(reading),
-                                       "outputPath": str(output), "kind": kind}, Events()))
+                                       "outputPath": str(output), "kind": kind}, events))
+    return events.result
 
 
 class ReadingExportTests(unittest.TestCase):
@@ -217,6 +222,29 @@ class ReadingExportTests(unittest.TestCase):
             self.assertGreaterEqual(text_box.x0, 24)
             self.assertEqual(result[0].get_pixmap(clip=marker).samples, original[0].get_pixmap(clip=marker).samples)
 
+    def test_offset_glyph_metrics_still_require_matching_visible_lettering(self):
+        original = make_outline_pdf(self.root / "outline.pdf", photo=True)
+        source = self.root / "offset.pdf"
+        with pymupdf.open(original) as pdf:
+            font = next(f[0] for f in pdf[0].get_fonts() if f[2] == "Type3")
+            for glyph in ("A", "g", "i"):
+                program = int(pdf.xref_get_key(font, "CharProcs/" + glyph)[1].split()[0])
+                metrics = pdf.xref_stream(program).split()
+                for index in (2, 4):
+                    metrics[index] = str(float(metrics[index]) + .08).encode()
+                pdf.update_stream(program, b" ".join(metrics))
+            pdf.save(source)
+        block = outline_metadata(source)["blocks"][0]
+        reading = draft(source, {1: [block]}, self.root)
+        self.assertEqual(json.loads(reading.read_text())["pages"][0]["backgroundBlocks"], [block["id"]])
+        output = self.root / "translated.pdf"
+        export(source, reading, output, "translated")
+        with pymupdf.open(source) as original_pdf, pymupdf.open(output) as result:
+            self.assertIn("译文", result[0].get_text())
+            self.assertNotIn("Agi Agi", result[0].get_text())
+            art = pymupdf.Rect(235, 15, 285, 65)
+            self.assertEqual(original_pdf[0].get_pixmap(clip=art).samples, result[0].get_pixmap(clip=art).samples)
+
     def test_unverified_artwork_stays_on_its_original_page(self):
         source = make_outline_pdf(self.root / "ambiguous.pdf", artwork=True)
         reading = draft(source, {1: outline_metadata(source)["blocks"]}, self.root)
@@ -224,7 +252,10 @@ class ReadingExportTests(unittest.TestCase):
         self.assertEqual(page["backgroundBlocks"], [])
         self.assertNotIn("backgroundImage", page)
         output = self.root / "translated.pdf"
-        export(source, reading, output, "translated")
+        result_event = export(source, reading, output, "translated")
+        self.assertEqual(result_event["coverage"]["positionedBlocks"], 0)
+        self.assertEqual(result_event["coverage"]["unplacedBlocks"], 1)
+        self.assertIn("第 1 页", result_event["message"])
         with pymupdf.open(source) as original, pymupdf.open(output) as result:
             self.assertEqual(result.page_count, original.page_count)
             self.assertEqual(result[0].get_pixmap().samples, original[0].get_pixmap().samples)

@@ -189,16 +189,21 @@
                 "sourceType": {
                   "enum": [
                     "page_number",
+                    "native_text",
                     "native_table",
                     "table_cell",
                     "table_caption",
                     "table_footnote"
                   ],
-                  "description": "Identifies a non-body text role for layout and translation. native_table keeps the native values and grid. table_cell is a separately positioned native label."
+                  "description": "native_text is a positioned source passage recovered outside the parser's text regions. native_table keeps native values and grid. table_cell is a separately positioned native label."
                 },
                 "sourceBold": {
                   "type": "boolean",
                   "description": "Predominant bold or regular weight of the visible source glyphs in this region, when available."
+                },
+                "reviewed": {
+                  "type": "boolean",
+                  "description": "Whether this model translation completed the page-context review. Absent on older drafts and blocks without a model result."
                 },
                 "firstLineIndent": {
                   "type": "number",
