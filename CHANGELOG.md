@@ -1,5 +1,19 @@
 # 版本记录
 
+## 0.7.6 / build 24 — 改进原页译文、表格和 PDF 阅读
+
+- 改善译文与原文重叠的问题。清理可识别的文字轮廓时保留列表标记，短标题和目录项可利用行内空白排版。译文直接写回对应页面，导出页数与原 PDF 一致。
+- 对照 PDF 的可见文字补回解析遗漏的段落，并结合相邻内容复核译文。已有阅读稿可通过“重新翻译”应用这些改进。
+- 新建阅读稿默认翻译表格。可定位的文字按原单元格对齐，同一表格中的重复标签使用一致译法，数值和格线保留原位。
+- 改善 Mac 阅读多图 PDF 时的连续滚动。Windows 修复点开译文片段时可能发生的闪退，并在原文、对照和译文之间切换时保留阅读位置。
+
+**English**
+
+- Reduce overlapping source and translated text. Preserve list markers when removing outlined text, and use available space on the line for short headings and contents entries. Translated PDF exports place the text on its source page and retain the original page count.
+- Recover paragraphs missed by the parser from visible PDF text and review translations in context. Use Translate Again to apply these improvements to an existing reading draft.
+- Enable table translation by default for new drafts. Align translated labels in their source cells, use consistent translations for repeated labels within a table, and preserve numbers and grid lines.
+- Improve continuous scrolling in image-heavy PDFs on Mac. Fix a Windows crash when opening a translated passage and retain the reading position when switching between original, side-by-side and translated views.
+
 ## 0.7.5 / build 23 — 改善 Windows 稳定性与 OpenAI 兼容性
 
 - MinerU 依赖安装优先使用清华镜像，失败后依次尝试官方 PyPI 和阿里云镜像。错误提示会区分网络、依赖版本、磁盘空间和目录权限问题。（#19）
