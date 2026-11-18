@@ -82,6 +82,18 @@ public enum ReasoningEffort: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum ServiceProxyMode: String, Codable, CaseIterable, Sendable {
+    case system, direct, manual
+
+    public var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .direct: return "直连（关闭代理）"
+        case .manual: return "手动代理"
+        }
+    }
+}
+
 public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
     public var name: String
@@ -92,10 +104,12 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
     public var timeoutSeconds: Double
     public var concurrency: Int
     public var reasoningEffort: ReasoningEffort
+    public var proxyMode: ServiceProxyMode
+    public var proxyURL: String
 
     public init(id: UUID = UUID(), name: String, kind: ServiceKind, baseURL: String, model: String,
                 timeoutSeconds: Double = 120, concurrency: Int = 1, provider: ServiceProvider? = nil,
-                reasoningEffort: ReasoningEffort = .automatic) {
+                reasoningEffort: ReasoningEffort = .automatic, proxyMode: ServiceProxyMode = .system, proxyURL: String = "") {
         self.id = id
         self.name = name
         self.kind = kind
@@ -105,10 +119,12 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         self.timeoutSeconds = timeoutSeconds
         self.concurrency = concurrency
         self.reasoningEffort = reasoningEffort
+        self.proxyMode = proxyMode
+        self.proxyURL = proxyURL
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, provider, baseURL, model, timeoutSeconds, concurrency, reasoningEffort
+        case id, name, kind, provider, baseURL, model, timeoutSeconds, concurrency, reasoningEffort, proxyMode, proxyURL
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -120,6 +136,8 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         timeoutSeconds = try values.decode(Double.self, forKey: .timeoutSeconds)
         concurrency = try values.decode(Int.self, forKey: .concurrency)
         reasoningEffort = try values.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .automatic
+        proxyMode = try values.decodeIfPresent(ServiceProxyMode.self, forKey: .proxyMode) ?? .system
+        proxyURL = try values.decodeIfPresent(String.self, forKey: .proxyURL) ?? ""
         let stored = try values.decodeIfPresent(String.self, forKey: .provider)
         provider = stored.flatMap(ServiceProvider.init(rawValue:)) ?? ServiceProvider.infer(kind: kind, baseURL: baseURL)
         if provider.kind != kind || !provider.accepts(baseURL: baseURL) {
@@ -148,22 +166,26 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         copy.baseURL = template.baseURL; copy.model = template.model
         copy.timeoutSeconds = template.timeoutSeconds; copy.concurrency = template.concurrency
         copy.reasoningEffort = .automatic
+        copy.proxyMode = .system; copy.proxyURL = ""
         return copy
     }
 
-    public var availableReasoningEfforts: [ReasoningEffort] {
-        guard provider == .openAI else { return [.automatic] }
+    private var automaticReasoningEffort: ReasoningEffort? {
         switch model.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "gpt-6-astra", "gpt-6.1-sol": return ReasoningEffort.allCases.filter { $0 != .none }
-        case "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna": return ReasoningEffort.allCases
-        default: return [.automatic]
+        case "gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol": return .low
+        case "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna": return ReasoningEffort.none
+        default: return nil
         }
     }
 
+    public var availableReasoningEfforts: [ReasoningEffort] {
+        guard provider == .openAI, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [.automatic] }
+        return automaticReasoningEffort == .low ? ReasoningEffort.allCases.filter { $0 != .none } : ReasoningEffort.allCases
+    }
+
     public var resolvedReasoningEffort: String? {
-        guard provider == .openAI, model.hasPrefix("gpt-6") else { return nil }
-        if reasoningEffort != .automatic { return reasoningEffort.rawValue }
-        return ["gpt-6-astra", "gpt-6.1-sol"].contains(model) ? "low" : "none"
+        guard provider == .openAI else { return nil }
+        return reasoningEffort == .automatic ? automaticReasoningEffort?.rawValue : reasoningEffort.rawValue
     }
 
     public var isLocal: Bool {
@@ -181,7 +203,23 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         copy.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while copy.baseURL.hasSuffix("/") { copy.baseURL.removeLast() }
         copy.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if copy.isLocal { copy.proxyMode = .system }
+        copy.proxyURL = copy.proxyMode == .manual ? proxyURL.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         return copy
+    }
+
+    func manualProxyEndpoint() throws -> (host: String, port: UInt16) {
+        let address = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let forbidden = CharacterSet.whitespacesAndNewlines.union(.controlCharacters).union(CharacterSet(charactersIn: "\\?#"))
+        guard address.count <= 2048, address.rangeOfCharacter(from: forbidden) == nil,
+              let components = URLComponents(string: address), components.scheme?.lowercased() == "http",
+              let host = components.host?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), !host.isEmpty,
+              let port = components.port, let proxyPort = UInt16(exactly: port), proxyPort > 0,
+              components.user == nil, components.password == nil,
+              components.path.isEmpty || components.path == "/" else {
+            throw ServiceConfigurationError.invalidProxyURL
+        }
+        return (host, proxyPort)
     }
 
     public func validate() throws {
@@ -210,6 +248,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
         guard provider.kind == kind, provider.accepts(baseURL: service.baseURL) else { throw ServiceConfigurationError.providerMismatch }
         guard timeoutSeconds.isFinite, (10...600).contains(timeoutSeconds) else { throw ServiceConfigurationError.invalidTimeout }
         guard (1...8).contains(concurrency) else { throw ServiceConfigurationError.invalidConcurrency }
+        if service.proxyMode == .manual { _ = try service.manualProxyEndpoint() }
     }
 
     public func requestURL() throws -> URL {
@@ -248,7 +287,7 @@ public struct ServiceConfiguration: Codable, Identifiable, Equatable, Sendable {
 
 public enum ServiceConfigurationError: LocalizedError, Equatable {
     case invalidName, invalidURL, credentialsInURL, insecureRemoteURL, remoteOllamaUnsupported, fullEndpoint
-    case invalidModel, invalidTimeout, invalidConcurrency, providerMismatch, invalidReasoningEffort
+    case invalidModel, invalidTimeout, invalidConcurrency, providerMismatch, invalidReasoningEffort, invalidProxyURL
 
     public var errorDescription: String? {
         switch self {
@@ -263,6 +302,7 @@ public enum ServiceConfigurationError: LocalizedError, Equatable {
         case .invalidTimeout: return "请求超时应为 10–600 秒。"
         case .invalidConcurrency: return "最大并发请求应为 1–8。"
         case .invalidReasoningEffort: return "当前模型不支持此推理强度，请选择“自动”或其他可用强度。"
+        case .invalidProxyURL: return "请输入 HTTP 代理地址和端口（如 http://127.0.0.1:7890），地址中不要包含用户名或密码。"
         }
     }
 }

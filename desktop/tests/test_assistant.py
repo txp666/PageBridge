@@ -65,7 +65,7 @@ class AssistantTests(unittest.TestCase):
         raw = response if isinstance(response, bytes) else json.dumps(response).encode("utf-8")
         opener = Mock()
         opener.open.return_value = io.BytesIO(raw)
-        with patch("pagebridge.assistant.urllib.request.build_opener", return_value=opener):
+        with patch("pagebridge.assistant._model_opener", return_value=opener):
             result = assistant.request_answer(prepared)
         return result, opener.open.call_args.args[0]
 
@@ -154,7 +154,7 @@ class AssistantTests(unittest.TestCase):
         for provider, model, field, value in [
             ("openAI", "gpt-6-luna", "max_completion_tokens", 3072),
             ("openAI", "gpt-6-astra", "reasoning_effort", "low"),
-            ("openAI", "gpt-6.1-sol", "reasoning_effort", "low"),
+            ("openAI", "gpt-6.2-sol", "reasoning_effort", "low"),
             ("deepSeek", "deepseek-chat", "thinking", {"type": "disabled"}),
             ("alibaba", "qwen-plus", "enable_thinking", False),
             ("custom", "some-model", "max_tokens", 3072),
@@ -162,7 +162,7 @@ class AssistantTests(unittest.TestCase):
             prepared.profile.update(kind="openai", provider=provider, model=model)
             with self.subTest(provider=provider, model=model):
                 self.assertEqual(assistant.request_payload(prepared)[field], value)
-        prepared.profile.update(provider="openAI", model="gpt-6.1-sol", reasoningEffort="high")
+        prepared.profile.update(provider="openAI", model="gpt-6.2-sol", reasoningEffort="high")
         self.assertEqual(assistant.request_payload(prepared)["reasoning_effort"], "high")
 
     def test_real_request_shape_and_response_checks(self):
@@ -185,7 +185,7 @@ class AssistantTests(unittest.TestCase):
         prepared = self.prepare()
         opener = Mock()
         opener.open.side_effect = urllib.error.HTTPError("https://secret.invalid", 401, "fake-test-secret", {}, None)
-        with patch("pagebridge.assistant.urllib.request.build_opener", return_value=opener), self.assertRaises(AppError) as raised:
+        with patch("pagebridge.assistant._model_opener", return_value=opener), self.assertRaises(AppError) as raised:
             assistant.request_answer(prepared)
         self.assertIn("401", str(raised.exception))
         self.assertNotIn("fake-test-secret", str(raised.exception))

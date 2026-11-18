@@ -10,7 +10,7 @@
 
 ## 下载
 
-当前版本为 **0.7.6 / build 24**。
+当前版本为 **0.7.7 / build 25**。
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
@@ -18,9 +18,9 @@
 | Windows x64（推荐） | [Windows 安装器](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
 | Windows x64（便携） | [Windows 便携 ZIP](https://pagebridge.modusignal.cn/download/windows-x64.zip)（约 130 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-项目源码和第三方对应源码也随版本发布。[Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.6)
+项目源码和第三方对应源码也随版本发布。[Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.7)
 
-0.7.6 改进了原页译文的文字清理、列表和表格排版。已有阅读稿可点击“重新翻译”，重新生成后再导出，即可应用新的背景清理与漏段补译。
+0.7.7 支持为每个翻译服务选择系统代理、直连或手动 HTTP 代理，并适配 OpenAI GPT-6.2 Sol 和 Astra。
 
 Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Windows 安装器和程序 **没有 Authenticode 签名**。首次打开时系统可能提示风险，请核对下载来源和 SHA-256 后再确认。
 

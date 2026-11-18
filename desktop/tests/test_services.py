@@ -95,6 +95,22 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(AppError):
             validate_profile(profile)
 
+    def test_proxy_settings_round_trip_and_reach_worker(self):
+        profile = self.profile()
+        profile.pop("proxyMode")
+        profile.pop("proxyURL")
+        self.assertEqual(validate_profile(profile)["proxyMode"], "system")
+        profile.update(proxyMode="manual", proxyURL=" http://127.0.0.1:7890/ ")
+        self.store.save(profile, "fixture")
+        saved = ServiceStore(self.store.root, vault=self.store.vault).get(profile["id"])
+        service = worker_service(saved, "fixture")
+        self.assertEqual((service["proxyMode"], service["proxyURL"]), ("manual", "http://127.0.0.1:7890"))
+        for invalid in ("http://127.0.0.1", "http://user:password@127.0.0.1:7890", "http://127.0.0.1:7890/path"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(AppError, "代理地址"):
+                validate_profile(profile | {"proxyURL": invalid}, require_model=False)
+        self.assertEqual(validate_profile(profile | {"proxyMode": "direct"})["proxyURL"], "")
+        self.assertEqual(validate_profile(profile | {"baseURL": "http://127.0.0.1:11434/v1"})["proxyURL"], "")
+
     def test_model_list_and_truncation_validation(self):
         profile = self.profile()
         with patch("pagebridge.services._request", return_value={"data": [{"id": "b"}, {"id": "a"}, {"id": "b"}]}):
@@ -105,14 +121,16 @@ class ServiceTests(unittest.TestCase):
 
     def test_openai_probe_uses_supported_reasoning_effort(self):
         for model, effort in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
-                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")]:
+                              ("gpt-6.2-astra", "low"), ("gpt-6.2-sol", "low"),
+                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none"),
+                              ("gpt-7-test-model", None)]:
             profile = self.profile("openAI")
             profile["model"] = model
             response = {"choices": [{"finish_reason": "stop", "message": {"content": "文档已就绪。"}}]}
             with self.subTest(model=model), patch("pagebridge.services._request", return_value=response) as request:
                 self.assertEqual(probe_service(profile, "fixture"), "文档已就绪。")
                 body = request.call_args.args[3]
-                self.assertEqual(body["reasoning_effort"], effort)
+                self.assertEqual(body.get("reasoning_effort"), effort)
                 self.assertEqual(body["max_completion_tokens"], 1024)
                 self.assertNotIn("temperature", body)
 

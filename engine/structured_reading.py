@@ -1156,7 +1156,7 @@ def result_counts(document):
 
 
 async def translate(request, events):
-    import httpx
+    from worker import model_client
     import pymupdf
     source = Path(request["inputPath"])
     try:
@@ -1244,7 +1244,7 @@ async def translate(request, events):
         terms = glossary.parse(request.get("glossary"))
         semaphore = asyncio.Semaphore(service["concurrency"])
         complete = 0
-        async with httpx.AsyncClient(timeout=service["timeoutSeconds"], follow_redirects=False, trust_env=False) as client:
+        async with model_client(service) as client:
             async def one(block):
                 nonlocal complete
                 async with semaphore:

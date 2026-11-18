@@ -67,8 +67,9 @@ struct ServiceSettingsView: View {
             if let service = model.activeService ?? model.services.first { load(service) }
             else { newService(.ollama) }
         }
-        .onChange(of: draft) { _, _ in
+        .onChange(of: draft) { previous, _ in
             if !draft.availableReasoningEfforts.contains(draft.reasoningEffort) { draft.reasoningEffort = .automatic }
+            if previous.proxyMode != draft.proxyMode || previous.proxyURL != draft.proxyURL { invalidateModels() }
             invalidateTest(); if dirty { notice = nil }
         }
         .onChange(of: apiKey) { _, value in
@@ -216,7 +217,7 @@ struct ServiceSettingsView: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error = modelListError { errorLabel(error) }
             if draft.availableReasoningEfforts.count > 1 {
-                field("推理强度", hint: "自动使用模型支持的最低强度；更高强度通常需要更长时间。") {
+                field("推理强度", hint: "自动适配已知模型，其他模型沿用服务默认值。手动选择后可测试连接。") {
                     Picker("推理强度", selection: $draft.reasoningEffort) {
                         ForEach(draft.availableReasoningEfforts, id: \.self) { effort in
                             Text(effort.title).tag(effort)
@@ -256,6 +257,21 @@ struct ServiceSettingsView: View {
                             }
                         }
                     }
+                    if draft.kind != .ollama && !draft.isLocal {
+                        field("请求代理") {
+                            Picker("请求代理", selection: $draft.proxyMode) {
+                                ForEach(ServiceProxyMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+                            }
+                            .labelsHidden().pickerStyle(.menu)
+                            .accessibilityIdentifier("ServiceProxyMode")
+                        }
+                        if draft.proxyMode == .manual {
+                            field("HTTP 代理地址") {
+                                TextField("http://127.0.0.1:7890", text: $draft.proxyURL)
+                                    .autocorrectionDisabled().accessibilityIdentifier("ServiceProxyURL")
+                            }
+                        }
+                    }
                     HStack(alignment: .top, spacing: 20) {
                         field("请求超时（秒）") { TextField("120", value: $draft.timeoutSeconds, format: .number).frame(maxWidth: 120) }
                         field("最大并发请求") {
@@ -272,7 +288,7 @@ struct ServiceSettingsView: View {
                 HStack {
                     Text("高级设置").font(.system(size: 12, weight: .medium))
                     Spacer()
-                    Text("名称、地址与性能").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("名称、代理与性能").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
         }

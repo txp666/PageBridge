@@ -14,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import worker
 
@@ -28,6 +30,10 @@ def request(action="probe"):
 def api_server(status=200, content="控制阀调节水流。", redirect=False, delay=None):
     calls = []
     class Handler(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            calls.append((self.path, self.headers.get("Authorization")))
+            self.send_error(502)
+
         def do_POST(self):
             calls.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
             if delay is not None:
@@ -98,7 +104,8 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["engineVersion"], worker.installed_versions())
 
     def test_probe_uses_real_response_and_no_provider_text_leak(self):
-        with api_server(content="控制阀调节水流。 fixture-secret-do-not-log") as (port, calls):
+        with (api_server(content="控制阀调节水流。 fixture-secret-do-not-log") as (port, calls),
+              patch.dict(os.environ, {"http_proxy": "http://127.0.0.1:1", "no_proxy": ""})):
             data = request()
             data["service"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
             output = io.StringIO()
@@ -106,6 +113,18 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(calls[0][0], "/v1/chat/completions")
             self.assertNotIn("fixture-secret", output.getvalue())
             self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["type"], "result")
+
+    def test_remote_probe_uses_system_or_manual_https_proxy(self):
+        with api_server() as (port, calls):
+            data = request()
+            data["service"]["baseURL"] = "https://translation.invalid/v1"
+            proxy = f"http://127.0.0.1:{port}"
+            for mode, bypass in (("system", ""), ("manual", "*")):
+                data["service"].update(proxyMode=mode, proxyURL=proxy)
+                with (self.subTest(mode=mode), patch.dict(os.environ, {"https_proxy": proxy, "no_proxy": bypass}),
+                      self.assertRaises(httpx.ProxyError)):
+                    asyncio.run(worker.probe(data, worker.Events(io.StringIO(), data)))
+            self.assertEqual(calls, [("translation.invalid:443", None)] * 2)
 
     def test_probe_rejects_redirect_or_nontranslation(self):
         for status, content, redirect in ((302, "", True), (200, "I cannot translate", False)):
@@ -301,12 +320,15 @@ class ProviderSettingsTests(unittest.TestCase):
 
     def test_probe_modern_openai_uses_completion_limit(self):
         for model, effort in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
-                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")]:
+                              ("gpt-6.2-astra", "low"), ("gpt-6.2-sol", "low"),
+                              ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none"),
+                              ("gpt-7-test-model", None)]:
             service = worker.normalized_service(self.service("openAI", model=model))
             with self.subTest(model=model):
+                options = {"reasoning_effort": effort} if effort is not None else {}
                 self.assertEqual(worker.provider_request_options(service, probe=True),
-                                 {"max_completion_tokens": 1024, "reasoning_effort": effort})
-                self.assertEqual(worker.provider_request_options(service), {"reasoning_effort": effort})
+                                 {"max_completion_tokens": 1024, **options})
+                self.assertEqual(worker.provider_request_options(service), options)
         custom = worker.normalized_service(self.service("custom", model="gpt-6.1-sol"))
         self.assertEqual(worker.provider_request_options(custom, probe=True), {"max_tokens": 1024})
 
@@ -317,12 +339,14 @@ class ProviderSettingsTests(unittest.TestCase):
 
     def test_explicit_reasoning_effort_reaches_probe_and_translation(self):
         for effort in ("low", "medium", "high", "xhigh", "max"):
-            service = worker.normalized_service(self.service("openAI", model="gpt-6-astra", reasoningEffort=effort))
+            service = worker.normalized_service(self.service("openAI", model="gpt-6.2-sol", reasoningEffort=effort))
             self.assertEqual(service["reasoningEffort"], effort)
             self.assertEqual(worker.provider_request_options(service)["reasoning_effort"], effort)
             self.assertEqual(worker.provider_request_options(service, probe=True)["reasoning_effort"], effort)
+        future = worker.normalized_service(self.service("openAI", model="gpt-7-test-model", reasoningEffort="low"))
+        self.assertEqual(worker.provider_request_options(future, probe=True), {"max_completion_tokens": 1024, "reasoning_effort": "low"})
         with self.assertRaisesRegex(worker.WorkerError, "推理强度"):
-            worker.normalized_service(self.service("openAI", model="gpt-6.1-sol", reasoningEffort="none"))
+            worker.normalized_service(self.service("openAI", model="gpt-6.2-sol", reasoningEffort="none"))
 
     def test_ollama_disables_presence_penalty_and_custom_keeps_own_options(self):
         ollama = worker.normalized_service({"kind": "ollama", "baseURL": "http://localhost:11434/v1", "model": "gpt-6-astra"})

@@ -25,6 +25,8 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private readonly ComboBox provider = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
     private readonly ComboBox model = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
     private readonly ComboBox reasoning = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
+    private readonly ComboBox proxyMode = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
+    private readonly TextBox proxyAddress = new() { PlaceholderText = "http://127.0.0.1:7890", MaxLength = 2048, FontSize = 14 };
     private readonly TextBox name = new() { MaxLength = 48, FontSize = 14 };
     private readonly TextBox address = new() { PlaceholderText = "https://api.example.com/v1", FontSize = 14 };
     private readonly TextBox localAddress = new() { FontSize = 14 };
@@ -49,6 +51,7 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private readonly ProgressRing networkProgress = new() { Width = 18, Height = 18, IsActive = false, Visibility = Visibility.Collapsed };
     private readonly Expander advanced = new() { HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0) };
     private readonly StackPanel customAddressField, localAddressField, manualModelField, keyField, reasoningField;
+    private readonly StackPanel proxyModeField, proxyAddressField;
     private readonly Grid fixedAddress;
     private readonly Grid confirmation = new() { Visibility = Visibility.Collapsed, Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(90, 0, 0, 0)) };
     private readonly TextBlock confirmTitle = Copy("", 18, true), confirmMessage = Copy("", 13);
@@ -63,6 +66,10 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private string? operationKind;
     private Provider ChosenProvider => Providers.First(p => p.Id == Text(current, "provider"));
     private bool IsLocal => Text(current, "kind") == "ollama";
+    private bool UsesLoopback => IsLocal || (Text(current, "provider") == "custom"
+        && Uri.TryCreate(address.Text.Trim(), UriKind.Absolute, out var service)
+        && service.DnsSafeHost.ToLowerInvariant() is "localhost" or "127.0.0.1" or "::1");
+    private string SelectedProxyMode => (proxyMode.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "system";
     private bool Dirty => isNew || key.Password.Length > 0 || credentialInvalidated || !JsonNode.DeepEquals(Capture(), baseline);
     internal bool IsBusy => saving || operation is not null;
 
@@ -160,15 +167,16 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         connection.Children.Add(modelNotice); connection.Children.Add(modelError);
         AutomationProperties.SetName(reasoning, "推理强度");
         AutomationProperties.SetAutomationId(reasoning, "ServiceReasoningEffort");
-        reasoningField = Field("推理强度", reasoning, "自动使用模型支持的最低强度；更高强度通常需要更长时间。");
+        reasoningField = Field("推理强度", reasoning, "自动适配已知模型，其他模型沿用服务默认值。手动选择后可测试连接。");
         connection.Children.Add(reasoningField);
         keyField = Field("API Key", key, "仅保存在 Windows 凭据管理器。获取模型和测试连接均由你点击后发送。");
         connection.Children.Add(keyField);
         connection.Children.Add(new Border { Height = 1, Background = line });
         var advancedTitle = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 20 };
         advancedTitle.Children.Add(Copy("高级设置", 12, true));
-        var advancedHint = Copy("名称、地址与性能", 11); advancedHint.Foreground = secondary; advancedTitle.Children.Add(advancedHint);
+        var advancedHint = Copy("名称、代理与性能", 11); advancedHint.Foreground = secondary; advancedTitle.Children.Add(advancedHint);
         advanced.Header = advancedTitle;
+        AutomationProperties.SetAutomationId(advanced, "ServiceAdvancedSettings");
         var advancedBody = new StackPanel { Spacing = 14, Margin = new Thickness(0, 13, 0, 0) };
         advancedBody.Children.Add(Field("配置名称", name));
         localAddressField = Field("本机服务地址", localAddress); advancedBody.Children.Add(localAddressField);
@@ -179,6 +187,12 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         var custom = SmallButton("使用自定义地址"); Grid.SetColumn(custom, 1); fixedAddress.Children.Add(custom);
         custom.Click += (_, _) => { CancelOperation(); current = Capture(); current["provider"] = "custom"; InvalidateCredential(); Populate(); advanced.IsExpanded = true; };
         advancedBody.Children.Add(fixedAddress);
+        foreach (var (id, title) in new[] { ("system", "跟随系统"), ("direct", "直连（关闭代理）"), ("manual", "手动代理") })
+            proxyMode.Items.Add(new ComboBoxItem { Content = title, Tag = id });
+        AutomationProperties.SetAutomationId(proxyMode, "ServiceProxyMode");
+        AutomationProperties.SetAutomationId(proxyAddress, "ServiceProxyURL");
+        proxyModeField = Field("请求代理", proxyMode); advancedBody.Children.Add(proxyModeField);
+        proxyAddressField = Field("HTTP 代理地址", proxyAddress); advancedBody.Children.Add(proxyAddressField);
         var performance = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 20 };
         performance.Children.Add(Field("请求超时（秒）", timeout)); performance.Children.Add(Field("最大并发请求", concurrency));
         advancedBody.Children.Add(performance);
@@ -251,11 +265,13 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         name.TextChanged += (_, _) => { if (!filling) { Changed(); RenderProfiles(); } };
         manualModel.TextChanged += (_, _) => { if (!filling) { PopulateReasoning(); Changed(); } };
         reasoning.SelectionChanged += (_, _) => { if (!filling) Changed(); };
-        address.TextChanged += (_, _) => { if (!filling) { InvalidateCredential(); Changed(); } };
+        address.TextChanged += (_, _) => { if (!filling) { UpdateProxyFields(); InvalidateCredential(); Changed(); } };
         localAddress.TextChanged += (_, _) => { if (!filling) { InvalidateCredential(); Changed(); } };
         key.PasswordChanged += (_, _) => { if (!filling) { discoveredModels = null; PopulateModels(); Changed(); } };
         timeout.ValueChanged += (_, _) => { if (!filling) Changed(); };
         concurrency.ValueChanged += (_, _) => { if (!filling) Changed(); };
+        proxyMode.SelectionChanged += (_, _) => { if (!filling) { UpdateProxyFields(); Changed(); } };
+        proxyAddress.TextChanged += (_, _) => { if (!filling) Changed(); };
         modelsButton.Click += async (_, _) => { if (operationKind == "models") CancelOperation(); else await NetworkAsync("models"); };
         testButton.Click += async (_, _) => { if (operationKind == "probe") CancelOperation(); else await NetworkAsync("probe"); };
         resetButton.Click += async (_, _) =>
@@ -329,6 +345,10 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         key.PlaceholderText = !isNew && !credentialInvalidated ? "已保存的密钥留空保持不变" : "粘贴厂商提供的 API Key";
         PopulateModels();
         PopulateReasoning(Text(current, "reasoningEffort"));
+        string savedProxyMode = Text(current, "proxyMode");
+        proxyMode.SelectedItem = proxyMode.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (string)item.Tag == savedProxyMode) ?? proxyMode.Items[0];
+        proxyAddress.Text = Text(current, "proxyURL");
+        UpdateProxyFields();
         privacy.Text = IsLocal ? "当前地址指向本机。文档解析与排版在本机完成，文本发送至此本机服务。离线使用前需准备全部翻译资源和模型。" : "文档解析与排版在本机完成；待翻译文本会发送至所选远程服务。请确认服务地址及其隐私政策。";
         filling = false; ClearResults(); RenderProfiles(); UpdateControls();
     }
@@ -353,8 +373,8 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     {
         selectedEffort ??= (reasoning.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
         string selectedModel = manualModel.Text.Trim();
-        bool required = selectedModel is "gpt-6-astra" or "gpt-6.1-sol";
-        bool available = Text(current, "provider") == "openAI" && (required || selectedModel is "gpt-6.1-terra" or "gpt-6-sol" or "gpt-6-luna");
+        bool required = selectedModel is "gpt-6-astra" or "gpt-6.1-sol" or "gpt-6.2-astra" or "gpt-6.2-sol";
+        bool available = Text(current, "provider") == "openAI" && selectedModel.Length > 0;
         var previous = filling; filling = true;
         reasoning.Items.Clear();
         foreach (var (id, title) in new[] { ("auto", "自动"), ("none", "关闭推理"), ("low", "低"), ("medium", "中"), ("high", "高"), ("xhigh", "很高"), ("max", "最高") })
@@ -367,6 +387,12 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         filling = previous;
     }
 
+    private void UpdateProxyFields()
+    {
+        proxyModeField.Visibility = UsesLoopback ? Visibility.Collapsed : Visibility.Visible;
+        proxyAddressField.Visibility = !UsesLoopback && SelectedProxyMode == "manual" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private JsonObject Capture()
     {
         var result = current.DeepClone().AsObject();
@@ -375,6 +401,9 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         result["timeoutSeconds"] = double.IsNaN(timeout.Value) ? 120 : timeout.Value;
         result["concurrency"] = double.IsNaN(concurrency.Value) ? 1 : (int)concurrency.Value;
         result["reasoningEffort"] = (reasoning.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
+        var mode = UsesLoopback ? "system" : SelectedProxyMode;
+        result["proxyMode"] = mode;
+        result["proxyURL"] = mode == "manual" ? proxyAddress.Text.Trim() : "";
         return result;
     }
 
@@ -485,7 +514,7 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         saveButton.IsEnabled = !saving && operation is null;
         deleteButton.IsEnabled = !saving && !isNew && profiles.Count > 1;
         resetButton.IsEnabled = !saving && Dirty;
-        foreach (var control in new Control[] { provider, model, reasoning, name, address, localAddress, manualModel, key, timeout, concurrency, advanced }) control.IsEnabled = !saving;
+        foreach (var control in new Control[] { provider, model, reasoning, name, address, localAddress, manualModel, key, timeout, concurrency, proxyMode, proxyAddress, advanced }) control.IsEnabled = !saving;
         foreach (var row in profilesPanel.Children.OfType<Button>()) row.IsEnabled = !saving;
         if (updateStatus) SetStatus(Dirty ? "●  有未保存的更改" : "密钥由 Windows 凭据管理器保管");
     }

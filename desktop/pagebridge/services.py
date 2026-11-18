@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from service_options import LOOPBACK_HOSTS, ServiceOptionError, openai_reasoning_effort, proxy_settings
+
 from .core import AppError, atomic_json
 
 
@@ -32,19 +34,7 @@ def new_profile(provider="ollama"):
     preset = PRESETS[provider]
     return dict(id=str(uuid.uuid4()), provider=provider, name=preset["name"], kind=preset["kind"], baseURL=preset["baseURL"],
                 model=next(iter(preset["models"]), ""), timeoutSeconds=120, concurrency=1 if provider == "ollama" else 2,
-                reasoningEffort="auto")
-
-
-def openai_reasoning_effort(provider, model, effort="auto"):
-    required = model in {"gpt-6-astra", "gpt-6.1-sol"}
-    if effort == "auto":
-        return ("low" if required else "none") if provider == "openAI" and model.startswith("gpt-6") else None
-    supported = ("low", "medium", "high", "xhigh", "max") if required else (
-        ("none", "low", "medium", "high", "xhigh", "max")
-        if model in {"gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"} else ())
-    if provider != "openAI" or effort not in supported:
-        raise AppError("当前模型不支持此推理强度，请选择“自动”或其他可用强度。")
-    return effort
+                reasoningEffort="auto", proxyMode="system", proxyURL="")
 
 
 def validate_profile(profile, require_model=True):
@@ -65,7 +55,7 @@ def validate_profile(profile, require_model=True):
             raise ValueError()
         url = urllib.parse.urlsplit(p["baseURL"])
         _ = url.port
-        local = url.hostname in {"localhost", "127.0.0.1", "::1"}
+        local = url.hostname in LOOPBACK_HOSTS
         if url.scheme not in {"https", "http"} or not url.hostname or url.username or url.password or url.query or url.fragment:
             raise ValueError()
         if url.scheme == "http" and not local:
@@ -83,11 +73,14 @@ def validate_profile(profile, require_model=True):
             raise ValueError()
         if type(p["concurrency"]) is not int or not 1 <= p["concurrency"] <= 8:
             raise ValueError()
+        p["proxyMode"], p["proxyURL"] = proxy_settings(profile, local=local)
         if require_model:
             openai_reasoning_effort(p["provider"], p["model"], p["reasoningEffort"])
         return p
     except AppError:
         raise
+    except ServiceOptionError as error:
+        raise AppError(str(error)) from None
     except (KeyError, TypeError, ValueError, AttributeError):
         raise AppError("服务配置无效，请检查名称、地址、模型、超时和并发数。") from None
 
@@ -241,12 +234,35 @@ class ServiceStore:
 def worker_service(profile, api_key):
     # Saved profiles were validated when the store loaded them.
     return {**{key: profile[key] for key in ("kind", "provider", "baseURL", "model", "timeoutSeconds", "concurrency")},
-            "reasoningEffort": profile.get("reasoningEffort", "auto"), "apiKey": api_key}
+            "reasoningEffort": profile.get("reasoningEffort", "auto"), "proxyMode": profile.get("proxyMode", "system"),
+            "proxyURL": profile.get("proxyURL", ""), "apiKey": api_key}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise AppError("服务发生重定向，已停止请求以避免密钥发往其他地址。")
+
+
+class _ManualProxy(urllib.request.BaseHandler):
+    handler_order = urllib.request.ProxyHandler.handler_order
+
+    def __init__(self, address):
+        self.address = address
+
+    def https_open(self, request):
+        # set_proxy on an HTTPS request tells urllib to open a CONNECT tunnel.
+        request.set_proxy(self.address, "http")
+
+
+def _model_opener(profile):
+    local = urllib.parse.urlsplit(profile["baseURL"]).hostname in LOOPBACK_HOSTS
+    mode = profile.get("proxyMode", "system")
+    if not local and mode == "system":
+        return urllib.request.build_opener(_NoRedirect())
+    handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if not local and mode == "manual":
+        handlers.append(_ManualProxy(urllib.parse.urlsplit(profile["proxyURL"]).netloc))
+    return urllib.request.build_opener(*handlers)
 
 
 def _http_request(endpoint, api_key, body=None):
@@ -261,7 +277,7 @@ def _http_request(endpoint, api_key, body=None):
 def _request(profile, api_key, endpoint, body=None):
     request = _http_request(endpoint, api_key, body)
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=profile["timeoutSeconds"]) as response:
+        with _model_opener(profile).open(request, timeout=profile["timeoutSeconds"]) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
             if len(raw) > 2 * 1024 * 1024:
                 raise AppError("服务响应过大，已停止读取。")
@@ -287,8 +303,7 @@ def _chat_body(p, messages, max_tokens, temperature=0):
     if p["kind"] == "ollama":
         body.update(think=False, options={"num_predict": max_tokens, "temperature": temperature})
         return body
-    modern = p["provider"] == "openAI" and p["model"].startswith(("gpt-6", "gpt-5", "o"))
-    body["max_completion_tokens" if modern else "max_tokens"] = max_tokens
+    body["max_completion_tokens" if p["provider"] == "openAI" else "max_tokens"] = max_tokens
     if p["provider"] == "deepSeek":
         body["thinking"] = {"type": "disabled"}
     if p["provider"] == "alibaba" and p["model"] in {"qwen-plus", "qwen-flash"}:
