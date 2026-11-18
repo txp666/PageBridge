@@ -49,6 +49,7 @@ Start one worker process per request and write one UTF-8 JSON line to stdin. API
 | `prepare_reading` | Installs the MinerU runtime if needed; no service required |
 | `translate` | Validates input and pages, parses and translates a reading draft and publishes a result directory atomically |
 | `export_reading` | Writes a translated or bilingual PDF from a committed reading draft; no service or network |
+| `reading_layout` | Measures missing line widths from the prepared backgrounds in an older reading draft |
 | `suggest_terms` | Counts candidate terms in a PDF or reading draft and asks the service to pick and translate domain terms; nothing is saved |
 
 `kind` is `ollama` or `openai`. Ollama accepts only loopback hosts and uses its OpenAI-compatible `/v1` endpoint. Remote services require HTTPS and a key; supply the Base URL, not a `/chat/completions` URL. Timeouts are 10–600 seconds and concurrency 1–8. Optional `provider` names a preset (`deepSeek`, `alibaba`, `siliconFlow`, `openAI`, `ollama`, `custom`); known online presets must match their official endpoint, and other regions or gateways use `custom`. Known provider/model pairs receive matching request options; arbitrary model IDs carry no compatibility claim. Model-list discovery is a host request, not a worker action.

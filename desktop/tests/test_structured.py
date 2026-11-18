@@ -148,6 +148,7 @@ class StructuredReadingTests(unittest.TestCase):
         page = artifact["pages"][0]
         page["blocks"][0]["backgroundColor"] = [255, 255, 255]
         page.update(backgroundImage=base64.b64encode(png).decode(), backgroundBlocks=["p2-b1"], backgroundFillBlocks=["p2-b1"],
+                    layoutRightEdges={"p2-b1": 260},
                     decorations=[{"unused": "old paths must not be repainted over the clean background"}])
         self.save_modified(event, artifact)
         self.store.commit_result(self.doc["id"], attempt, event)
@@ -156,6 +157,8 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertEqual(Path(result["backgroundImage"]).read_bytes(), png)
         self.assertTrue(Path(result["backgroundImage"]).is_relative_to(reopened.root / "preview-cache"))
         self.assertEqual(result["backgroundBlocks"], ["p2-b1"])
+        self.assertEqual(result["layoutRightEdges"], {"p2-b1": 260})
+        self.assertEqual(result["blocks"][0]["bbox"], page["blocks"][0]["bbox"])
         self.assertEqual(structured.committed_artifact(reopened, self.doc["id"])[1]["pages"][0]["backgroundFillBlocks"], ["p2-b1"])
         self.assertIsNone(result["decorationsImage"])
         self.assertIsNone(result["decorations_error"])

@@ -398,13 +398,26 @@ final class AppModel: ObservableObject {
             guard selectedID == record.id, selectedDocument?.readingPath == record.readingPath else { return }
             readingLoading = false
             switch result {
-            case .success(let reading):
+            case .success(var reading):
                 structuredReading = reading
                 if navigateToFirst, let first = reading.selectedPages.first {
                     page = first
                     // Page reports from scrolling do not move PDFKit. Completion
                     // must also issue an explicit navigation request for the source.
                     readingNavigationRequest = PDFPageNavigation(page: first)
+                }
+                // Older immutable drafts already contain the cleared background needed to measure their lines.
+                if reading.pages.contains(where: { $0.layoutRightEdges == nil && $0.backgroundBlocks?.isEmpty == false }) {
+                    let request = WorkerRequest(action: "reading_layout", inputPath: record.inputPath, readingPath: url.path)
+                    guard let result = try? await EngineRunner(location: try EngineLocation.find()).run(request),
+                          let edges = result.layoutRightEdges, selectedID == record.id,
+                          selectedDocument?.readingPath == record.readingPath else { return }
+                    for index in reading.pages.indices {
+                        if let measured = edges[String(reading.pages[index].pageNumber)] {
+                            reading.pages[index].layoutRightEdges = measured
+                        }
+                    }
+                    structuredReading = reading
                 }
             case .failure(let error): readingLoadError = error.localizedDescription
             }

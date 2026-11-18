@@ -272,6 +272,11 @@
             },
             "description": "Only these blocks overlay text on the prepared backgroundImage. An empty list allows the original page to be displayed directly."
           },
+          "layoutRightEdges": {
+            "type": "object",
+            "additionalProperties": {"type": "number", "exclusiveMinimum": 0},
+            "description": "Optional map of positioned block IDs to the clear right extent of their line, measured in page points. Source bbox remains the region for text removal and locating the original."
+          },
           "backgroundFillBlocks": {
             "type": "array",
             "uniqueItems": true,

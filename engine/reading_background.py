@@ -14,6 +14,7 @@ from typing import NamedTuple
 import pymupdf
 
 from reading_outlines import clear_outlines, outline_colors, verified_outlines
+from reading_layout import line_right_edges, source_rect as _rect
 
 REDACTION_BATCH = 25
 
@@ -100,14 +101,6 @@ def coalesce_text_redactions(source, rectangles):
             result.append(pymupdf.Rect(rect))
         previous_numeric = numeric
     return result
-
-
-def _rect(value):
-    if (isinstance(value, list) and len(value) == 4
-            and all(type(v) in (int, float) and math.isfinite(v) for v in value)):
-        rect = pymupdf.Rect(value)
-        return None if rect.is_empty else rect
-    return None
 
 
 def translated_blocks(page_result):
@@ -393,6 +386,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
     page_result.pop("backgroundImage", None)
     page_result.pop("backgroundBlocks", None)
     page_result.pop("backgroundFillBlocks", None)
+    page_result["layoutRightEdges"] = {}
     translated = translated_blocks(page_result)
     if not translated:
         return []
@@ -410,6 +404,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
             if fills:
                 page_result["backgroundFillBlocks"] = fills
             page_result["backgroundBlocks"] = ids
+            page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
             page_result.pop("decorations", None)
             return []
         boxes = {b["id"]: pymupdf.Rect(b["bbox"]) for b in translated}
@@ -510,6 +505,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
         if background_ids and include_image:
             page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
         page_result["backgroundBlocks"] = background_ids
+        page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
         # Their original pixels already exist in the page background. Keeping
         # thousands of duplicate vector commands inflates artifacts and would
         # invite clients to paint the old content over the translated text.

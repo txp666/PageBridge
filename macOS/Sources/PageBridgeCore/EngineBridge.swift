@@ -66,6 +66,7 @@ public struct WorkerEvent: Codable, Sendable {
     public var pageCount: Int?
     public var terms: [TermSuggestion]?
     public var retranslatedBlocks: Int?
+    public var layoutRightEdges: [String: [String: Double]]?
 }
 
 /// A glossary entry the engine proposes from a document; target nil means keep as written.

@@ -99,7 +99,10 @@ private struct StructuredReadingPageContent: View {
 
     private func pageCanvas(_ source: ReadingSourcePage) -> some View {
         let placements = (metadata?.blocks ?? []).compactMap { block -> ReadingCanvasPlacement? in
-            guard let rect = StructuredReadingPageGeometry.rect(block.bbox, pageSize: source.size) else { return nil }
+            guard var rect = StructuredReadingPageGeometry.rect(block.bbox, pageSize: source.size) else { return nil }
+            if source.backgroundImage != nil, let right = metadata?.layoutRightEdges?[block.id] {
+                rect.size.width = max(rect.width, min(right, source.size.width) - rect.minX)
+            }
             return ReadingCanvasPlacement(block: block, rect: rect,
                 preferredFontSize: sourcePages.fontSize(for: block, pageNumber: pageNumber) ?? block.estimatedFontSize ?? (block.kind == "heading" ? 18 : 12))
         }

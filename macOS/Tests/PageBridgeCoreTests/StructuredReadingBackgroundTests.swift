@@ -26,6 +26,7 @@ final class StructuredReadingBackgroundTests: XCTestCase {
     func testEmbeddedBackgroundSurvivesEncodingAndKeepsTranslatedBlockIdentity() throws {
         var (document, reading) = try artifact()
         reading.pages[0].backgroundFillBlocks = ["p1-b1"]
+        reading.pages[0].layoutRightEdges = ["p1-b1": 175]
         reading.pages[0].blocks[0].backgroundColor = [255, 255, 255]
         let decoded = try JSONDecoder().decode(StructuredReadingDocument.self, from: JSONEncoder().encode(reading))
         XCTAssertNoThrow(try decoded.validate(for: document))
@@ -34,6 +35,8 @@ final class StructuredReadingBackgroundTests: XCTestCase {
         XCTAssertEqual(image.size, CGSize(width: 8, height: 6))
         XCTAssertEqual(decoded.pages[0].backgroundBlocks, ["p1-b1"])
         XCTAssertEqual(decoded.pages[0].backgroundFillBlocks, ["p1-b1"])
+        XCTAssertEqual(decoded.pages[0].layoutRightEdges, ["p1-b1": 175])
+        XCTAssertEqual(decoded.pages[0].blocks[0].bbox, [10, 10, 100, 30])
     }
 
     func testBackgroundNeverLoadsPathsURLsOrOversizedImageHeaders() throws {

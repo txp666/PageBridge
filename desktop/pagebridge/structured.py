@@ -10,11 +10,16 @@ import base64
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 import pymupdf
 
 from .core import AppError, _inside, _unredirected, atomic_file, sha256
+
+# The source checkout and the installed bridge share the same sibling engine.
+sys.path.append(str(Path(__file__).resolve().parents[2] / "engine"))
+from reading_layout import estimated_font_size, saved_line_right_edges
 
 ARTIFACT_TYPE = "structured-reading"
 MAX_READING_BYTES = 64 * 1024 * 1024
@@ -82,6 +87,12 @@ def read_artifact(path, document):
                     raise ValueError()
             elif page.get("backgroundBlocks") not in (None, []):
                 raise ValueError()
+            if "layoutRightEdges" in page:
+                edges = page["layoutRightEdges"]
+                if (not isinstance(edges, dict) or not set(edges).issubset(page.get("backgroundBlocks", []))
+                        or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 < v <= page["width"]
+                               for v in edges.values())):
+                    raise ValueError()
             if "backgroundFillBlocks" in page:
                 filled = page["backgroundFillBlocks"]
                 if ("backgroundImage" not in page or not isinstance(filled, list)
@@ -183,22 +194,10 @@ def page_result(store, request):
                 decorations=selected.get("decorations", []) if selected else [],
                 decorationsImage=decoration_image, decorations_error=decoration_error,
                 backgroundImage=background_image, backgroundBlocks=selected.get("backgroundBlocks") if selected else None,
+                layoutRightEdges=saved_line_right_edges(selected) if background_image else {},
                 status=artifact["status"], page_status=selected.get("status", "completed") if selected else "not_selected",
                 error=selected.get("error") if selected else None, blocks=blocks,
                 source_sha256=doc["input_sha256"], artifact_sha256=doc["reading_sha256"])
-
-
-def estimated_font_size(block):
-    """Font size from the region's area and character count, for text without a text layer
-    (scans); within ±25% of the real size on the demo pages."""
-    text = (block.get("sourceText") or "").strip()
-    bbox = block.get("bbox")
-    if block.get("kind") not in {"text", "heading", "list"} or len(text) < 3 or not bbox or len(bbox) != 4:
-        return None
-    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    if width <= 0 or height <= 0:
-        return None
-    return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
 
 
 def _add_source_font_sizes(page, blocks):

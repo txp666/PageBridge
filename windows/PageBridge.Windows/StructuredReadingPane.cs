@@ -115,8 +115,10 @@ internal sealed partial class StructuredReadingPane
             foreach (var block in blocks)
             {
                 if (block?["bbox"] is not JsonArray { Count: 4 } bbox || IsSourceRegion(Text(block, "kind")) != sourceRegions) continue;
+                string id = Text(block, "id");
                 AddBlock(overlay, block, bbox, current, pageNumber, pageWidth, pageHeight, source,
-                    hasBackground, positioned is null || (hasBackground && positioned.Contains(Text(block, "id"))));
+                    hasBackground, positioned is null || (hasBackground && positioned.Contains(id)),
+                    result["layoutRightEdges"]?[id]?.GetValue<double>());
             }
         }
         if (hasBackground) AddRegions(true);
@@ -176,11 +178,13 @@ internal sealed partial class StructuredReadingPane
     }
 
     private void AddBlock(Canvas overlay, JsonNode block, JsonArray bbox, int current, int pageNumber, double pageWidth, double pageHeight,
-        ImageSource source, bool hasBackground, bool positioned)
+        ImageSource source, bool hasBackground, bool positioned, double? layoutRight)
     {
         double x = bbox[0]!.GetValue<double>(), y = bbox[1]!.GetValue<double>();
         double width = Math.Min(pageWidth, bbox[2]!.GetValue<double>()) - x, height = Math.Min(pageHeight, bbox[3]!.GetValue<double>()) - y;
         if (width <= 0 || height <= 0) return;
+        if (hasBackground && positioned && layoutRight is double right)
+            width = Math.Max(width, Math.Min(right, pageWidth) - x);
         string kind = Text(block, "kind"), status = Text(block, "status"), translated = Text(block, "translatedText");
         var area = new Grid { Width = width, Height = height, Background = new SolidColorBrush(Colors.Transparent), Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) } };
         bool overflow = false;

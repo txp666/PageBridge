@@ -3,7 +3,7 @@
 Each translated page starts from the original page itself, so photos, line art
 and untranslated text stay vector. Only the glyphs the reader draws over are
 removed, exactly as for the reading background; translations become real,
-searchable text fitted into their source boxes. No service or network is used.
+searchable text fitted into the available space on the same line. No service or network is used.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import html
 import io
-import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +20,7 @@ import pymupdf
 
 from reading_background import (_rect, add_page_background, glyph_owners, remove_text, source_bold,
                                 spans_in, translated_blocks, visible_glyphs)
+from reading_layout import estimated_font_size
 from reading_outlines import clear_outlines, outline_colors
 from structured_reading import ReadingError, load_reading
 
@@ -106,19 +106,6 @@ def _css(block, size, background, indent):
     return (f"body {{margin: 0; padding: 0; font-family: sans-serif; line-height: {line_height}; "
             f"font-size: {size:.2f}pt; color: rgb({color[0]}, {color[1]}, {color[2]})}}"
             f" p {{margin: 0; text-indent: {indent:.3f}pt}}")
-
-
-def estimated_font_size(block):
-    """Font size from the region's area and character count, for text without a text layer
-    (scans); within ±25% of the real size on the demo pages."""
-    text = (block.get("sourceText") or "").strip()
-    bbox = block.get("bbox")
-    if block.get("kind") not in {"text", "heading", "list"} or len(text) < 3 or not bbox or len(bbox) != 4:
-        return None
-    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    if width <= 0 or height <= 0:
-        return None
-    return min(height / 1.2, math.sqrt(width * height / (len(text) * 0.6)))
 
 
 def _start_size(block, glyphs):
@@ -215,7 +202,10 @@ def translate_page(document, index, page_result, keep, outlines=()):
         body = _body(block, images)
         if indent:
             body = "<p>" + body.replace("<br>", "</p><p>") + "</p>"
-        items[bold].append((rect, body, _css(block, size, background, indent)))
+        # Clearing, source font measurement and fills use the original glyph box.
+        right = page_result.get("layoutRightEdges", {}).get(block["id"], rect.x1)
+        layout = pymupdf.Rect(rect.x0, rect.y0, right, rect.y1)
+        items[bold].append((layout, body, _css(block, size, background, indent)))
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     weights = [bold for bold in items if items[bold]]

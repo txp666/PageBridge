@@ -63,6 +63,12 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
             } else if page.backgroundBlocks?.isEmpty == false {
                 throw BridgeError.message("阅读稿缺少原页背景。")
             }
+            if let edges = page.layoutRightEdges {
+                guard Set(edges.keys).isSubset(of: Set(page.backgroundBlocks ?? [])),
+                      edges.values.allSatisfy({ $0.isFinite && $0 > 0 && $0 <= page.width }) else {
+                    throw BridgeError.message("阅读稿的译文行宽无效。")
+                }
+            }
             if let filled = page.backgroundFillBlocks {
                 let colors = Set(page.blocks.filter { $0.backgroundColor != nil }.map(\.id))
                 guard page.backgroundImage != nil, Set(filled).count == filled.count,
@@ -126,6 +132,7 @@ public struct StructuredReadingPage: Codable, Sendable, Equatable, Identifiable 
     public var decorationsCoordinateSpace: String?
     public var backgroundImage: String?
     public var backgroundBlocks: [String]?
+    public var layoutRightEdges: [String: Double]?
     public var backgroundFillBlocks: [String]?
     public var id: Int { pageNumber }
 }

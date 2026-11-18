@@ -16,6 +16,7 @@ import pymupdf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from outline_fixture import make_outline_pdf, outline_metadata
 from reading_background import add_page_background
+from reading_layout import line_right_edges, saved_line_right_edges
 import reading_export
 from structured_reading import ReadingError, refine_list_geometry
 
@@ -67,6 +68,48 @@ class ReadingExportTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+
+    def test_short_labels_use_column_width_at_their_own_source_size(self):
+        source, output = self.root / "labels.pdf", self.root / "translated.pdf"
+        rows = [("ID", "样本编号"), ("Collection time", "采样时间")]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page(width=300, height=200)
+            for i, (text, _) in enumerate(rows):
+                page.insert_text((38, 50 + 40 * i), text, fontsize=18)
+            pdf.save(source)
+        boxes = native_blocks(source, 1)
+        reading = draft(source, {1: [dict(kind="text", bbox=boxes[src], sourceText=src,
+                                          translatedText=target, status="translated") for src, target in rows]}, self.root)
+        data = json.loads(reading.read_text())
+        meta = data["pages"][0]
+        narrow = meta["blocks"][0]
+        measured = meta.pop("layoutRightEdges")
+        self.assertGreater(measured[narrow["id"]] - narrow["bbox"][0], 4 * 18)
+        self.assertLess(narrow["bbox"][2] - narrow["bbox"][0], 24)
+        self.assertEqual(saved_line_right_edges(meta), measured)
+        reading.write_text(json.dumps(data))  # Older drafts have only source bounds.
+        export(source, reading, output, "translated")
+        with pymupdf.open(output) as pdf:
+            lines = [s for b in pdf[0].get_text("dict")["blocks"] for l in b.get("lines", [])
+                     for s in l["spans"] if s["text"].strip()]
+            self.assertEqual([s["text"] for s in lines], [target for _, target in rows])
+            self.assertAlmostEqual(lines[0]["size"], lines[1]["size"], delta=.1)
+            self.assertGreater(lines[0]["size"], 14)
+            self.assertAlmostEqual(lines[0]["origin"][0], lines[1]["origin"][0], delta=.01)
+
+    def test_line_extensions_stop_at_occupied_regions_and_visible_rules(self):
+        pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 100), False)
+        pixmap.clear_with(255)
+        pixmap.set_rect(pymupdf.IRect(76, 40, 78, 55), (80, 20, 0))
+        def row(identifier, x0, x1, y, text):
+            return dict(id=identifier, kind="text", bbox=[x0, y, x1, y + 12], sourceText=text)
+        rows = [row("wide", 10, 160, 5, "A longer label"), row("short", 10, 23, 25, "ID"),
+                row("column2", 65, 93, 25, "Day"), row("rule", 10, 29, 40, "Key"),
+                row("small", 10, 28, 60, "low"), row("multi", 10, 30, 80, "A\nB")]
+        rows[4]["bbox"][3] = 66  # Genuine smaller source type has no aligned peer.
+        data = dict(width=200, height=100, blocks=rows, backgroundBlocks=[b["id"] for b in rows])
+        edges = line_right_edges(data, pixmap)
+        self.assertEqual(edges, {"short": 64, "rule": 76})
 
     def test_pdf_first_line_follows_the_source_indent(self):
         source = self.root / "indent-source.pdf"

@@ -247,11 +247,12 @@ def parse_request(raw):
         value = require_text(request, key, 128)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise WorkerError(f"{key} 格式无效。")
-    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading", "suggest_terms"):
+    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading", "reading_layout", "suggest_terms"):
         raise WorkerError("不支持此操作。")
     if request["action"] in ("probe", "translate", "suggest_terms"):
         request["service"] = normalized_service(request.get("service"))
     paths = {"translate": ("inputPath", "outputDirectory"),
+             "reading_layout": ("inputPath", "readingPath"),
              "suggest_terms": ("inputPath",) + (("readingPath",) if request.get("readingPath") is not None else ()),
              "export_reading": ("inputPath", "readingPath", "outputPath")}.get(request["action"], ())
     for key in paths:
@@ -433,6 +434,18 @@ async def run(request, events, control_input=None):
     elif request["action"] == "export_reading":
         from reading_export import export
         await export(request, events)
+    elif request["action"] == "reading_layout":
+        import pymupdf
+        from reading_layout import saved_line_right_edges
+        from structured_reading import load_reading, sha256
+        with pymupdf.open(request["inputPath"]) as source:
+            reading = load_reading(request["readingPath"], sha256(request["inputPath"]), len(source))
+        edges = {}
+        for page in reading["pages"]:
+            if "layoutRightEdges" not in page and page.get("backgroundBlocks"):
+                edges[str(page["pageNumber"])] = saved_line_right_edges(page)
+            await asyncio.sleep(0)
+        events.emit("result", layoutRightEdges=edges)
     elif request["action"] == "suggest_terms":
         from term_suggestions import suggest
         await suggest(request, events)
