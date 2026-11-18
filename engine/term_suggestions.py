@@ -153,8 +153,7 @@ def parse_terms(content, text, existing, limit):
 
 
 async def suggest(request, events):
-    import httpx
-    from worker import provider_request_options, token_limit_key
+    from worker import model_client, provider_request_options, token_limit_key
     service = request["service"]
     limit = request.get("limit", 60)
     events.emit("stage", stage="extract", message="正在统计文档中的候选术语。")
@@ -172,7 +171,7 @@ async def suggest(request, events):
                "messages": prompt(request["sourceLanguage"], request["targetLanguage"], found, text[:SAMPLE], limit)}
     payload.update(provider_request_options(service))
     payload.setdefault(token_limit_key(service), 8192)
-    async with httpx.AsyncClient(timeout=service["timeoutSeconds"], follow_redirects=False, trust_env=False) as client:
+    async with model_client(service) as client:
         response = await client.post(service["baseURL"] + "/chat/completions", json=payload,
                                      headers={"Authorization": "Bearer " + service["apiKey"]})
         if 300 <= response.status_code < 400:

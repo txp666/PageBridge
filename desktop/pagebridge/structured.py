@@ -10,16 +10,12 @@ import base64
 import hashlib
 import json
 import math
-import sys
 from pathlib import Path
 
 import pymupdf
+from reading_layout import estimated_font_size, saved_layouts
 
 from .core import AppError, _inside, _unredirected, atomic_file, sha256
-
-# The source checkout and the installed bridge share the same sibling engine.
-sys.path.append(str(Path(__file__).resolve().parents[2] / "engine"))
-from reading_layout import estimated_font_size, saved_layouts
 
 ARTIFACT_TYPE = "structured-reading"
 MAX_READING_BYTES = 64 * 1024 * 1024

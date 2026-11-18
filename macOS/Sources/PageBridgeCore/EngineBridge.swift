@@ -10,12 +10,16 @@ public struct EngineService: Codable, Sendable {
     public var timeoutSeconds: Double
     public var concurrency: Int
     public var reasoningEffort: String?
+    public var proxyMode: String?
+    public var proxyURL: String?
     public init(configuration: ServiceConfiguration, apiKey: String) {
         kind = configuration.kind.rawValue; provider = configuration.provider.rawValue
         baseURL = configuration.baseURL
         model = configuration.model; self.apiKey = apiKey
         timeoutSeconds = configuration.timeoutSeconds; concurrency = configuration.concurrency
         reasoningEffort = configuration.reasoningEffort.rawValue
+        proxyMode = configuration.proxyMode.rawValue
+        proxyURL = configuration.proxyMode == .manual ? configuration.proxyURL : nil
     }
 }
 

@@ -14,8 +14,10 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
+from urllib.request import proxy_bypass
 
 import glossary
+from service_options import LOOPBACK_HOSTS, ServiceOptionError, openai_reasoning_effort, proxy_settings
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
@@ -128,20 +130,19 @@ PROVIDER_ENDPOINTS = {
 
 
 def token_limit_key(service):
-    modern_openai = service.get("provider") == "openAI" and service["model"].startswith(("gpt-6", "gpt-5", "o"))
-    return "max_completion_tokens" if modern_openai else "max_tokens"
+    return "max_completion_tokens" if service.get("provider") == "openAI" else "max_tokens"
 
 
-def openai_reasoning_effort(provider, model, effort="auto"):
-    required = model in {"gpt-6-astra", "gpt-6.1-sol"}
-    if effort == "auto":
-        return ("low" if required else "none") if provider == "openAI" and model.startswith("gpt-6") else None
-    supported = ("low", "medium", "high", "xhigh", "max") if required else (
-        ("none", "low", "medium", "high", "xhigh", "max")
-        if model in {"gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"} else ())
-    if provider != "openAI" or effort not in supported:
-        raise WorkerError("当前模型不支持此推理强度，请选择“自动”或其他可用强度。")
-    return effort
+def model_client(service):
+    import httpx
+
+    endpoint = urlsplit(service["baseURL"])
+    local = endpoint.hostname in LOOPBACK_HOSTS
+    mode, proxy = proxy_settings(service, local=local)
+    # HTTPX reads the system proxy addresses but misses Windows registry exclusions.
+    use_system = mode == "system" and not local and not proxy_bypass(endpoint.netloc)
+    return httpx.AsyncClient(timeout=service["timeoutSeconds"], follow_redirects=False,
+                             trust_env=use_system, proxy=proxy or None)
 
 
 def provider_request_options(service, *, probe=False):
@@ -185,7 +186,7 @@ def normalized_service(service):
         _ = url.port
     except ValueError:
         raise WorkerError("服务地址格式无效。") from None
-    local = url.hostname in ("localhost", "127.0.0.1", "::1")
+    local = url.hostname in LOOPBACK_HOSTS
     if url.scheme not in ("https", "http") or not url.hostname:
         raise WorkerError("服务地址须使用 HTTPS 或本机 HTTP。")
     if url.username or url.password or url.query or url.fragment:
@@ -228,10 +229,14 @@ def normalized_service(service):
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 8:
         raise WorkerError("并发数须介于 1 至 8 之间。")
     effort = service.get("reasoningEffort", "auto")
-    openai_reasoning_effort(provider, model, effort)
+    try:
+        openai_reasoning_effort(provider, model, effort)
+        proxy_mode, proxy_url = proxy_settings(service, local=local)
+    except ServiceOptionError as error:
+        raise WorkerError(str(error)) from None
     return {"kind": kind, "provider": provider, "baseURL": endpoint, "model": model,
             "apiKey": api_key.strip() or "ollama-local", "timeoutSeconds": timeout, "concurrency": concurrency,
-            "reasoningEffort": effort}
+            "reasoningEffort": effort, "proxyMode": proxy_mode, "proxyURL": proxy_url}
 
 
 def parse_request(raw):
@@ -369,14 +374,13 @@ def safe_error(error):
 
 
 async def probe(request, events):
-    import httpx
     service = request["service"]
     events.emit("stage", stage="probe", message="正在使用所选模型测试短句翻译。")
     payload = {"model": service["model"], "stream": False,
                "messages": [{"role": "system", "content": "Translate the user's English sentence into Simplified Chinese. Return only the translation. /no_think"},
                             {"role": "user", "content": "The control valve regulates water flow."}]}
     payload.update(provider_request_options(service, probe=True))
-    async with httpx.AsyncClient(timeout=service["timeoutSeconds"], follow_redirects=False, trust_env=False) as client:
+    async with model_client(service) as client:
         response = await client.post(service["baseURL"] + "/chat/completions", json=payload,
                                      headers={"Authorization": "Bearer " + service["apiKey"]})
         if 300 <= response.status_code < 400:

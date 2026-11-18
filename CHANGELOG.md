@@ -1,5 +1,15 @@
 # 版本记录
 
+## 0.7.7 / build 25 — 翻译代理设置与 GPT-6.2 兼容
+
+- 修复 Windows 使用系统代理时连接测试成功、PDF 翻译却超时的问题。Windows 和 macOS 可为每个翻译服务选择跟随系统、直连或手动 HTTP 代理。本机模型直接连接。（#28）
+- 支持 OpenAI GPT-6.2 Sol 和 Astra 的推理强度设置。自动模式为这两个模型使用低推理强度，未识别的 OpenAI 模型使用服务端默认值，也可手动选择强度。（#24）
+
+**English**
+
+- Fix PDF translation timeouts on Windows when connection tests succeed through a system proxy. Each translation service on Windows and macOS offers system, direct, and manual HTTP proxy modes. Local models connect directly. (#28)
+- Support reasoning settings for OpenAI GPT-6.2 Sol and Astra. Auto uses low effort for these models. Unrecognized OpenAI models can use the provider default or a manually selected effort. (#24)
+
 ## 0.7.6 / build 24 — 改进原页译文、表格和 PDF 阅读
 
 - 改善译文与原文重叠的问题。清理可识别的文字轮廓时保留列表标记，短标题和目录项可利用行内空白排版。译文直接写回对应页面，导出页数与原 PDF 一致。

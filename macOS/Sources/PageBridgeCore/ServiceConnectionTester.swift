@@ -1,16 +1,17 @@
 import Foundation
+import Network
 
 public enum ServiceConnectionTester {
     public static func test(service: ServiceConfiguration, apiKey: String) async throws -> String {
         let request = try testRequest(service: service, apiKey: apiKey)
-        let data = try await perform(request)
+        let data = try await perform(request, service: service)
         return try parseResponse(data, kind: service.kind)
     }
 
     /// Invoked only by the explicit “获取模型” action; never on key entry or profile load.
     public static func fetchModels(service: ServiceConfiguration, apiKey: String) async throws -> [String] {
         let request = try modelsRequest(service: service, apiKey: apiKey)
-        let data = try await perform(request)
+        let data = try await perform(request, service: service)
         return try parseModels(data, kind: service.kind, provider: service.provider)
     }
 
@@ -59,7 +60,7 @@ public enum ServiceConnectionTester {
         if service.kind == .ollama {
             body["think"] = false
             body["options"] = ["temperature": temperature, "num_predict": maxTokens]
-        } else if service.provider == .openAI && (service.model.hasPrefix("gpt-6") || service.model.hasPrefix("gpt-5") || service.model.hasPrefix("o")) {
+        } else if service.provider == .openAI {
             body["max_completion_tokens"] = maxTokens
             if let effort = service.resolvedReasoningEffort { body["reasoning_effort"] = effort }
         } else {
@@ -73,7 +74,7 @@ public enum ServiceConnectionTester {
     }
 
     /// Ephemeral and credential-free; redirects are refused.
-    static func session(timeout: TimeInterval) -> URLSession {
+    static func session(timeout: TimeInterval, service: ServiceConfiguration) throws -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
@@ -82,11 +83,20 @@ public enum ServiceConnectionTester {
         configuration.httpShouldSetCookies = false
         configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        if service.isLocal || service.proxyMode == .direct {
+            configuration.connectionProxyDictionary = [:]
+        } else if service.proxyMode == .manual {
+            let endpoint = try service.manualProxyEndpoint()
+            guard let port = NWEndpoint.Port(rawValue: endpoint.port) else { throw ServiceConfigurationError.invalidProxyURL }
+            var proxy = ProxyConfiguration(httpCONNECTProxy: .hostPort(host: .init(endpoint.host), port: port))
+            proxy.allowFailover = false
+            configuration.proxyConfigurations = [proxy]
+        }
         return URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
-    private static func perform(_ request: URLRequest) async throws -> Data {
-        let session = Self.session(timeout: request.timeoutInterval)
+    private static func perform(_ request: URLRequest, service: ServiceConfiguration) async throws -> Data {
+        let session = try Self.session(timeout: request.timeoutInterval, service: service)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)

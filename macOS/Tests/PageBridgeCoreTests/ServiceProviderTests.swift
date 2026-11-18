@@ -119,8 +119,11 @@ final class ServiceProviderTests: XCTestCase {
     }
 
     func testOpenAIModelsUseSupportedReasoningEffort() throws {
-        for (model, effort) in [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
-                                ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none")] {
+        let models: [(String, String?)] = [("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
+                                          ("gpt-6.2-astra", "low"), ("gpt-6.2-sol", "low"),
+                                          ("gpt-6.1-terra", "none"), ("gpt-6-sol", "none"), ("gpt-6-luna", "none"),
+                                          ("gpt-7-test-model", nil)]
+        for (model, effort) in models {
             var config = ServiceConfiguration.preset(.openAI)
             config.model = model
             let request = try ServiceConnectionTester.testRequest(service: config, apiKey: "fixture")
@@ -128,13 +131,13 @@ final class ServiceProviderTests: XCTestCase {
             XCTAssertEqual(body["reasoning_effort"] as? String, effort, model)
             XCTAssertEqual(body["max_completion_tokens"] as? Int, 1024)
             XCTAssertNil(body["temperature"])
-            XCTAssertEqual(config.availableReasoningEfforts.contains(.none), effort == "none")
+            XCTAssertEqual(config.availableReasoningEfforts.contains(.none), effort != "low")
         }
     }
 
     func testReasoningChoicePersistsAndReachesRequestsAndEngine() throws {
         var config = ServiceConfiguration.preset(.openAI)
-        config.model = "gpt-6-astra"; config.reasoningEffort = .high
+        config.model = "gpt-6.2-sol"; config.reasoningEffort = .high
         let restored = try JSONDecoder().decode(ServiceConfiguration.self, from: JSONEncoder().encode(config))
         XCTAssertEqual(restored.reasoningEffort, .high)
         XCTAssertEqual(EngineService(configuration: restored, apiKey: "fixture").reasoningEffort, "high")
@@ -143,6 +146,8 @@ final class ServiceProviderTests: XCTestCase {
         XCTAssertEqual(body["reasoning_effort"] as? String, "high")
         config.reasoningEffort = .none
         XCTAssertThrowsError(try config.validate()) { XCTAssertEqual($0 as? ServiceConfigurationError, .invalidReasoningEffort) }
+        config.model = "gpt-7-test-model"; config.reasoningEffort = .low
+        XCTAssertEqual(config.resolvedReasoningEffort, "low")
         XCTAssertEqual(config.selectingProvider(.deepSeek).reasoningEffort, .automatic)
     }
 

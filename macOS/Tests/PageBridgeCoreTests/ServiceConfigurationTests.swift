@@ -25,6 +25,22 @@ final class ServiceConfigurationTests: XCTestCase {
         }
     }
 
+    func testManualProxyRoundTripAndWorkerService() throws {
+        var config = customAPI
+        config.proxyMode = .manual
+        config.proxyURL = "http://127.0.0.1:7890"
+        let restored = try JSONDecoder().decode(ServiceConfiguration.self, from: JSONEncoder().encode(config))
+        XCTAssertEqual(restored, config)
+        XCTAssertEqual(try restored.manualProxyEndpoint().port, 7890)
+        let service = EngineService(configuration: restored, apiKey: "fixture")
+        XCTAssertEqual(service.proxyMode, "manual")
+        XCTAssertEqual(service.proxyURL, config.proxyURL)
+        config.proxyURL = "http://user:password@127.0.0.1:7890"
+        XCTAssertThrowsError(try config.validateConnection()) { XCTAssertEqual($0 as? ServiceConfigurationError, .invalidProxyURL) }
+        config.proxyMode = .direct
+        XCTAssertEqual(config.normalized().proxyURL, "")
+    }
+
     func testUnsafeAndMalformedURLsAreRejected() {
         for address in ["http://models.example.com/v1", "https://user:password@example.com/v1", "https://example.com/v1?api_key=secret", "https://example.com/v1#secret", "https://example.com/v1/chat/completions/", "file:///tmp/model", "example.com/v1"] {
             var config = customAPI

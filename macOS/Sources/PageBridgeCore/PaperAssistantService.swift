@@ -223,7 +223,7 @@ public enum PaperAssistantService {
     public static func answer(service: ServiceConfiguration, apiKey: String, question: String, context: PaperAssistantContext,
                               history: [PaperAssistantMessage]) async throws -> PaperAssistantAnswer {
         let request = try request(service: service, apiKey: apiKey, question: question, context: context, history: history)
-        let session = ServiceConnectionTester.session(timeout: request.timeoutInterval)
+        let session = try ServiceConnectionTester.session(timeout: request.timeoutInterval, service: service)
         defer { session.invalidateAndCancel() }
         do {
             let (bytes, response) = try await session.bytes(for: request)

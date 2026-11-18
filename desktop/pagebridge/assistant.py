@@ -12,13 +12,12 @@ import json
 import re
 import time
 import urllib.error
-import urllib.request
 import uuid
 
 import pymupdf
 
 from .core import AppError, atomic_json
-from .services import _NoRedirect, _chat_body, _chat_endpoint, _chat_text, _http_request
+from .services import _chat_body, _chat_endpoint, _chat_text, _http_request, _model_opener
 
 
 QUESTION_LIMIT = 2000
@@ -253,7 +252,7 @@ def request_answer(prepared):
     p = prepared.profile
     request = _http_request(_chat_endpoint(p), prepared.api_key, request_payload(prepared))
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=p["timeoutSeconds"]) as response:
+        with _model_opener(p).open(request, timeout=p["timeoutSeconds"]) as response:
             raw = response.read(RESPONSE_BYTES + 1)
             if len(raw) > RESPONSE_BYTES:
                 raise AppError("助手响应过大，已停止读取。")
