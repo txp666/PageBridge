@@ -35,6 +35,14 @@ def blocks_page(number=1):
 
 
 class ReadingUnitTests(unittest.TestCase):
+    def test_high_manual_parallelism_uses_a_larger_pool_when_resources_allow(self):
+        with patch.object(reading.os, "cpu_count", return_value=15), patch("psutil.virtual_memory") as memory:
+            memory.return_value = SimpleNamespace(available=27 * 1024**3)
+            self.assertEqual(reading.parser_worker_count(), 3)
+            self.assertEqual(reading.parser_worker_count(8), 8)
+            memory.return_value = SimpleNamespace(available=18 * 1024**3)
+            self.assertEqual(reading.parser_worker_count(8), 6)
+
     def test_first_line_indent_comes_from_source_lines_in_this_paragraph(self):
         # Source in two columns. The first paragraph starts 18 pt in; the second is flush.
         blocks = [{"type": "text", "content": "First", "bbox": [.05, .1, .45, .3]},
@@ -453,6 +461,60 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         _, enabled, _ = await self.run_fixture(handler, [page(1)], dict(self.request, attemptId="tables"))
         self.assertTrue(all(block["status"] == "translated" for block in enabled["pages"][0]["blocks"]))
 
+    async def test_appended_draft_keeps_unchanged_page_background_as_a_separate_file(self):
+        with pymupdf.open(self.source) as pdf:
+            pages = []
+            for number, source in enumerate(pdf, 1):
+                x0, y0, x1, y1, text, *_ = source.get_text("blocks")[0]
+                pages.append(dict(pageNumber=number, width=source.rect.width, height=source.rect.height,
+                                  status="completed", blocks=[dict(id=f"p{number}-b1", kind="text", bbox=[x0, y0, x1, y1],
+                                                                   sourceText=text.strip(), status="preserved")]))
+        def translate(request):
+            return self.response(request)
+
+        first, initial, _ = await self.run_fixture(translate, pages[:1])
+        first_path = Path(first["readingPath"])
+        background = first_path.with_name("background-1.png")
+        self.assertEqual(initial["pages"][0]["backgroundSHA256"], reading.sha256(background))
+        self.assertNotIn("backgroundImage", initial["pages"][0])
+        appended, updated, _ = await self.run_fixture(translate, pages[1:], dict(self.request, attemptId="append",
+            pages="2", readingPath=str(first_path), appendPages=True))
+        result_path = Path(appended["readingPath"])
+        self.assertEqual(updated["pages"][0], initial["pages"][0])
+        self.assertEqual(result_path.with_name(background.name).read_bytes(), background.read_bytes())
+        self.assertEqual(updated["pages"][1]["backgroundSHA256"], reading.sha256(result_path.with_name("background-2.png")))
+
+    async def test_batch_limit_counts_only_new_unique_pages_when_appending(self):
+        source = self.root / "large.pdf"
+        with pymupdf.open() as pdf:
+            for _ in range(101):
+                pdf.new_page()
+            pdf.save(source)
+        request = dict(self.request, inputPath=str(source), pages="1-51")
+        with patch.object(reading, "parse_pages", new=AsyncMock()) as parser:
+            with self.assertRaisesRegex(reading.ReadingError, "最多翻译 50 页"):
+                await reading.translate(request, Events())
+            parser.assert_not_awaited()
+
+        def pages(first, last):
+            return [dict(pageNumber=n, width=595, height=842, status="completed", blocks=[]) for n in range(first, last + 1)]
+
+        first_pages = pages(1, 50)
+        first_pages[0]["status"] = "source_fallback"
+        first, initial, _ = await self.run_fixture(self.response, first_pages, dict(request, pages="1-50,25"))
+        self.assertEqual(len(initial["selectedPages"]), 50)
+        self.assertTrue(first["batchPartial"])
+        request = dict(request, attemptId="append", readingPath=first["readingPath"], appendPages=True)
+        with patch.object(reading, "parse_pages", new=AsyncMock()) as parser:
+            with self.assertRaisesRegex(reading.ReadingError, "最多翻译 50 页"):
+                await reading.translate(dict(request, pages="1-101"), Events())
+            parser.assert_not_awaited()
+        result, appended, _ = await self.run_fixture(self.response, pages(51, 100), dict(request, pages="1-100"))
+        self.assertEqual(appended["selectedPages"], list(range(1, 101)))
+        self.assertEqual(result["selectedPages"], appended["selectedPages"])
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["batchPartial"])
+
     async def test_one_failed_block_keeps_other_translation_formula_and_code(self):
         calls = []
         def handler(request):
@@ -521,6 +583,31 @@ class ReadingFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["failedPages"], 1)
         self.assertEqual(document["pages"][1]["blocks"][0]["status"], "translated")
+
+    async def test_parser_reuses_a_process_and_restarts_after_a_failed_page(self):
+        script = self.root / "mineru_bridge.py"
+        script.write_text("""from pathlib import Path
+import os
+import sys
+
+output = Path(sys.argv[sys.argv.index("--output") + 1])
+for line in sys.stdin:
+    page = int(line)
+    (output / f"pid-{page}").write_text(str(os.getpid()))
+    if page == 3:
+        break
+    sys.stdout.buffer.write(b"0\\n")
+    sys.stdout.buffer.flush()
+""")
+        completed = []
+        with (patch.object(reading, "ENGINE", self.root),
+              patch.object(reading, "runtime_python", return_value=Path(sys.executable))):
+            await reading.parse_with_mineru(self.root, self.source, [1, 2, 3, 4], self.root, 1,
+                                           lambda number, parsed: completed.append((number, parsed)))
+        self.assertEqual(completed, [(1, True), (2, True), (3, False), (4, True)])
+        pids = [(self.root / f"pid-{page}").read_text() for page in range(1, 5)]
+        self.assertEqual(pids[:3], [pids[0]] * 3)
+        self.assertNotEqual(pids[3], pids[0])
 
     async def test_inline_math_complete_passage_translation_and_retry_keep_attachments(self):
         page = blocks_page()
@@ -723,23 +810,24 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
         return patch.object(httpx, "AsyncClient", side_effect=lambda **kwargs:
                             self.original_client(transport=httpx.MockTransport(handler), **kwargs))
 
-    async def fake_parser(self, command, **kwargs):
-        number = int(command[command.index("--page") + 1])
-        folder = Path(command[command.index("--output") + 1]); folder.mkdir()
+    async def fake_parser(self, root, source, numbers, temporary, worker_count, finish_page):
         with pymupdf.open(self.source) as pdf:
-            page = pdf[number - 1]
-            blocks = [{"type": "text", "bbox": [x0 / page.rect.width, y0 / page.rect.height,
-                        x1 / page.rect.width, y1 / page.rect.height], "content": text.strip()}
-                      for x0, y0, x1, y1, text, _, kind in page.get_text("blocks") if kind == 0]
-        raw = {"pages": [{"page_idx": number - 1, "blocks": blocks or [
-            {"type": "text", "bbox": [0.1, 0.1, 0.8, 0.4], "content": "One scanned paragraph."}]}]}
-        (folder / "middle_json.json").write_text(json.dumps(raw))
-        return 0
+            for number in numbers:
+                folder = temporary / f"page-{number}"
+                folder.mkdir()
+                page = pdf[number - 1]
+                blocks = [{"type": "text", "bbox": [x0 / page.rect.width, y0 / page.rect.height,
+                            x1 / page.rect.width, y1 / page.rect.height], "content": text.strip()}
+                          for x0, y0, x1, y1, text, _, kind in page.get_text("blocks") if kind == 0]
+                raw = {"pages": [{"page_idx": number - 1, "blocks": blocks or [
+                    {"type": "text", "bbox": [0.1, 0.1, 0.8, 0.4], "content": "One scanned paragraph."}]}]}
+                (folder / "middle_json.json").write_text(json.dumps(raw))
+                finish_page(number, True)
 
     async def run_translation(self, request=None, parser=None):
         calls, events = [], Events()
         with (patch.object(reading, "ensure_runtime", new=AsyncMock(return_value=self.root)) as setup,
-              patch.object(reading, "run_process", new=AsyncMock(side_effect=parser or self.fake_parser)) as parse,
+              patch.object(reading, "parse_with_mineru", new=AsyncMock(side_effect=parser or self.fake_parser)) as parse,
               self.mock_client(calls)):
             await reading.translate(request or self.request, events)
         document = json.loads(Path(events.items[-1]["readingPath"]).read_text())
@@ -777,8 +865,7 @@ class ArabicOCRCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.make_pdf(["scan", "native", "digits"])
         document, setup, parse, calls = await self.run_translation()
         setup.assert_awaited_once(); parse.assert_awaited_once(); self.assertEqual(len(calls), 2)
-        command = parse.await_args.args[0]
-        self.assertEqual(command[command.index("--page") + 1], 2)
+        self.assertEqual(parse.await_args.args[2], [2])
         self.assertEqual([page["status"] for page in document["pages"]], ["source_fallback", "completed", "source_fallback"])
 
     async def test_real_unicef_selected_pages_have_no_supported_native_arabic_layer(self):

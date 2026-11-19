@@ -22,8 +22,11 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
     public static func load(_ url: URL, for document: DocumentRecord) throws -> Self {
         let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard info.isRegularFile == true, info.isSymbolicLink != true,
-              let size = info.fileSize, size > 0, size <= 64 * 1024 * 1024 else {
-            throw BridgeError.message("对照阅读文件不可用或过大。")
+              let size = info.fileSize, size > 0 else {
+            throw BridgeError.message("对照阅读文件不可用。")
+        }
+        guard size <= 64 * 1024 * 1024 else {
+            throw BridgeError.message("阅读稿 JSON 超过 64 MiB 上限。")
         }
         let reading = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
         try reading.validate(for: document)
@@ -51,11 +54,19 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
             guard page.decorationsCoordinateSpace == nil || page.decorationsCoordinateSpace == "page" else {
                 throw BridgeError.message("阅读稿的原页坐标无效。")
             }
-            if let background = page.backgroundImage {
+            let hasBackground = page.backgroundImage != nil || page.backgroundSHA256 != nil
+            if hasBackground {
+                let validBackground: Bool
+                if let digest = page.backgroundSHA256 {
+                    validBackground = page.backgroundImage == nil
+                        && digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+                } else {
+                    validBackground = page.backgroundImage.flatMap(StructuredReadingBackground.pngData) != nil
+                }
                 let allowed = Set(page.blocks.filter {
                     ["text", "heading", "list"].contains($0.kind) && $0.status == "translated"
                 }.map(\.id))
-                guard StructuredReadingBackground.pngData(background) != nil,
+                guard validBackground,
                       let blocks = page.backgroundBlocks,
                       Set(blocks).count == blocks.count, Set(blocks).isSubset(of: allowed) else {
                     throw BridgeError.message("阅读稿的原页背景无效。")
@@ -78,7 +89,7 @@ public struct StructuredReadingDocument: Codable, Sendable, Equatable {
             }
             if let filled = page.backgroundFillBlocks {
                 let colors = Set(page.blocks.filter { $0.backgroundColor != nil }.map(\.id))
-                guard page.backgroundImage != nil, Set(filled).count == filled.count,
+                guard hasBackground, Set(filled).count == filled.count,
                       Set(filled).isSubset(of: Set(page.backgroundBlocks ?? [])), Set(filled).isSubset(of: colors) else {
                     throw BridgeError.message("阅读稿的图像文字背景无效。")
                 }
@@ -138,6 +149,7 @@ public struct StructuredReadingPage: Codable, Sendable, Equatable, Identifiable 
     public var decorations: [StructuredReadingDecoration]?
     public var decorationsCoordinateSpace: String?
     public var backgroundImage: String?
+    public var backgroundSHA256: String?
     public var backgroundBlocks: [String]?
     public var layoutRightEdges: [String: Double]?
     public var cellLayouts: [String: StructuredReadingCellLayout]?
@@ -234,6 +246,9 @@ extension DocumentRepository {
             throw BridgeError.message("阅读稿输出路径超出任务目录。")
         }
         let reading = try StructuredReadingDocument.load(source, for: document)
+        if let selectedPages = result.selectedPages, selectedPages != reading.selectedPages {
+            throw BridgeError.message("本批翻译返回的页码与阅读稿不匹配。")
+        }
         let digest = try Self.sha256(source)
         guard result.readingSHA256 == digest else { throw BridgeError.message("阅读稿输出校验失败。") }
         let results = folder.appendingPathComponent("results", isDirectory: true)
@@ -243,8 +258,14 @@ extension DocumentRepository {
         try fm.createDirectory(at: results, withIntermediateDirectories: true)
         let commit = staging.appendingPathComponent("commit-reading", isDirectory: true)
         try fm.createDirectory(at: commit, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: commit) }
         let copied = commit.appendingPathComponent("reading.json")
         try fm.copyItem(at: source, to: copied)
+        for page in reading.pages {
+            guard let digest = page.backgroundSHA256 else { continue }
+            let data = try StructuredReadingBackground.fileData(for: page.pageNumber, nextTo: source, digest: digest)
+            try data.write(to: StructuredReadingBackground.fileURL(for: page.pageNumber, nextTo: copied))
+        }
         guard try Self.sha256(copied) == digest,
               try Self.sha256(document.originalURL) == document.inputSHA256 else {
             throw BridgeError.message("保存过程中原文或阅读稿发生变化，未提交结果。")

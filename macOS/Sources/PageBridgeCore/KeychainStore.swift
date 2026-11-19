@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 public enum KeychainStore {
@@ -34,8 +35,14 @@ public enum KeychainStore {
         return key
     }
 
-    public static func delete(serviceID: UUID) throws {
-        let status = SecItemDelete(baseQuery(serviceID) as CFDictionary)
+    public static func delete(serviceID: UUID, allowAuthentication: Bool = true) throws {
+        var query = baseQuery(serviceID)
+        if !allowAuthentication {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
     }
 

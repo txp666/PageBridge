@@ -55,7 +55,7 @@ final class PaperAssistantModel: ObservableObject {
     }
     @discardableResult
     func send(question: String, document: DocumentRecord, mode: PaperAssistantMode, page: Int, selection: String,
-              service: ServiceConfiguration, extraTerms: [String] = [], apiKey: () throws -> String) -> Bool {
+              service: ServiceConfiguration, extraTerms: [String] = [], apiKey: @escaping () async throws -> String) -> Bool {
         guard !isBusy else { return false }
         load(document: document)
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,8 +64,6 @@ final class PaperAssistantModel: ObservableObject {
         }
         do {
             try service.validate()
-            // Called synchronously on the explicit send action, before any suspension or profile switch.
-            let key = service.kind == .ollama ? "" : try apiKey()
             let prior = messages(for: document)
             let token = requestGate.begin(document: document); activeDocumentID = document.id
             errors[document.id] = nil; status = "正在本机选取证据…"
@@ -75,6 +73,8 @@ final class PaperAssistantModel: ObservableObject {
                     if self.requestGate.active == token { self.requestGate.cancel(); self.activeDocumentID = nil; self.status = ""; self.task = nil }
                 }
                 do {
+                    let key = service.kind == .ollama ? "" : try await apiKey()
+                    try Task.checkCancellation()
                     let context = try await Self.context(document: document, mode: mode, page: page, selection: selection, question: question, extraTerms: extraTerms)
                     try Task.checkCancellation()
                     guard self.requestGate.accepts(token, sourceSHA256: self.sourceHashes[document.id]) else { return }

@@ -59,6 +59,7 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1000, minHeight: 680)
         .sheet(isPresented: $model.translationPresented) { TranslationSheet(model: model) }
+        .sheet(isPresented: $model.cacheSettingsPresented) { CacheSettingsView(model: model) }
         .sheet(isPresented: $model.glossaryManagerPresented) { GlossaryManagerView(model: model) }
         .sheet(item: $model.addTermRequest) { AddTermSheet(model: model, request: $0) }
         .sheet(isPresented: $model.librarySearchPresented) { LibrarySearchView(model: model) }
@@ -150,6 +151,9 @@ struct ContentView: View {
                     Image(systemName: "info.circle").foregroundStyle(.secondary)
                     Text(model.statusMessage).lineLimit(2).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    if let elapsed = model.parseTimeLabel(for: document.id) {
+                        Text(elapsed).foregroundStyle(.secondary).monospacedDigit().fixedSize()
+                    }
                 }
                 .font(.caption).padding(.horizontal, 17).padding(.vertical, 8)
                 .background(Color(nsColor: .controlBackgroundColor))
@@ -320,9 +324,12 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 5)
+            if !model.isExporting, let elapsed = model.parseTimeLabel(for: model.activeJobDocumentID) {
+                Text(elapsed).font(.caption).foregroundStyle(.secondary).monospacedDigit().fixedSize()
+            }
             Button(model.isExporting ? "取消导出" : "取消翻译") { model.isExporting ? model.cancelExport() : model.cancelTranslation() }
                 .controlSize(.small)
-                .disabled(model.cancelRequested)
+                .disabled(!model.canCancelJob)
         }
         .padding(.horizontal, 17).padding(.vertical, 11)
         .background(.blue.opacity(0.055))
@@ -430,7 +437,7 @@ struct ContentView: View {
                                     services: model.services, selectedServiceID: Binding(
                                         get: { assistantService?.id },
                                         set: { assistantServiceID = $0?.uuidString ?? "" }
-                                    ), apiKey: { try model.key(for: $0) },
+                                    ), apiKey: { try await model.key(for: $0) },
                                     onNavigate: { navigate(to: $0, inOriginal: true) }, onSaveNote: { text in
                     workspace.addNote(text: text); inspector = .notes
                 }, expansionTerms: { model.glossaries.expansionTerms(for: $0) })

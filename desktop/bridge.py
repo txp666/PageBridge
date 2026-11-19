@@ -14,6 +14,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import threading
 import time
@@ -33,6 +34,7 @@ import pymupdf
 from pagebridge.core import AppError, DocumentStore, atomic_file, sha256
 from pagebridge.reading import READING_ACTIONS, _destination, dispatch_reading
 from pagebridge import assistant
+from pagebridge import cache_storage
 from pagebridge.glossaries import GlossaryStore
 from pagebridge import library_search
 from pagebridge import literature
@@ -57,7 +59,8 @@ WRITE_LOCK = threading.Lock()
 MAX_RESPONSE_BYTES = 1048576
 LOCAL_ACTIONS = frozenset({"list", "recover", "import", "rename", "folders", "create_folder", "rename_folder",
                            "delete_folder", "move", "trash", "favorite", "reading", "export", "render", "page_info",
-                           "reading_page", "assistant_history", "assistant_clear", "library_search"}) | frozenset(GLOSSARY_ACTIONS) | DOCUMENT_GLOSSARY_ACTIONS | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
+                           "reading_page", "assistant_history", "assistant_clear", "library_search",
+                           "cache_usage", "cache_clear"}) | frozenset(GLOSSARY_ACTIONS) | DOCUMENT_GLOSSARY_ACTIONS | READING_ACTIONS | literature.LOCAL_ACTIONS | updates.ACTIONS
 STREAMING_ACTIONS = frozenset({"translate", "export_reading", "suggest_terms"})
 ENGINE_ROOT = Path(__file__).resolve().parent.parent / "engine"
 
@@ -316,6 +319,8 @@ def dispatch(request, root):
         elif action in GLOSSARY_ACTIONS: result = GLOSSARY_ACTIONS[action](GlossaryStore(root, ENGINE_ROOT / "glossaries"), request)
         elif action in DOCUMENT_GLOSSARY_ACTIONS: result = document_glossary(store, GlossaryStore(root, ENGINE_ROOT / "glossaries"), request)
         elif action == "library_search": result = library_search.search(store.documents(), request.get("query"))
+        elif action == "cache_usage": result = cache_storage.usage(store)
+        elif action == "cache_clear": result = cache_storage.clear(store, request.get("category"))
         elif action == "literature_settings": result = literature.LiteratureSettings(root).snapshot()
         elif action == "literature_save_settings": result = literature.LiteratureSettings(root).save(request)
         elif action == "literature_cleanup": result = literature.cleanup(root, request.get("operation_id"))
@@ -418,6 +423,8 @@ def translate(request, root):
             envelope["glossary"] = terms
         if not previous_reading and "translateTables" in request:
             envelope["translateTables"] = request["translateTables"]
+        if not retrying and request.get("parseWorkers") is not None:
+            envelope["parseWorkers"] = request["parseWorkers"]
         if previous_reading:
             # Retries and appended pages keep the draft's languages.
             envelope.update(readingPath=previous_reading,
@@ -440,9 +447,11 @@ def translate(request, root):
                 if not retrying:
                     # The glossaries belong to the new draft; a failed run keeps the old pairing.
                     document = store.set_glossaries(identifier, glossary_ids)
+                shutil.rmtree(directory, ignore_errors=True)
                 message = (task.result.get("message") or "已按术语重译。") if retry_terms is not None else "部分内容未翻译，可在阅读稿中重试。" if document["status"] == "partial" else "翻译完成，结果已保存。"
                 events.finish("result", progress=1.0, message=message, document=document,
-                              artifactType=task.result.get("artifactType"), readingPath=document.get("reading_path"))
+                              artifactType=task.result.get("artifactType"), readingPath=document.get("reading_path"),
+                              batchPartial=task.result.get("batchPartial"), parseSeconds=task.result.get("parseSeconds"))
     except BaseException as error:
         if task and task.running:
             task.cancel()

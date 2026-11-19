@@ -307,7 +307,9 @@ public sealed partial class MainWindow
         settingsOpening = true;
         try
         {
-            settingsOverlay = await ServiceSettingsView.CreateAsync(root.XamlRoot, backend, () => { if (settingsOverlay is not null) root.Children.Remove(settingsOverlay); settingsOverlay = null; UpdateDocumentState(); }, () => Attempt(ShowUpdatesAsync));
+            settingsOverlay = await ServiceSettingsView.CreateAsync(root.XamlRoot, backend,
+                () => { if (settingsOverlay is not null) root.Children.Remove(settingsOverlay); settingsOverlay = null; UpdateDocumentState(); },
+                () => Attempt(ShowUpdatesAsync), () => Attempt(ShowCacheSettingsAsync));
             Grid.SetColumn(settingsOverlay, 1); root.Children.Add(settingsOverlay); UpdateDocumentState();
         }
         finally { settingsOpening = false; }

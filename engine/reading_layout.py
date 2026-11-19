@@ -1,8 +1,9 @@
 """Find usable line width on the cleared page without changing source geometry."""
-import base64
 import math
 
 import pymupdf
+
+from reading_assets import read_background
 
 
 def source_rect(value):
@@ -121,20 +122,17 @@ def line_right_edges(page, background):
     return result
 
 
-def saved_layouts(page, source):
+def saved_layouts(page, source, reading_path=None):
     """Read stored plans or measure missing ones for an immutable older draft."""
     from reading_tables import table_cells
     edges, cells = page.get("layoutRightEdges"), page.get("cellLayouts")
     has_cells = any(b.get("sourceType") == "table_cell" for b in page["blocks"])
     if not has_cells:
         cells = {}
-    if (edges is not None and cells is not None) or not page.get("backgroundBlocks") or not page.get("backgroundImage"):
+    if (edges is not None and cells is not None) or not page.get("backgroundBlocks"):
         return edges or {}, cells or {}
-    data = base64.b64decode(page["backgroundImage"], validate=True)
-    if len(data) < 24 or not data.startswith(b"\x89PNG\r\n\x1a\n") or data[12:16] != b"IHDR":
-        return edges or {}, cells or {}
-    width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
-    if not 0 < width * height <= 16_000_000:
+    data = read_background(reading_path, page)
+    if data is None:
         return edges or {}, cells or {}
     pixmap = pymupdf.Pixmap(data)
     if edges is None:

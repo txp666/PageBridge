@@ -73,14 +73,16 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
     private bool Dirty => isNew || key.Password.Length > 0 || credentialInvalidated || !JsonNode.DeepEquals(Capture(), baseline);
     internal bool IsBusy => saving || operation is not null;
 
-    internal static async Task<ServiceSettingsView> CreateAsync(XamlRoot xamlRoot, BackendClient backend, Action onClose, Func<Task> checkUpdates)
+    internal static async Task<ServiceSettingsView> CreateAsync(XamlRoot xamlRoot, BackendClient backend, Action onClose,
+        Func<Task> checkUpdates, Func<Task> showCacheSettings)
     {
-        var view = new ServiceSettingsView(xamlRoot, backend, onClose, checkUpdates);
+        var view = new ServiceSettingsView(xamlRoot, backend, onClose, checkUpdates, showCacheSettings);
         await view.InitializeAsync();
         return view;
     }
 
-    private ServiceSettingsView(XamlRoot xamlRoot, BackendClient backend, Action onClose, Func<Task> checkUpdates)
+    private ServiceSettingsView(XamlRoot xamlRoot, BackendClient backend, Action onClose,
+        Func<Task> checkUpdates, Func<Task> showCacheSettings)
     {
         this.backend = backend;
         ApplyPalette((xamlRoot.Content as FrameworkElement)?.ActualTheme == ElementTheme.Dark);
@@ -104,7 +106,10 @@ internal sealed class ServiceSettingsView : Grid, IDisposable
         backContent.Children.Add(ReaderIcons.Make("left", 12)); backContent.Children.Add(Copy("返回文档", 12)); back.Content = backContent;
         AutomationProperties.SetName(back, "返回文档");
         back.Click += async (_, _) => { if (await RequestCloseAsync()) onClose(); };
-        Grid.SetColumn(back, 1); header.Children.Add(back);
+        var cache = SmallButton("缓存…"); cache.VerticalAlignment = VerticalAlignment.Center;
+        cache.Click += async (_, _) => await showCacheSettings();
+        var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { cache, back } };
+        Grid.SetColumn(headerActions, 1); header.Children.Add(headerActions);
         Children.Add(new Border { Child = header, BorderBrush = line, BorderThickness = new Thickness(0, 0, 0, 1) });
 
         var body = new Grid();

@@ -76,10 +76,15 @@ public struct ReadingScrollLayout: Equatable {
     public let contentSize: CGSize
     public let scale: CGFloat
 
+    public static func scale(forPageWidth pageWidth: CGFloat, viewportWidth: CGFloat, zoom: CGFloat) -> CGFloat {
+        min(6, max(0.1, (viewportWidth - 34) / max(1, pageWidth) * zoom))
+    }
+
     public init(pageSizes: [CGSize], viewport: CGSize, zoom: CGFloat) {
         let margin: CGFloat = 16
-        scale = min(6, max(0.1, (viewport.width - 34) / max(1, pageSizes.first?.width ?? 612) * zoom))
-        let width = max(viewport.width, (pageSizes.map(\.width).max() ?? 0) * scale + margin * 2)
+        let widestPage = pageSizes.map(\.width).max()
+        scale = Self.scale(forPageWidth: widestPage ?? 612, viewportWidth: viewport.width, zoom: zoom)
+        let width = max(viewport.width, (widestPage ?? 0) * scale + margin * 2)
         var y = margin
         var frames: [CGRect] = []
         for size in pageSizes {

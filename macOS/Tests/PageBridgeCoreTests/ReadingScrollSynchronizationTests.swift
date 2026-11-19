@@ -16,6 +16,15 @@ final class ReadingScrollSynchronizationTests: XCTestCase {
         }
     }
 
+    func testFitWidthIncludesWiderPagesAfterNarrowCover() {
+        let viewport = CGSize(width: 620, height: 800)
+        let pages = [CGSize(width: 335, height: 413), CGSize(width: 540.27, height: 665.94)]
+        let layout = ReadingScrollLayout(pageSizes: pages, viewport: viewport, zoom: 1)
+        XCTAssertEqual(layout.contentSize.width, viewport.width)
+        XCTAssertEqual(layout.pageFrames[1].width, viewport.width - 34, accuracy: 0.001)
+        XCTAssertLessThan(layout.pageFrames[0].width, layout.pageFrames[1].width)
+    }
+
     func testPageGapRemainsContinuousWithoutClampingAtBoundaries() throws {
         let layout = ReadingScrollLayout(pageSizes: sizes, viewport: CGSize(width: 500, height: 600), zoom: 1)
         let first = layout.pageFrames[0], second = layout.pageFrames[1]

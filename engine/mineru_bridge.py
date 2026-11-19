@@ -8,7 +8,9 @@ import importlib.metadata
 import inspect
 import json
 import math
+import os
 from pathlib import Path
+import sys
 
 
 @contextmanager
@@ -69,12 +71,50 @@ def attach_inline_geometry(data, captured):
         visit(page.get("blocks", []))
 
 
+def parse_page(input_path, number, output):
+    from mineru.parser import parse
+    from mineru.parser.writer import FileBasedDataWriter
+    text_lines = []
+    with capture_inline_geometry(text_lines) as formulas:
+        result = parse(input_path, tier="basic", ocr_mode="auto", image_analysis=True, page_range=str(number))
+    # Raw parser artifacts remain temporary and are never consumed as HTML by a UI.
+    result.save(FileBasedDataWriter(str(output)))
+    path = output / "middle_json.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    page = next((page for page in data.get("pages", []) if page.get("page_idx") == number - 1), None)
+    if page is None:
+        return 3
+    attach_inline_geometry(data, formulas)
+    page["sourceTextLines"] = text_lines
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+def serve_pages(input_path, output):
+    # Only single-line status replies go back to the parent. MinerU and its
+    # rendering children may write directly to the original stdout descriptor.
+    with os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0) as replies:
+        with open(os.devnull, "wb") as sink:
+            os.dup2(sink.fileno(), sys.stdout.fileno())
+        for line in sys.stdin:
+            number = int(line)
+            if number < 1:
+                return 2
+            code = parse_page(input_path, number, output / f"page-{number}")
+            if code:
+                return code
+            replies.write(b"0\n")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--input")
-    parser.add_argument("--page", type=int)
-    parser.add_argument("--output")
+    parser.add_argument("--output", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--page", type=int)
+    mode.add_argument("--serve", action="store_true")
     args = parser.parse_args()
     if importlib.metadata.version("mineru") != "4.0.12":
         return 2
@@ -86,25 +126,13 @@ def main():
                     return 2
         from mineru.parser import parse  # Verify the actual import surface.
         return 0
-    if not args.input or not args.output or not args.page or args.page < 1:
+    if not args.input or not args.output:
         return 2
-    from mineru.parser import parse
-    from mineru.parser.writer import FileBasedDataWriter
-    text_lines = []
-    with capture_inline_geometry(text_lines) as formulas:
-        result = parse(args.input, tier="basic", ocr_mode="auto", image_analysis=True,
-                       page_range=str(args.page))
-    # Raw parser artifacts remain temporary and are never consumed as HTML by a UI.
-    result.save(FileBasedDataWriter(args.output))
-    path = Path(args.output) / "middle_json.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    page = next((page for page in data.get("pages", []) if page.get("page_idx") == args.page - 1), None)
-    if page is None:
-        return 3
-    attach_inline_geometry(data, formulas)
-    page["sourceTextLines"] = text_lines
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    return 0
+    if args.serve:
+        return serve_pages(args.input, args.output)
+    if not args.page or args.page < 1:
+        return 2
+    return parse_page(args.input, args.page, args.output)
 
 
 if __name__ == "__main__":

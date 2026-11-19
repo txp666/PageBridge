@@ -50,6 +50,7 @@ Start one worker process per request and write one UTF-8 JSON line to stdin. API
 | `translate` | Validates input and pages, parses and translates a reading draft and publishes a result directory atomically |
 | `export_reading` | Writes a translated or bilingual PDF from a committed reading draft; no service or network |
 | `reading_layout` | Measures missing line widths from the prepared backgrounds in an older reading draft |
+| `rebuild_reading` | Rebuilds page backgrounds for saved translations missing from the translated view. Pass `inputPath`, `readingPath` and `outputDirectory`. Returns a new reading artifact when placement improves. |
 | `suggest_terms` | Counts candidate terms in a PDF or reading draft and asks the service to pick and translate domain terms; nothing is saved |
 
 `kind` is `ollama` or `openai`. Ollama accepts only loopback hosts and uses its OpenAI-compatible `/v1` endpoint. Remote services require HTTPS and a key; supply the Base URL, not a `/chat/completions` URL. Timeouts are 10–600 seconds and concurrency 1–8. Optional `provider` names a preset (`deepSeek`, `alibaba`, `siliconFlow`, `openAI`, `ollama`, `custom`); known online presets must match their official endpoint, and other regions or gateways use `custom`. Known provider/model pairs receive matching request options; arbitrary model IDs carry no compatibility claim. Model-list discovery is a host request, not a worker action.
@@ -59,6 +60,8 @@ The local Ollama preset disables presence penalties and caps each translation re
 `pages` is null (all pages) or a range such as `1,3-5`.
 
 With `readingPath`, a translate request builds on a committed draft: `retryBlockIds` re-translates those blocks, `retryTerms` (1–200 strings) re-translates every block whose source contains one of the terms, and `appendPages: true` with `pages` parses only the pages not yet in the draft and merges them in. Only pages that changed get a new background. A `retryTerms` result also reports `retranslatedBlocks`.
+
+A full translation or append translates at most 50 pages in one request. Appending counts only pages added to the draft. A draft may accumulate more than 50 pages across requests. Set `parseWorkers` to an integer from 1 to 8 to limit MinerU page parallelism. Omit it to let the engine choose up to three workers based on CPU, available memory, and the number of pages. The parse completion event and final result report elapsed `parseSeconds` when MinerU ran. Translation results report the saved `selectedPages` and `batchPartial`, which indicates whether the pages processed in this request need review. Automatic continuation uses the saved page list to select the next batch, including when a successful save has a partial result.
 
 `suggest_terms` takes `inputPath`, optional `readingPath` (its block text is used, which covers scanned pages), `sourceLanguage`, `targetLanguage`, `service`, optional `glossary` (entries to leave out) and `limit` (1–150, default 60). Phrases, acronyms of three or more capitals and long lowercase words are counted locally; the top 150 and the first 4,000 characters are sent in one request. Its `result` carries `terms`, each `{source, target|null, count}`, limited to terms that occur in the document.
 

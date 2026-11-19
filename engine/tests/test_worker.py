@@ -271,6 +271,14 @@ class ReadingProtocolTests(unittest.TestCase):
         self.assertEqual(result['action'],'prepare_reading')
         self.assertNotIn('service',result)
 
+    def test_parser_parallelism_is_an_optional_integer_from_one_to_eight(self):
+        self.assertNotIn("parseWorkers", reading_request())
+        for count in range(1, 9):
+            self.assertEqual(reading_request(parseWorkers=count)["parseWorkers"], count)
+        for value in (0, 9, True, "2"):
+            with self.subTest(value=value), self.assertRaises(worker.WorkerError):
+                reading_request(parseWorkers=value)
+
     def test_retry_is_bound_to_reading_artifact_and_explicit_blocks(self):
         result=reading_request(readingPath=fixture_path('previous','reading.json'),retryBlockIds=['p0001-b0002'])
         self.assertEqual(result['retryBlockIds'],['p0001-b0002'])

@@ -234,7 +234,8 @@ public sealed class BackendClient : IDisposable
     public async Task<JsonObject?> TranslateAsync(string documentId, string serviceId,
         string sourceLang, string targetLang, string? pages, Func<JsonObject, Task> onEvent,
         CancellationToken cancellationToken = default, IReadOnlyList<string>? retryBlockIds = null,
-        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false, bool translateTables = true)
+        IReadOnlyList<string>? glossaryIds = null, IReadOnlyList<string>? retryTerms = null, bool append = false,
+        bool translateTables = true, int? parseWorkers = null)
     {
         // Only the profile ID crosses this interface. The bridge resolves
         // its saved credential privately through Windows Credential Manager.
@@ -244,6 +245,7 @@ public sealed class BackendClient : IDisposable
             ["document_id"] = documentId, ["service_id"] = serviceId,
             ["sourceLanguage"] = sourceLang, ["targetLanguage"] = targetLang,
             ["translateTables"] = translateTables,
+            ["parseWorkers"] = JsonValue.Create(parseWorkers),
             ["pages"] = string.IsNullOrWhiteSpace(pages) ? null : pages,
             ["glossary_ids"] = glossaryIds is null ? null : new JsonArray(glossaryIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()),
             ["retry_terms"] = retryTerms is null ? null : new JsonArray(retryTerms.Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()),
@@ -254,7 +256,9 @@ public sealed class BackendClient : IDisposable
         if (result["document"] is not JsonObject document
             || StringValue(document["id"]) != documentId || StringValue(document["status"]) is not ("completed" or "partial"))
             throw new BackendException("翻译结果身份或保存状态无效。");
-        return (JsonObject)document.DeepClone();
+        var saved = (JsonObject)document.DeepClone();
+        if (result["parseSeconds"] is JsonValue time) saved["parseSeconds"] = time.DeepClone();
+        return saved;
     }
 
     /// <summary>Writes the document's reading draft as a translated or bilingual PDF at an absolute path chosen by the user.</summary>

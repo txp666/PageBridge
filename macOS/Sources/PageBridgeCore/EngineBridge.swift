@@ -40,15 +40,22 @@ public struct WorkerRequest: Codable, Sendable {
     public var retryTerms: [String]?
     public var appendPages: Bool?
     public var translateTables: Bool?
+    public var parseWorkers: Int?
     public var outputPath: String?
     public var kind: String?
-    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil, outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh", pages: String? = nil, service: EngineService? = nil, readingPath: String? = nil, retryBlockIds: [String]? = nil, glossary: String? = nil, retryTerms: [String]? = nil, appendPages: Bool? = nil, translateTables: Bool? = nil, outputPath: String? = nil, kind: String? = nil) {
+    public init(action: String, jobID: UUID = UUID(), attemptID: UUID = UUID(), inputPath: String? = nil,
+                outputDirectory: String? = nil, sourceLanguage: String = "en", targetLanguage: String = "zh",
+                pages: String? = nil, service: EngineService? = nil, readingPath: String? = nil,
+                retryBlockIds: [String]? = nil, glossary: String? = nil, retryTerms: [String]? = nil,
+                appendPages: Bool? = nil, translateTables: Bool? = nil, parseWorkers: Int? = nil,
+                outputPath: String? = nil, kind: String? = nil) {
         self.jobId = jobID.uuidString; self.attemptId = attemptID.uuidString; self.action = action
         self.inputPath = inputPath; self.outputDirectory = outputDirectory
         self.sourceLanguage = sourceLanguage; self.targetLanguage = targetLanguage
         self.pages = pages; self.service = service
         self.readingPath = readingPath; self.retryBlockIds = retryBlockIds; self.glossary = glossary
         self.retryTerms = retryTerms; self.appendPages = appendPages; self.translateTables = translateTables
+        self.parseWorkers = parseWorkers
         self.outputPath = outputPath; self.kind = kind
     }
 }
@@ -61,6 +68,7 @@ public struct WorkerEvent: Codable, Sendable {
     public var type: String
     public var stage: String?
     public var progress: Double?
+    public var parseSeconds: Double?
     public var message: String?
     public var engineVersion: String?
     public var artifactType: String?
@@ -68,6 +76,8 @@ public struct WorkerEvent: Codable, Sendable {
     public var readingSHA256: String?
     public var outputPath: String?
     public var pageCount: Int?
+    public var selectedPages: [Int]?
+    public var batchPartial: Bool?
     public var terms: [TermSuggestion]?
     public var retranslatedBlocks: Int?
     public var layoutRightEdges: [String: [String: Double]]?

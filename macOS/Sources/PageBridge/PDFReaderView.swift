@@ -74,6 +74,7 @@ struct PDFReaderView: NSViewRepresentable {
         private var wasSynchronizing = false
         private var lastZoom: Double = 0
         private var lastWidth: CGFloat = 0
+        private var widestPage: CGFloat = 0
         private var reportedPage = 1
         private var pendingPage: Int?
         private var pageReportGeneration = 0
@@ -157,7 +158,11 @@ struct PDFReaderView: NSViewRepresentable {
                 searchWork?.cancel()
                 searchWork = nil
                 openedURL = parent.url
-                pdf.document = PDFDocument(url: parent.url)
+                let document = PDFDocument(url: parent.url)
+                pdf.document = document
+                widestPage = (0..<(document?.pageCount ?? 0)).compactMap { index in
+                    document?.page(at: index).map { StructuredReadingPageGeometry.displayedCropSize(of: $0).width }
+                }.max() ?? 0
                 container.errorLabel.isHidden = pdf.document != nil
                 pdf.highlightedSelections = nil
                 highlightedQuery = ""
@@ -306,19 +311,14 @@ struct PDFReaderView: NSViewRepresentable {
         }
 
         private func applyZoom() {
-            guard let pdf = container?.pdfView,
-                  let document = pdf.document, let first = document.page(at: 0),
-                  pdf.bounds.width > 60 else { return }
+            guard let pdf = container?.pdfView, widestPage > 0, pdf.bounds.width > 60 else { return }
             let width = viewportWidth(in: pdf)
             guard abs(width - lastWidth) > 0.5 || parent.zoom != lastZoom else { return }
             let anchor = needsInitialPosition ? nil : (lastKnownAnchor ?? visibleAnchor())
             lastWidth = width
             lastZoom = parent.zoom
-            let firstSize = first.bounds(for: .cropBox).size
-            let firstWidth = abs(first.rotation % 180) == 90 ? firstSize.height : firstSize.width
-            let base = (width - 34) / max(firstWidth, 1)
             applyingChange = true
-            pdf.scaleFactor = min(6, max(0.1, base * parent.zoom))
+            pdf.scaleFactor = ReadingScrollLayout.scale(forPageWidth: widestPage, viewportWidth: width, zoom: parent.zoom)
             pdf.layoutDocumentView()
             applyingChange = false
             installScrollObserver()

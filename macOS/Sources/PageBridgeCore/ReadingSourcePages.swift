@@ -48,10 +48,9 @@ public actor ReadingSourcePages {
         let key = NSNumber(value: request.page)
         if let cached = pages.object(forKey: key), cached.request == request { return cached }
         guard let page = pdf?.page(at: request.page - 1) else { return nil }
-        let bounds = page.bounds(for: .cropBox), rotated = abs(page.rotation % 180) == 90
         let size = metadata.map { CGSize(width: $0.width, height: $0.height) }
-            ?? CGSize(width: rotated ? bounds.height : bounds.width, height: rotated ? bounds.width : bounds.height)
-        let background = metadata?.backgroundImage.flatMap(StructuredReadingBackground.image)
+            ?? StructuredReadingPageGeometry.displayedCropSize(of: page)
+        let background = metadata.flatMap { StructuredReadingBackground.image(for: $0, readingPath: request.readingPath) }
         guard !Task.isCancelled else { return nil }
         let blocks = metadata?.blocks ?? []
         let image: NSImage

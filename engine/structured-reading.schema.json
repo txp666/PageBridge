@@ -89,6 +89,11 @@
           "status",
           "blocks"
         ],
+        "not": {"required": ["backgroundImage", "backgroundSHA256"]},
+        "dependentRequired": {
+          "backgroundImage": ["backgroundBlocks"],
+          "backgroundSHA256": ["backgroundBlocks"]
+        },
         "properties": {
           "pageNumber": {
             "type": "integer",
@@ -262,7 +267,12 @@
           "backgroundImage": {
             "type": "string",
             "maxLength": 16777216,
-            "description": "Optional base64 PNG of the original page with only mapped visible text removed. Source PDF remains unchanged."
+            "description": "Base64 background PNG in older drafts. Omitted when backgroundSHA256 is present."
+          },
+          "backgroundSHA256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "SHA-256 of background-<pageNumber>.png in the same directory as reading.json."
           },
           "backgroundBlocks": {
             "type": "array",
@@ -270,7 +280,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Only these blocks overlay text on the prepared backgroundImage. An empty list allows the original page to be displayed directly."
+            "description": "Only these blocks overlay text on the prepared background. An empty list allows the original page to be displayed directly."
           },
           "layoutRightEdges": {
             "type": "object",
@@ -296,7 +306,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Subset of backgroundBlocks with duplicated raster/outline text on verified uniform paper. Their backgroundColor fills are already baked into backgroundImage; PDF export must apply the same fills."
+            "description": "Subset of backgroundBlocks with duplicated raster/outline text on verified uniform paper. Their backgroundColor fills are already in the prepared PNG; PDF export applies the same fills."
           }
         }
       }

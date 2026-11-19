@@ -1,13 +1,17 @@
+import asyncio
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import uuid
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[2] / "engine")]
 import pymupdf
+from structured_reading import installation_lock
 from pagebridge.core import AppError, DocumentStore, _result_staging_directory, sha256
+from pagebridge import cache_storage
 
 
 def pdf_file(path, pages=1):
@@ -38,6 +42,57 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(first["input_path"], str(self.source))
         self.assertEqual(sha256(first["input_path"]), sha256(self.source))
         self.assertEqual(DocumentStore(self.store.root).documents(), [first])
+
+    def test_cache_cleanup_keeps_recoverable_readings_and_checks_running_jobs(self):
+        document = self.imported()
+        attempt, temporary = self.store.new_attempt(document["id"])
+        (temporary / "raw.json").write_text("{}")
+        with self.assertRaises(AppError):
+            cache_storage.clear(self.store, "taskFiles")
+        self.store.finish_failure(document["id"], "fixture")
+        available = temporary.parent / str(uuid.uuid4()) / "result-saved"
+        available.mkdir(parents=True)
+        draft = available / "reading.json"
+        draft.write_text("{}")
+        redundant = temporary.parent / str(uuid.uuid4())
+        saved = temporary.parent.parent / "results" / redundant.name
+        for copy in (redundant / "result-saved", saved):
+            copy.mkdir(parents=True)
+            (copy / "reading.json").write_bytes(b"identical")
+            (copy / "background-1.png").write_bytes(b"identical background")
+        with patch.dict(os.environ, {"PAGEBRIDGE_MINERU_RUNTIME": str(self.root / "empty-mineru")}):
+            usage = cache_storage.usage(self.store)
+            result = cache_storage.clear(self.store, "taskFiles")
+        self.assertEqual(usage["pendingReadings"]["count"], 1)
+        self.assertEqual(usage["taskFiles"]["count"], 2)
+        self.assertEqual(result, {"removed": 2, "failed": 0})
+        self.assertFalse(temporary.exists())
+        self.assertFalse(redundant.exists())
+        self.assertTrue((saved / "background-1.png").is_file())
+        self.assertTrue(draft.is_file())
+
+    def test_mineru_cache_is_shared_with_the_parser_and_respects_the_install_lock(self):
+        runtime = (self.root / "shared" / "mineru" / "4.0.12").resolve()
+        model = runtime / "home" / "model.onnx"
+        download = runtime / "uv-cache" / "package.whl"
+        for fixture in (model, download):
+            fixture.parent.mkdir(parents=True)
+            fixture.write_bytes(b"fixture")
+
+        async def while_installing():
+            async with installation_lock(runtime):
+                return await asyncio.to_thread(cache_storage.clear, self.store, "minerUDownloads")
+
+        with patch.dict(os.environ, {"PAGEBRIDGE_MINERU_RUNTIME": ""}), \
+                patch.object(cache_storage, "runtime_directory", return_value=runtime):
+            usage = cache_storage.usage(self.store)
+            self.assertEqual(usage["minerU"]["bytes"], 7)
+            self.assertEqual(usage["minerU"]["location"], str(runtime))
+            self.assertEqual(usage["minerUDownloads"]["bytes"], 7)
+            self.assertEqual(asyncio.run(while_installing()), {"removed": 0, "failed": 1})
+            self.assertEqual(cache_storage.clear(self.store, "minerUDownloads"), {"removed": 1, "failed": 0})
+        self.assertTrue(model.is_file())
+        self.assertFalse(download.exists())
 
     def test_page_info_preserves_rotation_crop_and_mixed_sizes_without_rendering(self):
         mixed = self.root / "mixed-pages.pdf"

@@ -51,6 +51,29 @@ final class StructuredReadingTests: XCTestCase {
         XCTAssertEqual(try DocumentRepository.sha256(record.originalURL), record.inputSHA256)
     }
 
+    func testSeparateBackgroundCanBeReadAfterCommitAndStagingCleanup() async throws {
+        let (repository, record) = try fixture()
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFuoAAAAASUVORK5CYII="))
+        let reference = directory.appendingPathComponent("test.png")
+        try png.write(to: reference)
+        var reading = artifact(record, partial: false)
+        reading.pages[0].backgroundSHA256 = try DocumentRepository.sha256(reference)
+        reading.pages[0].backgroundBlocks = [reading.pages[0].blocks[0].id]
+        let attempt = UUID()
+        let (staging, event) = try staged(reading, record: record, repository: repository, attempt: attempt)
+        let background = staging.appendingPathComponent("background-2.png")
+        XCTAssertThrowsError(try repository.commitReading(result: event, document: record, attempt: attempt, staging: staging))
+
+        try png.write(to: background)
+        let updated = try repository.commitReading(result: event, document: record, attempt: attempt, staging: staging)
+        try FileManager.default.removeItem(at: staging)
+        let url = try XCTUnwrap(updated.readingURL)
+        let reloaded = try StructuredReadingDocument.load(url, for: updated)
+        let request = ReadingPageRequest(url: updated.originalURL, page: 2, readingPath: updated.readingPath)
+        let result = await ReadingSourcePages().page(request, metadata: reloaded.page(2))
+        XCTAssertEqual(result?.backgroundImage?.size, CGSize(width: 1, height: 1))
+    }
+
     func testReadingRejectsWrongSourceAndChangedOriginal() throws {
         let (_, record) = try fixture()
         var reading = artifact(record); reading.sourceSHA256 = String(repeating: "0", count: 64)
