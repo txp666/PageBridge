@@ -1,5 +1,33 @@
 # 版本记录
 
+## 0.7.8 / build 26 — 长 PDF 分批翻译与缓存管理
+
+- 修复长 PDF 翻译结束后可能因阅读稿超过 64 MiB 无法保存的问题。逐页背景独立保存，阅读时按需加载。macOS 在保存到文档库失败时会保留引擎已生成的阅读稿。
+- macOS 在本次运行中复用已授权读取的 API 密钥，减少重复的钥匙串密码提示。
+- 支持 Touch ID 的 Mac 可用指纹解锁已保存的 DeepSeek API Key，每次启动后只验证第一次读取。
+- 新译和追加任务每批最多翻译 50 页，长文档可快速选取下一批未译页面。
+- 长文档可选自动完成后续未译页，每批独立保存。若有部分内容保留原文，保存后仍会继续处理下一批。
+- 整理 macOS 和 Windows 的翻译窗口。选项可滚动，底部操作始终可见，追加时沿用已有阅读稿的语言和表格设置。
+- 修复 macOS 阅读封面比正文窄的 PDF 时，「适合宽度」仍会裁掉正文两侧的问题。
+- 修复缺字框没有可见笔画时，整段已有译文仍显示原文的问题。macOS 可在本机重新排版已有译文。
+- MinerU 自动模式最多同时解析 3 页，手动可选 1–8 路。每路使用 4 个推理线程，同一批复用已加载的模型。解析结束后显示本批耗时。
+- macOS 和 Windows 新增缓存与存储设置，可查看当前和历史译稿、任务文件、搜索缓存及本机共用的 MinerU 占用。确认已有完整保存副本的任务文件可清理。
+- 修复 macOS 打开段落详情时可能因文本布局反复更新而退出的问题。
+
+**English**
+
+- Fix a save failure after translating long PDFs whose reading drafts exceeded 64 MiB. Page backgrounds are stored separately and loaded on demand. macOS retains the generated draft if saving to the library fails.
+- Reuse authorized API keys in the current macOS session to avoid repeated Keychain password prompts.
+- On a Mac with Touch ID, unlock a saved DeepSeek API key with a fingerprint on the first use in each app session.
+- Limit full and appended translation jobs to 50 new pages per batch, with a shortcut to select the next untranslated pages.
+- Optionally continue through the remaining pages, saving each batch and continuing past passages that retain their source text.
+- Scroll through translation options on macOS and Windows with the action buttons kept in view. Appending uses the existing draft's languages and table setting.
+- Fix fit-to-width clipping in the macOS reader when the PDF cover is narrower than the following pages.
+- Show translated paragraphs in place when their source includes blank missing-glyph boxes. On macOS, rebuild an existing draft's layout locally.
+- Choose automatic MinerU parallelism (up to three pages) or a manual limit of one to eight. Each worker keeps four inference threads. The batch's elapsed parsing time is shown after parsing.
+- View local storage usage and manage caches and historical drafts in macOS and Windows settings. MinerU usage follows the shared parser installation. Staged files with a verified saved copy can be cleared.
+- Fix a macOS crash when opening a paragraph whose popover repeatedly invalidated text layout.
+
 ## 0.7.7 / build 25 — 翻译代理设置与 GPT-6.2 兼容
 
 - 修复 Windows 使用系统代理时连接测试成功、PDF 翻译却超时的问题。Windows 和 macOS 可为每个翻译服务选择跟随系统、直连或手动 HTTP 代理。本机模型直接连接。（#28）

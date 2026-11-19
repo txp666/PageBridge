@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 
 /// The attachment is a crop of the original equation, not reconstructed LaTeX.
 public struct StructuredReadingInlineImage {
@@ -28,6 +29,11 @@ public enum StructuredReadingMathImages {
 }
 
 public enum StructuredReadingPageGeometry {
+    public static func displayedCropSize(of page: PDFPage) -> CGSize {
+        let size = page.bounds(for: .cropBox).size
+        return page.rotation % 180 == 0 ? size : CGSize(width: size.height, height: size.width)
+    }
+
     public static func rect(_ bbox: [Double]?, pageSize: CGSize) -> CGRect? {
         guard let box = bbox, box.count == 4, box.allSatisfy(\.isFinite) else { return nil }
         let rect = CGRect(x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1])

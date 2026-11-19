@@ -6,8 +6,9 @@ namespace PageBridge.Windows;
 
 public sealed partial class MainWindow
 {
+    private const int TranslationBatchLimit = 50;
     private sealed record TranslationChoice(string Source, string Target, string? Pages, IReadOnlyList<string>? GlossaryIds = null,
-        bool Append = false, bool TranslateTables = true);
+        bool Append = false, bool TranslateTables = true, bool AutomaticallyContinue = false, int? ParseWorkers = null);
     private readonly Button exportCancel = new() { Content = "取消导出", FontSize = 11, MinHeight = 0, Height = 24, Padding = new Thickness(8, 1, 8, 1), Visibility = Visibility.Collapsed };
     private CancellationTokenSource? exportCancellation;
     private bool ReadingExportAvailable => selected is not null && HasReading && translationCancellation is null && !translationPreparing && exportCancellation is null;
@@ -23,9 +24,12 @@ public sealed partial class MainWindow
         }
         var source = LanguagesPicker(initial?.Source ?? Text(selected, "source_language"));
         var target = LanguagesPicker(initial?.Target ?? Text(selected, "target_language"));
+        int pageTotal = (int)page.Maximum;
         var range = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
-        range.Items.Add("全部页面"); range.Items.Add("指定页面"); range.SelectedIndex = initial?.Pages is null ? 0 : 1;
+        range.Items.Add(new ComboBoxItem { Content = "全部页面", IsEnabled = pageTotal <= TranslationBatchLimit });
+        range.Items.Add("指定页面"); range.SelectedIndex = initial?.Pages is null && pageTotal <= TranslationBatchLimit ? 0 : 1;
         var pages = new TextBox { PlaceholderText = "例如 1-5, 8, 12-16", Width = 235, Text = initial?.Pages ?? "" };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(pages, "页码");
         var panel = new StackPanel { Spacing = 18, Width = 440 };
         panel.Children.Add(new TextBlock { Text = name, FontSize = 13, Opacity = .65, TextTrimming = TextTrimming.CharacterEllipsis });
         Grid Field(string caption, FrameworkElement control)
@@ -38,7 +42,31 @@ public sealed partial class MainWindow
         // Appending keeps the draft and its languages; only pages not yet translated are added.
         var draftPages = selected?["reading_pages"]?.AsArray().Select(n => n?.GetValue<int>() ?? 0).ToHashSet() ?? new HashSet<int>();
         var append = new CheckBox { Content = $"追加到现有阅读稿（保留已译的 {draftPages.Count} 页）", IsChecked = initial?.Append ?? true, FontSize = 13 };
+        if (pageTotal > TranslationBatchLimit)
+        {
+            panel.Children.Add(new TextBlock { Text = $"每批最多 {TranslationBatchLimit} 页，保存后可继续追加。", FontSize = 11, Opacity = .65 });
+            int first = Enumerable.Range(1, pageTotal).FirstOrDefault(number => !draftPages.Contains(number));
+            if (first > 0)
+            {
+                int last = Math.Min(pageTotal, first + TranslationBatchLimit - 1);
+                int nextTranslated = Enumerable.Range(first, last - first + 1).FirstOrDefault(draftPages.Contains);
+                if (nextTranslated > 0) last = nextTranslated - 1;
+                string batch = first == last ? first.ToString() : $"{first}-{last}";
+                var next = new HyperlinkButton { Content = $"选下一批（{batch}）", Padding = new Thickness(0) };
+                next.Click += (_, _) => { append.IsChecked = true; range.SelectedIndex = 1; pages.Text = batch; };
+                panel.Children.Add(next);
+                if (initial is null) pages.Text = batch;
+            }
+            else if (initial is null) append.IsChecked = false;
+        }
         var appendRow = new StackPanel { Children = { append } };
+        var automatic = new CheckBox { Content = "自动完成后续未译页", IsChecked = initial?.AutomaticallyContinue ?? false, FontSize = 13 };
+        var parseWorkers = new ComboBox { Width = 175, HorizontalAlignment = HorizontalAlignment.Right };
+        parseWorkers.Items.Add("自动（最多 3 路）");
+        for (int count = 1; count <= 8; count++) parseWorkers.Items.Add($"{count} 路");
+        parseWorkers.SelectedIndex = initial?.ParseWorkers ?? 0;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(parseWorkers, "MinerU 并行解析");
+        ToolTipService.SetToolTip(parseWorkers, "设置 MinerU 同时解析的最大页数，运行时会根据可用资源调整。");
         bool draftTables = selected?["reading_translate_tables"]?.GetValue<bool>() ?? true;
         bool chosenTables = initial?.TranslateTables ?? true;
         var tables = new CheckBox { Content = "自动翻译表格", IsChecked = chosenTables, FontSize = 13 };
@@ -58,8 +86,12 @@ public sealed partial class MainWindow
             }
         }
         panel.Children.Add(appendRow);
+        if (pageTotal > TranslationBatchLimit) panel.Children.Add(automatic);
+        panel.Children.Add(Field("MinerU 并行解析", parseWorkers));
+        panel.Children.Add(new TextBlock { Text = "Apple M5 Pro 样本实测，1–3 路中 3 路最快。公式密集页可按文档试用不同路数。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(tables);
-        range.SelectionChanged += (_, _) => UpdateAppend(); append.Click += (_, _) => UpdateAppend();
+        range.SelectionChanged += (_, _) => UpdateAppend();
+        append.Checked += (_, _) => UpdateAppend(); append.Unchecked += (_, _) => UpdateAppend();
 
         // Several glossaries can be combined; only those whose language pair fits are listed.
         var glossaries = await backend.CallAsync("glossaries");
@@ -113,30 +145,43 @@ public sealed partial class MainWindow
         panel.Children.Add(new Border { Child = service, Padding = new Thickness(14), CornerRadius = new CornerRadius(10), Background = Dark ? Brush(45, 45, 45) : Brush(238, 238, 238) });
         var error = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed) }; panel.Children.Add(error);
         panel.Children.Add(new TextBlock { Text = "阅读稿保留原 PDF，表格和公式可回看原文。首次使用会下载本地识别组件，请预留约 4 GB 磁盘空间；未译段落可单独重试，完成后可导出译文 PDF 或双语 PDF。", FontSize = 11, Opacity = .65, TextWrapping = TextWrapping.Wrap });
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "翻译 PDF", Content = panel, PrimaryButtonText = "开始翻译", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
+        var scroll = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "翻译 PDF", Content = scroll, PrimaryButtonText = "开始翻译", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
         dialog.Resources["ContentDialogMaxWidth"] = 520d;
         dialog.PrimaryButtonClick += (_, args) =>
         {
             error.Text = "";
             if ((string)((ComboBoxItem)source.SelectedItem).Tag == (string)((ComboBoxItem)target.SelectedItem).Tag) error.Text = "源语言和目标语言需要不同。";
-            if (range.SelectedIndex == 1)
+            bool appending = HasReading && range.SelectedIndex == 1 && append.IsChecked == true;
+            string batchError = $"每批最多翻译 {TranslationBatchLimit} 页，请选择页码分批翻译。";
+            if (error.Text == "" && range.SelectedIndex == 1)
             {
+                var wanted = new HashSet<int>();
                 foreach (var part in pages.Text.Split(','))
                 {
                     var bounds = part.Trim().Split('-');
-                    if (bounds.Length is < 1 or > 2 || !int.TryParse(bounds[0], out int first) || !int.TryParse(bounds[^1], out int last) || first < 1 || last < first || last > page.Maximum) { error.Text = $"请输入 1 至 {(int)page.Maximum} 之间的页码，例如 1-3, 5。"; break; }
+                    if (bounds.Length is < 1 or > 2 || !int.TryParse(bounds[0], out int first) || !int.TryParse(bounds[^1], out int last) || first < 1 || last < first || last > pageTotal)
+                    {
+                        error.Text = $"请输入 1 至 {pageTotal} 之间的页码，例如 1-3, 5。";
+                        break;
+                    }
+                    foreach (int number in Enumerable.Range(first, last - first + 1))
+                    {
+                        if (appending && draftPages.Contains(number)) continue;
+                        wanted.Add(number);
+                        if (wanted.Count > TranslationBatchLimit) { error.Text = batchError; break; }
+                    }
+                    if (error.Text != "") break;
                 }
+                if (error.Text == "" && wanted.Count == 0) error.Text = "这些页已在阅读稿中，请选择尚未翻译的页。";
             }
-            bool appending = HasReading && range.SelectedIndex == 1 && append.IsChecked == true;
-            if (error.Text == "" && appending)
-            {
-                var wanted = pages.Text.Split(',').SelectMany(part => part.Trim().Split('-') is var b && int.TryParse(b[0], out int a) && int.TryParse(b[^1], out int z) ? Enumerable.Range(a, Math.Max(0, z - a + 1)) : Enumerable.Empty<int>());
-                if (!wanted.Any(n => !draftPages.Contains(n))) error.Text = "这些页已在阅读稿中，请选择尚未翻译的页。";
-            }
+            else if (error.Text == "" && pageTotal > TranslationBatchLimit) error.Text = batchError;
             args.Cancel = error.Text != "";
+            if (args.Cancel) scroll.ChangeView(null, scroll.ScrollableHeight, null);
         };
         TranslationChoice Current() => new(Code(source), Code(target), range.SelectedIndex == 1 ? pages.Text.Trim() : null,
-            chosenIds.ToList(), HasReading && range.SelectedIndex == 1 && append.IsChecked == true, chosenTables);
+            chosenIds.ToList(), HasReading && range.SelectedIndex == 1 && append.IsChecked == true, chosenTables,
+            automatic.IsChecked == true, parseWorkers.SelectedIndex > 0 ? parseWorkers.SelectedIndex : null);
         // Dialogs cannot stack: managing closes this one, then reopens it with the same choices.
         bool managing = false;
         manage.Click += (_, _) => { managing = true; dialog.Hide(); };

@@ -10,7 +10,7 @@
 
 ## 下载
 
-当前版本为 **0.7.7 / build 25**。
+当前版本为 **0.7.8 / build 26**。
 
 | 平台 | 安装包 | 安装方式 |
 |---|---|---|
@@ -18,9 +18,9 @@
 | Windows x64（推荐） | [Windows 安装器](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe)（约 90 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64-setup.exe.sha256) | 按向导安装，默认装到当前用户目录，无需管理员权限 |
 | Windows x64（便携） | [Windows 便携 ZIP](https://pagebridge.modusignal.cn/download/windows-x64.zip)（约 130 MB）· [SHA-256](https://pagebridge.modusignal.cn/download/windows-x64.zip.sha256) | 完整解压，运行 `PageBridge.Windows.exe` |
 
-项目源码和第三方对应源码也随版本发布。[Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.7)
+项目源码和第三方对应源码也随版本发布。[Release 页面](https://github.com/txp666/PageBridge/releases/tag/v0.7.8)
 
-0.7.7 支持为每个翻译服务选择系统代理、直连或手动 HTTP 代理，并适配 OpenAI GPT-6.2 Sol 和 Astra。
+0.7.8 支持每批最多翻译 50 页并自动处理剩余未译页。macOS 和 Windows 均可调节 MinerU 并行解析、查看解析耗时和管理本地缓存。
 
 Mac 包为 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**；Windows 安装器和程序 **没有 Authenticode 签名**。首次打开时系统可能提示风险，请核对下载来源和 SHA-256 后再确认。
 

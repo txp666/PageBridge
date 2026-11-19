@@ -34,6 +34,19 @@ struct ServiceSettingsView: View {
     @State private var deletePresented = false
 
     private var dirty: Bool { isNew || draft != baseline || apiKey != baselineKey }
+    private var usesTouchID: Bool { model.usesTouchID(for: draft) }
+    private var hasSavedProtectedKey: Bool {
+        usesTouchID && !isNew && draft.hasSameCredentialDestination(as: baseline) && model.hasProtectedKey(for: baseline)
+    }
+    private var canUseAPIKey: Bool {
+        draft.kind == .ollama || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasSavedProtectedKey
+    }
+    private var keyHint: String {
+        guard usesTouchID else { return "密钥由 macOS 钥匙串保存。" }
+        return hasSavedProtectedKey
+            ? "已用 Touch ID 保护。留空可保留已保存的密钥。"
+            : "请填写 DeepSeek API Key。保存后，每次打开 PageBridge 首次使用时会验证指纹。"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,7 +107,7 @@ struct ServiceSettingsView: View {
             Button("取消", role: .cancel) {}
             Button("删除服务", role: .destructive) { deleteSelected() }
         } message: {
-            Text("这会删除此服务配置及其钥匙串密钥。已有文档和正在运行的任务不受影响。")
+            Text("这会删除此服务配置和当前保存的 API Key。")
         }
     }
 
@@ -106,6 +119,8 @@ struct ServiceSettingsView: View {
                     .font(.system(size: 13)).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("缓存…") { model.cacheSettingsPresented = true }
+                .disabled(model.libraryDataRoot == nil)
             Button { guarded { model.settingsPresented = false } } label: {
                 Label("返回文档", systemImage: "arrow.left")
                     .font(.system(size: 12, weight: .medium))
@@ -206,7 +221,7 @@ struct ServiceSettingsView: View {
                         Button("取消") { invalidateModels() }
                     } else {
                         Button("获取模型") { fetchModels() }
-                            .disabled(testing || (draft.kind == .openAI && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                            .disabled(testing || !canUseAPIKey)
                     }
                 }
             }
@@ -227,7 +242,7 @@ struct ServiceSettingsView: View {
                 }
             }
             if draft.kind == .openAI {
-                field("API Key", hint: "仅保存在 macOS 钥匙串。获取模型和测试连接均由你点击后发送。") {
+                field("API Key", hint: keyHint) {
                     HStack(spacing: 7) {
                         Image(systemName: "key").foregroundStyle(.secondary)
                         Group {
@@ -237,6 +252,7 @@ struct ServiceSettingsView: View {
                         .autocorrectionDisabled()
                         Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }
                             .buttonStyle(.plain)
+                            .disabled(apiKey.isEmpty)
                             .help(showKey ? "隐藏 API Key" : "显示 API Key")
                             .accessibilityLabel(showKey ? "隐藏 API Key" : "显示 API Key")
                     }
@@ -347,7 +363,7 @@ struct ServiceSettingsView: View {
                     ProgressView().controlSize(.small)
                     Button("取消") { invalidateTest() }
                 } else {
-                    Button("测试连接") { runTest() }.controlSize(.large).disabled(discovering)
+                    Button("测试连接") { runTest() }.controlSize(.large).disabled(discovering || (usesTouchID && !canUseAPIKey))
                 }
             }
             Text("测试内容：The document is ready. 不发送你的 PDF。在线 API 可能产生少量费用。")
@@ -390,7 +406,8 @@ struct ServiceSettingsView: View {
                 else if let notice {
                     Label(notice, systemImage: "checkmark.circle").foregroundStyle(.secondary)
                 } else {
-                    Label(dirty ? "有未保存的更改" : "密钥由 macOS 钥匙串保管", systemImage: dirty ? "circle.fill" : "lock")
+                    Label(dirty ? "有未保存的更改" : (usesTouchID ? "使用 Touch ID 保护 DeepSeek 密钥" : "密钥由 macOS 钥匙串保管"),
+                          systemImage: dirty ? "circle.fill" : "lock")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -406,7 +423,7 @@ struct ServiceSettingsView: View {
             .disabled(!dirty)
             Button(draft.id == model.activeServiceID ? "保存配置" : "保存并使用") { save() }
                 .buttonStyle(.borderedProminent)
-                .disabled(keyLoadFailed || discovering || testing)
+                .disabled(keyLoadFailed || discovering || testing || (usesTouchID && !canUseAPIKey))
                 .keyboardShortcut("s", modifiers: .command)
         }
         .controlSize(.large)
@@ -434,7 +451,7 @@ struct ServiceSettingsView: View {
         notice = nil
         formError = nil
         keyLoadFailed = false
-        do { apiKey = try model.key(for: service.id) }
+        do { apiKey = model.usesTouchID(for: service) ? "" : try model.legacyKey(for: service.id) }
         catch {
             apiKey = ""
             keyLoadFailed = true
@@ -495,10 +512,11 @@ struct ServiceSettingsView: View {
             if model.services.contains(where: { $0.id != clean.id && $0.name == clean.name }) {
                 formError = "配置名称已经存在，请使用不同名称。"; return
             }
-            let cleanKey = try ServiceConnectionTester.cleanAPIKey(apiKey, kind: clean.kind)
+            let preserveKey = hasSavedProtectedKey && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let cleanKey = preserveKey ? nil : try ServiceConnectionTester.cleanAPIKey(apiKey, kind: clean.kind)
             try model.saveService(clean, apiKey: clean.kind == .openAI ? cleanKey : "")
             draft = clean; baseline = clean
-            apiKey = clean.kind == .ollama ? "" : cleanKey
+            apiKey = clean.kind == .ollama || model.usesTouchID(for: clean) ? "" : (cleanKey ?? "")
             baselineKey = apiKey; isNew = false
             notice = "已保存并设为当前服务。仅影响新任务。"
             formError = nil
@@ -523,10 +541,13 @@ struct ServiceSettingsView: View {
     private func fetchModels() {
         invalidateModels()
         let service = draft, key = apiKey, revision = UUID()
+        let unlockSavedKey = hasSavedProtectedKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         modelsRevision = revision; discovering = true
         modelsTask = Task { @MainActor in
             do {
-                let models = try await ServiceConnectionTester.fetchModels(service: service, apiKey: key)
+                let requestKey = unlockSavedKey ? try await model.key(for: service) : key
+                try Task.checkCancellation()
+                let models = try await ServiceConnectionTester.fetchModels(service: service, apiKey: requestKey)
                 guard !Task.isCancelled, modelsRevision == revision,
                       service.hasSameCredentialDestination(as: draft), key == apiKey else { return }
                 availableModels = models; modelListLoaded = true; discovering = false
@@ -553,12 +574,15 @@ struct ServiceSettingsView: View {
         invalidateTest()
         let service = draft
         let key = apiKey
+        let unlockSavedKey = hasSavedProtectedKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let revision = UUID()
         testRevision = revision
         testing = true
         testTask = Task { @MainActor in
             do {
-                let result = try await ServiceConnectionTester.test(service: service, apiKey: key)
+                let requestKey = unlockSavedKey ? try await model.key(for: service) : key
+                try Task.checkCancellation()
+                let result = try await ServiceConnectionTester.test(service: service, apiKey: requestKey)
                 guard !Task.isCancelled, testRevision == revision, service == draft, key == apiKey else { return }
                 testing = false; testResult = result; testCompletedAt = Date.now
             } catch is CancellationError {

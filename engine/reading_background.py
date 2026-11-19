@@ -13,6 +13,7 @@ from typing import NamedTuple
 
 import pymupdf
 
+from reading_assets import write_background
 from reading_outlines import clear_outlines, outline_colors, verified_outlines
 from reading_layout import cell_layouts, line_right_edges, source_rect as _rect
 from reading_tables import table_cells
@@ -342,6 +343,24 @@ def region_changed(before, after, rect, scale):
     return False
 
 
+def glyphs_cleared(before, after, glyphs, scale, background_color):
+    """Require visible removal and allow blank glyph boxes on the sampled paper."""
+    paper = tuple(background_color) if isinstance(background_color, list) else ()
+    matrix = pymupdf.Matrix(scale, scale)
+    removed_ink = False
+    for glyph in glyphs:
+        if region_changed(before, after, glyph.local, scale):
+            removed_ink = True
+            continue
+        box = (glyph.local * matrix).irect & before.irect
+        if box.is_empty:
+            return False
+        coverage, color = before.color_topusage(clip=box)
+        if coverage != 1 or tuple(color) != paper:
+            return False
+    return removed_ink
+
+
 def _place_on_flat_paper(pixmap, matrix, page_result, translated):
     """Keep the OCR overlay for detected text on a solid scanned background."""
     placed, filled = [], []
@@ -373,7 +392,15 @@ def _place_on_flat_paper(pixmap, matrix, page_result, translated):
     return placed, filled
 
 
-def add_page_background(input_source, page_result, *, include_image=True):
+def _store_background(pixmap, page_result, reading_path):
+    data = pixmap.tobytes("png")
+    if reading_path is None:
+        page_result["backgroundImage"] = base64.b64encode(data).decode("ascii")
+    else:
+        write_background(reading_path, page_result, data)
+
+
+def add_page_background(input_source, page_result, *, reading_path=None, include_image=True):
     """Prepare an atomic backdrop and return the verified outline removal plan.
 
     Export can use the same preparation from its immutable source bytes,
@@ -385,6 +412,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
         return pymupdf.open(input_source)
 
     page_result.pop("backgroundImage", None)
+    page_result.pop("backgroundSHA256", None)
     page_result.pop("backgroundBlocks", None)
     page_result.pop("backgroundFillBlocks", None)
     page_result["layoutRightEdges"] = {}
@@ -403,7 +431,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
             pixmap = source.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
             ids, fills = _place_on_flat_paper(pixmap, pymupdf.Matrix(scale, scale), page_result, translated)
             if ids and include_image:
-                page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+                _store_background(pixmap, page_result, reading_path)
             if fills:
                 page_result["backgroundFillBlocks"] = fills
             page_result["backgroundBlocks"] = ids
@@ -491,8 +519,8 @@ def add_page_background(input_source, page_result, *, include_image=True):
                 fills = residual_text_fills(before, pixmap, native_selected, owners, protected, scale, native_mask, uncleared)
                 filled_ids = {block["id"] for block in fills}
                 retained = {block["id"] for block in native_selected if block["id"] not in filled_ids
-                            and (block["id"] in uncleared or any(not region_changed(before, pixmap, glyph.local, scale)
-                                                                for glyph in owners[block["id"]]))}
+                            and (block["id"] in uncleared or not glyphs_cleared(
+                                before, pixmap, owners[block["id"]], scale, block.get("backgroundColor")))}
             if retained:
                 # Rebuild from the source so retained passages keep all of
                 # their original text and formulas.
@@ -507,7 +535,7 @@ def add_page_background(input_source, page_result, *, include_image=True):
             if fills:
                 page_result["backgroundFillBlocks"] = [block["id"] for block in fills]
         if background_ids and include_image:
-            page_result["backgroundImage"] = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+            _store_background(pixmap, page_result, reading_path)
         page_result["backgroundBlocks"] = background_ids
         page_result["layoutRightEdges"] = line_right_edges(page_result, pixmap)
         page_result["cellLayouts"] = cell_layouts(page_result, pixmap, cells)

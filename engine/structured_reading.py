@@ -22,14 +22,19 @@ import unicodedata
 
 import glossary
 from languages import translation_direction
+from reading_assets import background_path, read_background, valid_background_digest, write_background
 from reading_tables import passage_groups, table_cells
 
 VERSION = "4.0.12"
 ARTIFACT_TYPE = "structured-reading"
 ENGINE = Path(__file__).resolve().parent
 PARSE_TIMEOUT = 300
+PARSE_THREADS = 4
+AUTO_PARSE_WORKERS = 3
+MAX_PARSE_WORKERS = 8
 MODEL_STALL_SECONDS = 120
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_TRANSLATION_PAGES = 50
 DEPENDENCY_INDEXES = (
     ("清华镜像", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"),
     ("PyPI 官方源", "https://pypi.org/simple"),
@@ -54,10 +59,10 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def runtime_directory():
+def runtime_directory(*, working_directory=None):
     override = os.environ.get("PAGEBRIDGE_MINERU_RUNTIME")
     if override:
-        return Path(override).expanduser().resolve()
+        return ((working_directory or Path.cwd()) / Path(override).expanduser()).resolve()
     if sys.platform == "darwin":
         base = Path.home() / "Library/Application Support"
     elif sys.platform == "win32":
@@ -98,7 +103,8 @@ def runtime_environment(root, *, offline=True):
         "MODELSCOPE_CACHE": str(root / "ms-cache"), "XDG_CACHE_HOME": str(root / "cache"),
         "TORCH_HOME": str(root / "torch-cache"), "MPLCONFIGDIR": str(root / "mpl-cache"),
         "MINERU_MODEL_SMALL_BACKEND": "onnx", "HF_HUB_DISABLE_XET": "1",
-        "OMP_NUM_THREADS": "4", "TOKENIZERS_PARALLELISM": "false",
+        "OMP_NUM_THREADS": str(PARSE_THREADS), "MINERU_INTRA_OP_NUM_THREADS": str(PARSE_THREADS),
+        "TOKENIZERS_PARALLELISM": "false",
         "UV_CACHE_DIR": str(root / "uv-cache"), "UV_NO_PROGRESS": "1",
         "UV_PYTHON_INSTALL_DIR": str(root / "python"),
     })
@@ -139,36 +145,40 @@ async def run_process(command, *, env, timeout, monitor=None, log=None):
                     if monitor:
                         monitor()
     finally:
-        if process.returncode is None:
-            # A timed-out page must not leave OCR/formula subprocesses running
-            # while subsequent pages continue. The host additionally owns the
-            # entire worker process group / Windows job for forced cancellation.
-            import psutil
-            try:
-                descendants = psutil.Process(process.pid).children(recursive=True)
-            except (psutil.Error, OSError):
-                descendants = []
-            for child in reversed(descendants):
-                try:
-                    child.kill()
-                except (psutil.Error, OSError):
-                    pass
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), 3)
-            except TimeoutError:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                await process.wait()
+        await stop_process(process)
+
+
+async def stop_process(process):
+    if process.returncode is not None:
+        return
+    # Reap OCR/rendering descendants before processing more pages. The host
+    # also owns the worker process group / Windows job for forced cancellation.
+    import psutil
+    try:
+        descendants = psutil.Process(process.pid).children(recursive=True)
+    except (psutil.Error, OSError):
+        descendants = []
+    for child in reversed(descendants):
+        try:
+            child.kill()
+        except (psutil.Error, OSError):
+            pass
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(process.wait(), 3)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
 
 
 @asynccontextmanager
-async def installation_lock(root):
+async def installation_lock(root, *, wait=True):
     """A released OS lock also recovers interrupted setup without a stale PID."""
     root.mkdir(parents=True, exist_ok=True)
     stream = (root / "install.lock").open("a+b")
@@ -186,7 +196,9 @@ async def installation_lock(root):
                     import fcntl
                     fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
-            except (OSError, BlockingIOError):
+            except OSError:
+                if not wait:
+                    raise
                 await asyncio.sleep(0.5)
         yield
     finally:
@@ -819,6 +831,11 @@ def selected_pages(value, count):
     return list(range(1, count + 1)) if normalized is None else [int(x) for x in normalized.split(",")]
 
 
+def check_batch_size(pages):
+    if len(pages) > MAX_TRANSLATION_PAGES:
+        raise ReadingError(f"每批最多翻译 {MAX_TRANSLATION_PAGES} 页，请选择页码分批翻译。")
+
+
 def unsupported_arabic_ocr_pages(input_path, selected, source_language):
     """The pinned Basic/ONNX backend lacks Arabic OCR; native Arabic remains usable."""
     if source_language != "ar":
@@ -831,42 +848,113 @@ def unsupported_arabic_ocr_pages(input_path, selected, source_language):
                            for char in pdf[number - 1].get_text())}
 
 
-async def parse_pages(input_path, dimensions, selected, temporary, events, source_language=None):
+def parser_worker_count(requested=None):
+    import psutil
+    cores = os.cpu_count() or 1
+    limit = min(requested or AUTO_PARSE_WORKERS, MAX_PARSE_WORKERS)
+    high_parallelism = limit > AUTO_PARSE_WORKERS
+    cpu_slots = cores if high_parallelism else cores // PARSE_THREADS
+    try:
+        # Reserve room for the model sessions, page rendering and OCR buffers.
+        gib_per_worker = 3 if high_parallelism else 4
+        memory_slots = psutil.virtual_memory().available // (gib_per_worker * 1024**3)
+    except OSError:
+        return 1
+    return max(1, min(limit, cpu_slots, memory_slots))
+
+
+async def parse_with_mineru(root, input_path, selected, temporary, worker_count, finish_page):
+    command = [runtime_python(root), ENGINE / "mineru_bridge.py", "--serve", "--input", input_path, "--output", temporary]
+    env = runtime_environment(root)
+    remaining = iter(selected)
+
+    async def parse_worker():
+        process = None
+        try:
+            for number in remaining:
+                parsed = False
+                try:
+                    if process is None or process.returncode is not None:
+                        process = await asyncio.create_subprocess_exec(
+                            *map(str, command), env=env, stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                    process.stdin.write(f"{number}\n".encode("ascii"))
+                    await process.stdin.drain()
+                    reply = await asyncio.wait_for(process.stdout.readline(), PARSE_TIMEOUT)
+                    if reply != b"0\n":
+                        raise OSError("MinerU did not return a parsed page")
+                    parsed = True
+                except (OSError, TimeoutError):
+                    if process is not None:
+                        await stop_process(process)
+                        process = None
+                finish_page(number, parsed)
+            if process is not None:
+                process.stdin.close()
+                try:
+                    await asyncio.wait_for(process.wait(), 3)
+                except TimeoutError:
+                    pass
+        finally:
+            if process is not None:
+                await stop_process(process)
+
+    async with asyncio.TaskGroup() as workers:
+        for _ in range(worker_count):
+            workers.create_task(parse_worker())
+
+
+async def parse_pages(input_path, dimensions, selected, temporary, events, source_language=None, parse_workers=None):
     import pymupdf
     from reading_coverage import reconcile_native_text
+    from reading_tables import refine_native_tables
+
+    if not selected:
+        return []
     unsupported = unsupported_arabic_ocr_pages(input_path, selected, source_language)
-    root = await ensure_runtime(events) if len(unsupported) < len(selected) else None
-    pages = []
-    for index, number in enumerate(selected):
-        events.emit("progress", stage="parse", progress=0.05 + 0.4 * index / len(selected),
-                    message=f"正在解析原文第 {number} 页（{index + 1}/{len(selected)}）。")
+    eligible = [number for number in selected if number not in unsupported]
+    root = await ensure_runtime(events) if eligible else None
+    worker_count = min(len(eligible), parser_worker_count(parse_workers)) if eligible else 0
+    parallelism = f"，{worker_count} 路" if worker_count else ""
+    pages = {}
+    for number in unsupported:
         width, height = dimensions[number - 1]
-        if number in unsupported:
-            pages.append({"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
-                          "error": f"当前 MinerU {VERSION} Basic/ONNX 组件不支持阿拉伯语扫描页的 OCR，已保留原页；"
-                                   "请使用含可提取阿语文本层的 PDF。", "blocks": []})
-            continue
-        raw = temporary / f"page-{number}"
+        pages[number] = {"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
+                         "error": f"当前 MinerU {VERSION} Basic/ONNX 组件不支持阿拉伯语扫描页的 OCR，已保留原页；"
+                                  "请使用含可提取阿语文本层的 PDF。", "blocks": []}
+
+    def report_progress():
+        completed = len(pages)
+        events.emit("progress", stage="parse", progress=0.05 + 0.4 * (completed / len(selected)),
+                    message=f"正在解析原文（已处理 {completed}/{len(selected)} 页{parallelism}）。")
+
+    def finish_page(number, parsed):
+        width, height = dimensions[number - 1]
+        path = temporary / f"page-{number}" / "middle_json.json"
         try:
-            code = await run_process([runtime_python(root), ENGINE / "mineru_bridge.py", "--input", input_path,
-                                      "--page", number, "--output", raw], env=runtime_environment(root), timeout=PARSE_TIMEOUT)
-            path = raw / "middle_json.json"
-            if code or not path.is_file() or path.stat().st_size > MAX_ARTIFACT_BYTES:
+            if not parsed or path.stat().st_size > MAX_ARTIFACT_BYTES:
                 raise ValueError("parser_failed")
             data = json.loads(path.read_text(encoding="utf-8"))
             page = normalized_page(data, number, width, height)
             refine_list_geometry(input_path, number, page)
-            from reading_tables import refine_native_tables
             refine_native_tables(input_path, number, page)
             with pymupdf.open(input_path) as pdf:
                 reconcile_native_text(pdf[number - 1], page)
             add_background_colors(input_path, number, page)
             add_decorations(input_path, number, page)
-            pages.append(page)
         except Exception:
-            pages.append({"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
-                          "error": "本页解析未完成，已保留原页；可以重新生成阅读稿。", "blocks": []})
-    return pages
+            page = {"pageNumber": number, "width": width, "height": height, "status": "source_fallback",
+                    "error": "本页解析未完成，已保留原页；可以重新生成阅读稿。", "blocks": []}
+        pages[number] = page
+        report_progress()
+
+    report_progress()
+    if eligible:
+        started = time.monotonic()
+        await parse_with_mineru(root, input_path, eligible, temporary, worker_count, finish_page)
+        events.emit("progress", stage="parse", progress=0.45, message="MinerU 解析完成。",
+                    parseSeconds=time.monotonic() - started)
+    return [pages[number] for number in selected]
 
 
 def load_reading(path, input_hash, page_count, languages=None):
@@ -888,6 +976,9 @@ def load_reading(path, input_hash, page_count, languages=None):
             raise ValueError()
         seen = set()
         for page in data["pages"]:
+            if "backgroundSHA256" in page and ("backgroundImage" in page
+                    or not valid_background_digest(page["backgroundSHA256"])):
+                raise ValueError()
             for block in page["blocks"]:
                 identifier = block["id"]
                 if not isinstance(identifier, str) or identifier in seen or not isinstance(block["sourceText"], str):
@@ -1155,6 +1246,87 @@ def result_counts(document):
             "failedPages": sum(page["status"] == "source_fallback" for page in document["pages"])}
 
 
+def reading_destination(request):
+    destination = Path(request["outputDirectory"]) / ("result-" + request["attemptId"])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise ReadingError("本次阅读稿输出目录已存在，请重新发起任务。")
+    return destination
+
+
+def copy_reading_background(previous, reading, page):
+    try:
+        data = read_background(previous, page)
+    except (OSError, ValueError):
+        raise ReadingError("已有阅读稿的原页背景无法读取，请重新打开阅读稿。") from None
+    if data is not None:
+        write_background(reading, page, data)
+
+
+async def publish_reading(request, document, reading, destination):
+    input_hash = document["sourceSHA256"]
+    if sha256(request["inputPath"]) != input_hash:
+        raise ReadingError("原 PDF 在处理期间发生变化，阅读稿未提交。")
+    await asyncio.sleep(0)  # Honour pending cancellation before atomic publication.
+    counts = result_counts(document)
+    status = "partial" if counts["failedBlocks"] or counts["failedPages"] else "completed"
+    document.update(status=status, updatedAt=datetime.now(timezone.utc).isoformat(), **counts)
+    write_json(reading, document)
+    result = {"artifactType": ARTIFACT_TYPE, "sourcePages": document["pageCount"],
+              "selectedPages": document["selectedPages"], "readingSHA256": sha256(reading), "status": status, **counts}
+    manifest = {**result, "protocolVersion": 1, "jobId": request["jobId"], "attemptId": request["attemptId"],
+                "sourceSHA256": input_hash, "sourceLanguage": document["sourceLanguage"],
+                "targetLanguage": document["targetLanguage"], "model": document["model"]}
+    write_json(reading.with_name("manifest.json"), manifest)
+    reading.parent.rename(destination)
+    return dict(result, progress=1.0, readingPath=str(destination / "reading.json"),
+                manifestPath=str(destination / "manifest.json"))
+
+
+async def rebuild_reading(request, events):
+    """Apply current layout rules to already translated passages."""
+    import pymupdf
+    from reading_background import add_page_background, translated_blocks
+
+    source = Path(request["inputPath"])
+    previous = Path(request["readingPath"])
+    with pymupdf.open(source) as pdf:
+        document = load_reading(previous, sha256(source), len(pdf))
+    candidates = []
+    for index, page in enumerate(document["pages"]):
+        placed = set(page.get("backgroundBlocks") or ())
+        if any(block["id"] not in placed for block in translated_blocks(page)):
+            candidates.append((index, placed))
+    destination = reading_destination(request)
+    with tempfile.TemporaryDirectory(prefix=".pagebridge-layout-", dir=destination.parent) as folder:
+        temporary = Path(folder)
+        reading = temporary / "committed" / "reading.json"
+        reading.parent.mkdir()
+        trial = temporary / "reading.json"
+        recovered = 0
+        for index, (page_index, placed) in enumerate(candidates, 1):
+            events.emit("progress", stage="render", progress=(index - 1) / len(candidates),
+                        message=f"正在检查已有译文排版（{index}/{len(candidates)}）。")
+            page = dict(document["pages"][page_index])
+            add_page_background(source, page, reading_path=trial)
+            updated = set(page.get("backgroundBlocks", ()))
+            if placed < updated:
+                document["pages"][page_index] = page
+                number = page["pageNumber"]
+                background_path(trial, number).rename(background_path(reading, number))
+                recovered += len(updated - placed)
+            await asyncio.sleep(0)
+        if not recovered:
+            events.emit("result", progress=1.0, message="已有译文排版检查完成，无需更新。")
+            return
+        for page in document["pages"]:
+            if not background_path(reading, page["pageNumber"]).is_file():
+                copy_reading_background(previous, reading, page)
+            await asyncio.sleep(0)
+        result = await publish_reading(request, document, reading, destination)
+        events.emit("result", **result, message=f"已修复 {recovered} 段已有译文的原页显示。")
+
+
 async def translate(request, events):
     from worker import model_client
     import pymupdf
@@ -1170,15 +1342,14 @@ async def translate(request, events):
     count = len(dimensions)
     selected = selected_pages(request.get("pages"), count)
     source_language, target_language = request["sourceLanguage"], request["targetLanguage"]
-    output = Path(request["outputDirectory"])
-    output.mkdir(parents=True, exist_ok=True)
-    destination = output / ("result-" + request["attemptId"])
-    if destination.exists():
-        raise ReadingError("本次阅读稿输出目录已存在，请重新发起任务。")
+    destination = reading_destination(request)
     retry_ids = request.get("retryBlockIds")
     retry_terms = request.get("retryTerms")
     append = bool(request.get("appendPages"))
-    with tempfile.TemporaryDirectory(prefix=".pagebridge-reading-", dir=output) as folder:
+    parse_workers = request.get("parseWorkers")
+    if not (retry_ids or retry_terms or append):
+        check_batch_size(selected)
+    with tempfile.TemporaryDirectory(prefix=".pagebridge-reading-", dir=destination.parent) as folder:
         temporary = Path(folder)
         # Retries and appends build on the committed draft; only a full run parses every page.
         changing = None
@@ -1193,12 +1364,15 @@ async def translate(request, events):
                 added = [number for number in selected if number not in existing]
                 if not added:
                     raise ReadingError("所选页已在阅读稿中，请选择尚未翻译的页。")
-                parsed = await parse_pages(source, dimensions, added, temporary, events, source_language=source_language)
+                check_batch_size(added)
+                parsed = await parse_pages(source, dimensions, added, temporary, events,
+                                           source_language=source_language, parse_workers=parse_workers)
                 document["pages"] = sorted(document["pages"] + parsed, key=lambda page: page["pageNumber"])
                 document["selectedPages"] = sorted(existing | set(added))
                 changing = set(added)
         else:
-            pages = await parse_pages(source, dimensions, selected, temporary, events, source_language=source_language)
+            pages = await parse_pages(source, dimensions, selected, temporary, events,
+                                      source_language=source_language, parse_workers=parse_workers)
             document = {"schemaVersion": 1, "artifactType": ARTIFACT_TYPE, "sourceSHA256": input_hash,
                         "pageCount": count, "selectedPages": selected, "sourceLanguage": source_language,
                         "targetLanguage": target_language, "translateTables": request.get("translateTables", True),
@@ -1240,6 +1414,14 @@ async def translate(request, events):
             selected_count += len(selected_blocks)
         if retry_ids or retry_terms:
             changing = {p["pageNumber"] for p in document["pages"] if any(b in pending for b in p["blocks"])}
+        committed = temporary / "committed"
+        committed.mkdir()
+        reading = committed / "reading.json"
+        if changing is not None:
+            for page in document["pages"]:
+                if page["pageNumber"] in changing:
+                    continue
+                copy_reading_background(request["readingPath"], reading, page)
         service = request["service"]
         terms = glossary.parse(request.get("glossary"))
         semaphore = asyncio.Semaphore(service["concurrency"])
@@ -1277,32 +1459,15 @@ async def translate(request, events):
             if page["blocks"]:
                 page["status"] = "partial" if any(b["status"] == "source_fallback" for b in page["blocks"]) else "completed"
         from reading_background import add_page_background
-        # Unchanged pages keep the background stored in the loaded draft.
         rendered = [page for page in document["pages"] if changing is None or page["pageNumber"] in changing]
         for index, page in enumerate(rendered):
             events.emit("progress", stage="render", progress=0.95 + 0.04 * index / max(1, len(rendered)),
                         message=f"正在保留原页背景（{index + 1}/{len(rendered)}）。")
-            add_page_background(source, page)
+            add_page_background(source, page, reading_path=reading)
             await asyncio.sleep(0)
-        counts = result_counts(document)
-        document.update(model=service["model"], status="partial" if counts["failedBlocks"] or counts["failedPages"] else "completed",
-                        updatedAt=datetime.now(timezone.utc).isoformat(), **counts)
-        if sha256(source) != input_hash:
-            raise ReadingError("原 PDF 在处理期间发生变化，阅读稿未提交。")
-        await asyncio.sleep(0)  # Honour a pending cancellation before atomic publication.
-        committed = temporary / "committed"; committed.mkdir()
-        reading = committed / "reading.json"
-        write_json(reading, document)
-        reading_hash = sha256(reading)
-        manifest = {"protocolVersion": 1, "jobId": request["jobId"], "attemptId": request["attemptId"],
-                    "artifactType": ARTIFACT_TYPE, "sourceSHA256": input_hash, "sourcePages": count,
-                    "selectedPages": document["selectedPages"], "sourceLanguage": source_language,
-                    "targetLanguage": target_language, "model": service["model"], "readingSHA256": reading_hash,
-                    "status": document["status"], **counts}
-        write_json(committed / "manifest.json", manifest)
-        committed.rename(destination)
-        events.emit("result", artifactType=ARTIFACT_TYPE, progress=1.0, readingPath=str(destination / "reading.json"),
-                    readingSHA256=reading_hash, manifestPath=str(destination / "manifest.json"), sourcePages=count,
-                    status=document["status"], retranslatedBlocks=selected_count, **counts,
+        batch_partial = any(page["status"] in ("partial", "source_fallback") for page in rendered)
+        document["model"] = service["model"]
+        result = await publish_reading(request, document, reading, destination)
+        events.emit("result", **result, batchPartial=batch_partial, retranslatedBlocks=selected_count,
                     message=(f"已按术语重译 {selected_count} 段。" if retry_terms and pending else "阅读稿中没有包含该术语的段落。" if retry_terms
                              else "阅读稿已生成，部分内容保留原文，可逐块重试。" if document["status"] == "partial" else "对照阅读稿已生成，请结合原页阅读表格与公式。"))

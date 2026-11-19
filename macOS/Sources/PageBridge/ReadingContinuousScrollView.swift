@@ -88,8 +88,7 @@ struct ReadingContinuousScrollView: NSViewRepresentable {
                 let pdf = PDFDocument(url: parent.url)
                 sizes = (0..<(pdf?.pageCount ?? 0)).compactMap { index in
                     guard let page = pdf?.page(at: index) else { return nil }
-                    let size = page.bounds(for: .cropBox).size
-                    return abs(page.rotation % 180) == 90 ? CGSize(width: size.height, height: size.width) : size
+                    return StructuredReadingPageGeometry.displayedCropSize(of: page)
                 }
                 hosts.values.forEach { $0.removeFromSuperview() }
                 hosts.removeAll(); hostScales.removeAll(); geometry = nil

@@ -335,15 +335,57 @@ public sealed partial class MainWindow : Window
             RefreshList();
             try
             {
-                var completed = await backend.TranslateAsync(docId, serviceId, choice.Source, choice.Target, choice.Pages, evt => DispatchJobProgressAsync(() =>
+                string? nextPages = choice.Pages;
+                bool appending = choice.Append;
+                int savedPageCount = 0;
+                for (int batch = 1; ; batch++)
                 {
-                    if (!ReferenceEquals(translationCancellation, cancellation)) return;
-                    if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
-                    var message = Text(evt, "message"); if (message != "") status.Text = message;
-                }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId }, choice.GlossaryIds, retryTerms, choice.Append, choice.TranslateTables);
-                status.Text = cancellation.IsCancellationRequested ? "已取消，保留上次译文" : retryTerms is not null ? "已按术语重译相关段落" : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成";
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    string prefix = choice.AutomaticallyContinue ? $"第 {batch} 批 · " : "";
+                    double? parseSeconds = null;
+                    string WithParseTime(string message) => parseSeconds is double elapsed
+                        ? $"{message} · MinerU 解析耗时 {elapsed:F1} 秒" : message;
+                    progress.IsIndeterminate = true;
+                    status.Text = prefix + "正在准备对照阅读…";
+                    var completed = await backend.TranslateAsync(docId, serviceId, choice.Source, choice.Target, nextPages, evt => DispatchJobProgressAsync(() =>
+                    {
+                        if (!ReferenceEquals(translationCancellation, cancellation) || cancellation.IsCancellationRequested) return;
+                        if (evt["progress"] is JsonValue value && value.TryGetValue<double>(out var amount)) { progress.IsIndeterminate = false; progress.Value = amount * 100; }
+                        if (evt["parseSeconds"] is JsonValue time && time.TryGetValue<double>(out var seconds) && double.IsFinite(seconds) && seconds >= 0)
+                            parseSeconds = seconds;
+                        var message = Text(evt, "message"); if (message != "") status.Text = WithParseTime(prefix + message);
+                    }), cancellation.Token, retryBlockId is null ? null : new[] { retryBlockId }, choice.GlossaryIds, retryTerms,
+                        appending, choice.TranslateTables, choice.ParseWorkers);
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    if (completed?["parseSeconds"] is JsonValue duration && duration.TryGetValue<double>(out var finalSeconds)
+                        && double.IsFinite(finalSeconds) && finalSeconds >= 0) parseSeconds = finalSeconds;
+                    if (!choice.AutomaticallyContinue)
+                    {
+                        status.Text = WithParseTime(retryTerms is not null ? "已按术语重译相关段落"
+                            : Text(completed, "status") == "partial" ? "部分完成，未译段落可单独重试" : "翻译完成");
+                        break;
+                    }
+                    if (completed is null || completed["reading_pages"] is not JsonArray translatedPages || translatedPages.Count <= savedPageCount
+                        || completed["page_count"]?.GetValue<int>() is not int total)
+                    {
+                        status.Text = $"第 {batch} 批已保存。页码进度未推进，自动翻译已暂停。";
+                        break;
+                    }
+                    savedPageCount = translatedPages.Count;
+                    var translated = translatedPages.Select(number => number!.GetValue<int>()).ToHashSet();
+                    var next = Enumerable.Range(1, total).Where(number => !translated.Contains(number)).Take(TranslationBatchLimit).ToArray();
+                    if (next.Length == 0)
+                    {
+                        string finished = $"已保存全部 {total} 页的阅读稿。";
+                        if (Text(completed, "status") == "partial") finished += "部分内容保留原文，未译段落可单独重试。";
+                        status.Text = WithParseTime(finished);
+                        break;
+                    }
+                    nextPages = string.Join(",", next);
+                    appending = true;
+                }
             }
-            catch (OperationCanceledException) { status.Text = "已取消，保留上次译文"; }
+            catch (OperationCanceledException) { status.Text = "已取消，已保存的译稿可继续使用。"; }
             finally
             {
                 translationPreparing = true;

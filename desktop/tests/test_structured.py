@@ -164,6 +164,30 @@ class StructuredReadingTests(unittest.TestCase):
         self.assertIsNone(result["decorations_error"])
         self.assertEqual(sha256(self.source), sha256(self.doc["input_path"]))
 
+    def test_separate_background_is_committed_and_verified_when_read(self):
+        attempt, event, artifact = self.prepare()
+        with pymupdf.open(self.doc["input_path"]) as pdf:
+            png = pdf[1].get_pixmap(matrix=pymupdf.Matrix(.2, .2)).tobytes("png")
+        staged = Path(event["readingPath"]).with_name("background-2.png")
+        staged.write_bytes(png)
+        artifact["pages"][0].update(backgroundSHA256=sha256(staged), backgroundBlocks=["p2-b1"])
+        self.save_modified(event, artifact)
+        staged.unlink()
+        with self.assertRaises(AppError):
+            self.store.commit_result(self.doc["id"], attempt, event)
+        self.assertIsNone(self.store.get(self.doc["id"]).get("reading_path"))
+
+        staged.write_bytes(png)
+        committed = self.store.commit_result(self.doc["id"], attempt, event)
+        reopened = DocumentStore(self.store.root)
+        request = dict(document_id=self.doc["id"], page=1)
+        background = Path(committed["reading_path"]).with_name(staged.name)
+        self.assertEqual(structured.page_result(reopened, request)["backgroundImage"], str(background))
+        self.assertEqual(background.read_bytes(), png)
+        background.write_bytes(png + b"changed")
+        with self.assertRaises(AppError):
+            structured.page_result(reopened, request)
+
     def test_background_rejects_invalid_images_and_unknown_block_references(self):
         attempt, event, artifact = self.prepare()
         with pymupdf.open(self.doc["input_path"]) as pdf:

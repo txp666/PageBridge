@@ -11,6 +11,9 @@ final class AppModel: ObservableObject {
     @Published var documents: [DocumentRecord] = []
     @Published var selectedID: UUID?
     @Published var settingsPresented = false
+    @Published var cacheSettingsPresented = false
+    @Published private(set) var isClearingCache = false
+    @Published private var parseTiming: (documentID: UUID, seconds: Double)?
     @Published var readingMode: ReadingMode = .original
     @Published var structuredReading: StructuredReadingDocument?
     @Published var readingLoadError: String?
@@ -37,6 +40,7 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = "正在检查翻译引擎…"
     @Published var progress: Double?
     @Published var isTranslating = false
+    @Published private(set) var preparingTranslation = false
     @Published var isExporting = false
     @Published private(set) var cancelRequested = false
     @Published var activeJobDocumentID: UUID?
@@ -46,14 +50,26 @@ final class AppModel: ObservableObject {
     @Published var activeServiceID: UUID?
     private var repository: DocumentRepository?
     private var runner: EngineRunner?
+    private var sessionAPIKeys: [UUID: String] = [:]
+    private var keyUnlocks: [UUID: Task<String, Error>] = [:]
+    private lazy var macHasTouchID = DeepSeekCredentialStore.hasTouchID
     private var activeAttempt: UUID?
+    private var activeBatchNumber: Int?
     private var healthCheckRunning = false
     private var searchRevision = 0
 
     var selectedDocument: DocumentRecord? { documents.first { $0.id == selectedID } }
     var activeService: ServiceConfiguration? { services.first { $0.id == activeServiceID } }
+    var libraryDataRoot: URL? { repository?.root }
     /// The worker runs one job at a time: a translation or a reading export.
-    var isWorkerBusy: Bool { isTranslating || isExporting }
+    var isWorkerBusy: Bool { preparingTranslation || isTranslating || isExporting }
+    var canCancelJob: Bool { (isTranslating || runner != nil) && !cancelRequested }
+
+    func parseTimeLabel(for documentID: UUID?) -> String? {
+        guard let parseTiming, parseTiming.documentID == documentID else { return nil }
+        let time = parseTiming.seconds.formatted(.number.precision(.fractionLength(1)))
+        return "MinerU 解析耗时 \(time) 秒"
+    }
 
     init() {
         do {
@@ -171,101 +187,216 @@ final class AppModel: ObservableObject {
         }
     }
 
-    enum TranslationScope { case full, append, retryBlocks([String]), retryTerms([String]) }
+    static let translationBatchLimit = 50
+    enum TranslationScope { case full, append, retryBlocks([String]), retryTerms([String]), rebuildLayout }
 
-    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, translateTables: Bool? = nil, glossaryIDs: [String] = [], scope: TranslationScope = .full) {
-        guard !isWorkerBusy, let document = selectedDocument, !library.isTrashed(id: document.id), let repository else { return }
+    func rebuildReadingLayout() {
+        guard let reading = structuredReading, selectedDocument?.readingPath != nil else { return }
+        startTranslation(sourceLanguage: reading.sourceLanguage, targetLanguage: reading.targetLanguage,
+                         pages: nil, scope: .rebuildLayout)
+    }
+
+    func startTranslation(sourceLanguage: String, targetLanguage: String, pages: String?, translateTables: Bool? = nil,
+                          parseWorkers: Int? = nil, glossaryIDs: [String] = [], scope: TranslationScope = .full,
+                          automaticallyContinue: Bool = false) {
+        guard !isWorkerBusy, !isClearingCache, let document = selectedDocument, !library.isTrashed(id: document.id) else { return }
+        let service = activeService
+        preparingTranslation = true
+        Task {
+            defer { preparingTranslation = false }
+            await prepareTranslation(documentID: document.id, service: service, sourceLanguage: sourceLanguage,
+                                     targetLanguage: targetLanguage, pages: pages, translateTables: translateTables,
+                                     parseWorkers: parseWorkers, glossaryIDs: glossaryIDs, scope: scope,
+                                     automaticallyContinue: automaticallyContinue)
+        }
+    }
+
+    private func prepareTranslation(documentID: UUID, service: ServiceConfiguration?, sourceLanguage: String, targetLanguage: String,
+                                    pages: String?, translateTables: Bool?, parseWorkers: Int?, glossaryIDs: [String], scope: TranslationScope,
+                                    automaticallyContinue: Bool) async {
+        guard let repository else { return }
         do {
             guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
-            guard let service = activeService else { throw BridgeError.message("请先配置翻译服务。") }
-            try service.validate()
-            guard let pdf = PDFDocument(url: document.originalURL), pdf.pageCount == document.pageCount else { throw BridgeError.message("输入副本不可用，请重新导入。") }
-            let apiKey = try key(for: service.id)
-            if service.kind == .openAI && apiKey.isEmpty { throw BridgeError.message("请在翻译服务设置中填写 API Key。") }
-            let attempt = UUID()
-            let staging = try repository.attemptDirectory(document: document, attempt: attempt)
+            let engineService: EngineService?
+            if case .rebuildLayout = scope {
+                engineService = nil
+            } else {
+                guard let service else { throw BridgeError.message("请先配置翻译服务。") }
+                try service.validate()
+                if usesTouchID(for: service), sessionAPIKeys[service.id] == nil {
+                    statusMessage = "正在等待 Touch ID 授权…"
+                }
+                let apiKey = try await key(for: service)
+                if service.kind == .openAI && apiKey.isEmpty { throw BridgeError.message("请在翻译服务设置中填写 API Key。") }
+                engineService = EngineService(configuration: service, apiKey: apiKey)
+            }
+            guard var document = documents.first(where: { $0.id == documentID }), !library.isTrashed(id: document.id) else {
+                throw BridgeError.message("文档已移出文档库，请重新选择。")
+            }
+            guard let pdf = PDFDocument(url: document.originalURL), pdf.pageCount == document.pageCount else {
+                throw BridgeError.message("输入副本不可用，请重新导入。")
+            }
             let location = try EngineLocation.find()
-            let process = EngineRunner(location: location)
-            var retryBlockIds: [String]?, retryTerms: [String]?, building = false
-            switch scope {
-            case .full: break
-            case .append: building = true
-            case .retryBlocks(let ids): retryBlockIds = ids
-            case .retryTerms(let terms): retryTerms = terms
+            isTranslating = true; activeJobDocumentID = documentID; cancelRequested = false
+            preparingTranslation = false; translationPresented = false
+            defer {
+                isTranslating = false; activeJobDocumentID = nil; activeBatchNumber = nil
+                runner = nil; activeAttempt = nil; progress = nil
             }
-            // Retries reuse the draft's glossaries; deleted ones are simply skipped.
-            let chosen = retryBlockIds != nil || retryTerms != nil ? (document.glossaryIDs ?? []) : glossaryIDs
-            let terms = glossaries.combinedText(chosen)
-            let request = WorkerRequest(action: "translate", jobID: document.id, attemptID: attempt,
-                inputPath: document.inputPath, outputDirectory: staging.path, sourceLanguage: sourceLanguage,
-                targetLanguage: targetLanguage, pages: pages, service: EngineService(configuration: service, apiKey: apiKey),
-                readingPath: retryBlockIds != nil || retryTerms != nil || building ? document.readingPath : nil, retryBlockIds: retryBlockIds,
-                glossary: terms.isEmpty ? nil : terms, retryTerms: retryTerms, appendPages: building ? true : nil,
-                translateTables: translateTables)
+            var nextPages = pages
+            var batchScope = scope
+            var batch = 1
+            var savedPageCount = 0
+            while !cancelRequested {
+                activeBatchNumber = automaticallyContinue ? batch : nil
+                guard let (saved, result) = try await translateBatch(document: document, repository: repository,
+                    location: location, service: engineService, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage,
+                    pages: nextPages, translateTables: batch == 1 ? translateTables : nil, parseWorkers: parseWorkers,
+                    glossaryIDs: glossaryIDs, scope: batchScope)
+                else { return }
+                document = saved
+                guard automaticallyContinue, !cancelRequested else { return }
+                guard let selectedPages = result.selectedPages, selectedPages.count > savedPageCount else {
+                    statusMessage = "第 \(batch) 批已保存。页码进度未推进，自动翻译已暂停。"
+                    return
+                }
+                savedPageCount = selectedPages.count
+                let translated = Set(selectedPages)
+                let next = (1...document.pageCount).lazy.filter { !translated.contains($0) }.prefix(Self.translationBatchLimit)
+                guard !next.isEmpty else {
+                    let savedMessage = "已保存全部 \(document.pageCount) 页的阅读稿。"
+                    statusMessage = document.status == .partial
+                        ? savedMessage + "部分内容保留原文，未译段落可单独重试。" : savedMessage
+                    return
+                }
+                nextPages = next.map(String.init).joined(separator: ",")
+                batchScope = .append
+                batch += 1
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func translateBatch(document: DocumentRecord, repository: DocumentRepository, location: EngineLocation,
+                                service: EngineService?, sourceLanguage: String, targetLanguage: String,
+                                pages: String?, translateTables: Bool?, parseWorkers: Int?, glossaryIDs: [String], scope: TranslationScope)
+                                async throws -> (DocumentRecord, WorkerEvent)? {
+        parseTiming = nil
+        let attempt = UUID()
+        let staging = try repository.attemptDirectory(document: document, attempt: attempt)
+        var hasUnsavedReading = false
+        defer {
+            if !hasUnsavedReading { try? FileManager.default.removeItem(at: staging) }
+            runner = nil; activeAttempt = nil; progress = nil
+        }
+        var retryBlockIds: [String]?, retryTerms: [String]?, building = false, rebuildLayout = false
+        switch scope {
+        case .full: break
+        case .append: building = true
+        case .retryBlocks(let ids): retryBlockIds = ids
+        case .retryTerms(let terms): retryTerms = terms
+        case .rebuildLayout: rebuildLayout = true
+        }
+        let reusesDraft = retryBlockIds != nil || retryTerms != nil || rebuildLayout
+        // Retries reuse the draft's glossaries; deleted ones are simply skipped.
+        let terms = rebuildLayout ? "" : glossaries.combinedText(reusesDraft ? (document.glossaryIDs ?? []) : glossaryIDs)
+        let request = WorkerRequest(action: rebuildLayout ? "rebuild_reading" : "translate", jobID: document.id, attemptID: attempt,
+            inputPath: document.inputPath, outputDirectory: staging.path, sourceLanguage: sourceLanguage,
+            targetLanguage: targetLanguage, pages: pages, service: service, readingPath: reusesDraft || building ? document.readingPath : nil,
+            retryBlockIds: retryBlockIds, glossary: terms.isEmpty ? nil : terms, retryTerms: retryTerms,
+            appendPages: building ? true : nil, translateTables: translateTables, parseWorkers: parseWorkers)
+        if !rebuildLayout {
             var record = document; record.status = .running; record.attemptID = attempt; record.lastError = nil
-            let retry = retryBlockIds != nil || retryTerms != nil
-            if !retry { try? changeGlossaries { $0.lastUsedIDs = glossaryIDs } }
+            if !reusesDraft && (activeBatchNumber ?? 1) == 1 { try? changeGlossaries { $0.lastUsedIDs = glossaryIDs } }
             try replaceRecord(record)
-            // The glossaries belong to the new draft once it is committed; a failed run keeps the old pairing.
-            var finished = document
-            if !retry { finished.glossaryIDs = glossaryIDs }
-            runner = process; activeAttempt = attempt; activeJobDocumentID = document.id
-            cancelRequested = false; isTranslating = true; progress = nil
-            statusMessage = "正在准备对照阅读；首次使用会下载本地识别模型…"
-            translationPresented = false
-            Task { [self] in
-                defer {
-                    runner = nil; isTranslating = false; activeJobDocumentID = nil
-                    activeAttempt = nil; progress = nil
-                }
-                do {
-                    let result = try await process.run(request) { [weak self] event in
-                        Task { @MainActor in self?.receive(event, documentID: document.id, attempt: attempt) }
-                    }
-                    guard !cancelRequested else { throw BridgeError.cancelled }
-                    statusMessage = "正在验证输出并保存…"
-                    let completed = try repository.commitReading(result: result, document: finished, attempt: attempt, staging: staging)
-                    try replaceRecord(completed)
-                    if selectedID == document.id {
-                        readingMode = .dual
-                        if !retry && !building { syncScrolling = true }
-                        reloadStructuredReading(navigateToFirst: !retry && !building)
-                    }
-                    statusMessage = retryTerms != nil ? (result.message ?? "已按术语重译。") : completed.status == .partial
-                        ? "原页译文已保存，未完成的段落保留原文，可单独重试。"
-                        : "\(document.name) 原页译文已保存。点击文字或图表可查看完整内容。"
-                    // Only disposable scratch output; committed results are in a different directory.
-                    try? FileManager.default.removeItem(at: staging)
-                } catch {
-                    var failed = documents.first { $0.id == document.id } ?? document
-                    let failureMessage = error.localizedDescription
-                    failed.status = cancelRequested ? .cancelled : .failed
-                    failed.lastError = cancelRequested ? nil : failureMessage
-                    do { try replaceRecord(failed) } catch { errorMessage = "任务记录保存失败：\(error.localizedDescription)" }
-                    statusMessage = cancelRequested
-                        ? (failed.hasTranslation ? "已取消；上次成功结果仍可使用。" : "已取消，未生成译文。")
-                        : "翻译失败：\(failureMessage)"
-                    if !cancelRequested { errorMessage = failureMessage }
-                    try? FileManager.default.removeItem(at: staging)
-                }
+        }
+        var finished = document
+        if !reusesDraft { finished.glossaryIDs = glossaryIDs }
+        let process = EngineRunner(location: location)
+        runner = process; activeAttempt = attempt; progress = nil
+        statusMessage = rebuildLayout ? "正在准备重新排版…" : batchMessage("正在准备对照阅读…")
+        do {
+            let result = try await process.run(request) { [weak self] event in
+                Task { @MainActor in self?.receive(event, documentID: document.id, attempt: attempt) }
             }
-        } catch { errorMessage = error.localizedDescription }
+            guard !cancelRequested else { throw BridgeError.cancelled }
+            setParseTiming(result.parseSeconds, for: document.id)
+            if rebuildLayout && result.readingPath == nil {
+                statusMessage = result.message ?? "已有译文排版检查完成。"
+                return nil
+            }
+            hasUnsavedReading = true
+            runner = nil
+            statusMessage = batchMessage("正在验证输出并保存…")
+            let root = repository.root, recordToSave = finished
+            let completed = try await Task.detached(priority: .userInitiated) {
+                try DocumentRepository(root: root).commitReading(result: result, document: recordToSave, attempt: attempt, staging: staging)
+            }.value
+            do { try replaceRecord(completed) }
+            catch {
+                if let url = completed.readingURL { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+                throw error
+            }
+            hasUnsavedReading = false
+            if selectedID == document.id {
+                if !rebuildLayout && (activeBatchNumber == nil || activeBatchNumber == 1) { readingMode = .dual }
+                if !reusesDraft && !building { syncScrolling = true }
+                reloadStructuredReading(navigateToFirst: !reusesDraft && !building)
+            }
+            if rebuildLayout { statusMessage = result.message ?? "已重新排版并保存。" }
+            else if cancelRequested { statusMessage = "已停止，已保存本批译稿。" }
+            else if retryTerms != nil { statusMessage = result.message ?? "已按术语重译。" }
+            else if completed.status == .partial { statusMessage = "原页译文已保存，未完成的段落保留原文，可单独重试。" }
+            else { statusMessage = batchMessage("原页译文已保存。点击文字或图表可查看完整内容。") }
+            return (completed, result)
+        } catch {
+            var failed = documents.first { $0.id == document.id } ?? document
+            let failureMessage = error.localizedDescription
+            let cancelled = cancelRequested && !hasUnsavedReading
+            failed.status = cancelled ? .cancelled : .failed
+            let message = hasUnsavedReading
+                ? "译稿已生成，保存到文档库失败。\n\(failureMessage)\n译稿已保留在以下任务目录。\n\(staging.path)"
+                : failureMessage
+            failed.lastError = cancelled ? nil : message
+            if !rebuildLayout {
+                do { try replaceRecord(failed) } catch { errorMessage = "任务记录保存失败：\(error.localizedDescription)" }
+            }
+            let failure = rebuildLayout ? "重新排版失败：\(failureMessage)" : batchMessage("翻译失败：\(failureMessage)")
+            statusMessage = cancelled
+                ? (failed.hasTranslation ? "已取消，已保存的译稿可继续使用。" : "已取消，未生成译文。")
+                : hasUnsavedReading ? "保存到文档库失败，已保留本次译稿。" : failure
+            if !cancelled { errorMessage = message }
+            return nil
+        }
+    }
+
+    private func batchMessage(_ message: String) -> String {
+        guard let activeBatchNumber else { return message }
+        return "第 \(activeBatchNumber) 批 · \(message)"
     }
 
     private func receive(_ event: WorkerEvent, documentID: UUID, attempt: UUID) {
-        guard isWorkerBusy, activeJobDocumentID == documentID, activeAttempt == attempt, !cancelRequested else { return }
+        guard runner != nil, activeJobDocumentID == documentID, activeAttempt == attempt, !cancelRequested else { return }
+        setParseTiming(event.parseSeconds, for: documentID)
         if event.type == "stage" || event.type == "progress" || event.type == "ready" {
             if let value = event.progress { progress = value }
             else if event.type == "stage" { progress = nil }
-            if let message = event.message, !message.isEmpty { statusMessage = message }
-            else if let stage = event.stage { statusMessage = stage }
+            if let message = event.message, !message.isEmpty { statusMessage = batchMessage(message) }
+            else if let stage = event.stage { statusMessage = batchMessage(stage) }
         }
+    }
+
+    private func setParseTiming(_ seconds: Double?, for documentID: UUID) {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return }
+        parseTiming = (documentID, seconds)
     }
 
     func cancelTranslation() {
         guard isTranslating, !cancelRequested else { return }
-        cancelRequested = true; statusMessage = "正在取消，等待翻译进程退出…"; progress = nil
-        if let index = documents.firstIndex(where: { $0.id == activeJobDocumentID }) {
+        cancelRequested = true; statusMessage = runner == nil ? "本批保存后停止。" : "正在取消，等待翻译进程退出…"; progress = nil
+        if let index = documents.firstIndex(where: { $0.id == activeJobDocumentID && $0.status == .running }) {
             var record = documents[index]; record.status = .cancelling
             do { try replaceRecord(record) } catch { errorMessage = error.localizedDescription }
         }
@@ -275,7 +406,7 @@ final class AppModel: ObservableObject {
     func canExport(_ kind: ExportKind) -> Bool {
         guard let record = selectedDocument else { return false }
         guard kind != .original else { return FileManager.default.fileExists(atPath: record.inputPath) }
-        return !isWorkerBusy && record.readingURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+        return !isWorkerBusy && !isClearingCache && record.readingURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
     }
 
     /// The original is copied; translated and bilingual PDFs are built by the worker from the reading draft.
@@ -296,7 +427,7 @@ final class AppModel: ObservableObject {
     }
 
     private func exportReading(_ kind: ExportKind, record: DocumentRecord, destination: URL, repository: DocumentRepository) throws {
-        guard !isWorkerBusy, let reading = record.readingURL else { return }
+        guard !isWorkerBusy, !isClearingCache, let reading = record.readingURL else { return }
         guard engineReady else { throw BridgeError.message("翻译引擎未就绪。\(engineDescription)") }
         try DocumentRepository.validateExportDestination(destination, protectedInput: record.originalURL, managedRoot: repository.root)
         let attempt = UUID()
@@ -338,6 +469,17 @@ final class AppModel: ObservableObject {
     func openOutputFolder() {
         guard let record = selectedDocument else { return }
         NSWorkspace.shared.activateFileViewerSelecting([record.readingURL ?? record.originalURL])
+    }
+
+    func clearCache(_ category: CacheCategory) async throws -> CacheCleanup {
+        guard !isWorkerBusy, !isClearingCache, let root = libraryDataRoot else {
+            throw BridgeError.message("请在当前任务结束后清理缓存。")
+        }
+        isClearingCache = true
+        defer { isClearingCache = false }
+        return try await Task.detached(priority: .utility) {
+            try CacheStorage(root: root).clear(category)
+        }.value
     }
 
     func renameDocument(id: UUID, name: String) -> Bool {
@@ -480,7 +622,7 @@ final class AppModel: ObservableObject {
         guard let document = selectedDocument else { throw BridgeError.message("请先选择文档。") }
         guard let service = activeService else { throw BridgeError.message("请先配置翻译服务。") }
         try service.validate()
-        let apiKey = try key(for: service.id)
+        let apiKey = try await key(for: service)
         if service.kind == .openAI && apiKey.isEmpty { throw BridgeError.message("请在翻译服务设置中填写 API Key。") }
         let reading = structuredReading
         let request = WorkerRequest(action: "suggest_terms", inputPath: document.inputPath,
@@ -515,35 +657,102 @@ final class AppModel: ObservableObject {
         try copy.save(root: repository.root)
         glossaries = copy
     }
-    func key(for id: UUID) throws -> String { try KeychainStore.read(serviceID: id) ?? "" }
-    func saveService(_ service: ServiceConfiguration, apiKey: String) throws {
+    func usesTouchID(for service: ServiceConfiguration) -> Bool {
+        guard service.kind == .openAI, service.provider == .deepSeek else { return false }
+        return hasProtectedKey(for: service) || macHasTouchID
+    }
+
+    func hasProtectedKey(for service: ServiceConfiguration) -> Bool {
+        guard let repository else { return false }
+        return DeepSeekCredentialStore(root: repository.root).contains(service.id)
+    }
+
+    func legacyKey(for id: UUID) throws -> String {
+        if let key = sessionAPIKeys[id] { return key }
+        let key = try KeychainStore.read(serviceID: id)
+        sessionAPIKeys[id] = key
+        return key ?? ""
+    }
+
+    func key(for service: ServiceConfiguration) async throws -> String {
+        guard let saved = services.first(where: { $0.id == service.id }), saved.hasSameCredentialDestination(as: service) else {
+            throw BridgeError.message("服务地址已改变，请保存新的 API Key 后重试。")
+        }
+        guard service.kind == .openAI else { return "" }
+        let id = service.id
+        guard usesTouchID(for: saved) else { return try legacyKey(for: id) }
+        if let key = sessionAPIKeys[id] { return key }
+        if let unlock = keyUnlocks[id] { return try await unlock.value }
+        guard let repository else { throw BridgeError.message("文档库不可用，无法读取 API Key。") }
+        let store = DeepSeekCredentialStore(root: repository.root)
+        let unlock = Task { [self] in
+            let key = try await store.unlock(for: saved)
+            sessionAPIKeys[id] = key
+            return key
+        }
+        keyUnlocks[id] = unlock
+        defer { keyUnlocks[id] = nil }
+        return try await unlock.value
+    }
+
+    func saveService(_ service: ServiceConfiguration, apiKey: String?) throws {
         guard let repository else { throw BridgeError.message("本地存储不可用，无法保存服务。请先修复启动时报告的数据目录错误。") }
         let value = service.normalized(); try value.validate()
-        let previous = try key(for: value.id)
-        // An empty key deletes the item.
-        if apiKey != previous { try KeychainStore.save(key: apiKey, serviceID: value.id) }
+        let id = value.id
+        guard keyUnlocks[id] == nil else { throw BridgeError.message("请完成正在进行的 Touch ID 授权后再保存配置。") }
+        let store = DeepSeekCredentialStore(root: repository.root)
+        let previousSealed = try store.encryptedKey(for: id)
+        let protected = usesTouchID(for: value)
+        if apiKey == nil {
+            guard protected, previousSealed != nil,
+                  services.first(where: { $0.id == id })?.hasSameCredentialDestination(as: value) == true else {
+                throw DeepSeekCredentialError.setupRequired
+            }
+        }
+        let changesSealed = protected ? apiKey != nil : previousSealed != nil
+        let sealed = try protected ? apiKey.flatMap { $0.isEmpty ? nil : try store.seal($0, for: value) } : nil
+        let previousLegacy: String?
+        if protected || apiKey == nil { previousLegacy = nil }
+        else if previousSealed == nil { previousLegacy = try legacyKey(for: id) }
+        else { previousLegacy = try KeychainStore.read(serviceID: id) ?? "" }
+        let changesLegacy = !protected && apiKey != nil && apiKey != previousLegacy
         var updated = services
-        if let index = updated.firstIndex(where: { $0.id == value.id }) { updated[index] = value }
+        if let index = updated.firstIndex(where: { $0.id == id }) { updated[index] = value }
         else { updated.append(value) }
-        do { try repository.savePreferences(AppPreferences(services: updated, activeServiceID: value.id)) }
-        catch {
-            if apiKey != previous { try? KeychainStore.save(key: previous, serviceID: value.id) }
+        if changesLegacy, let apiKey { try KeychainStore.save(key: apiKey, serviceID: id) }
+        do {
+            if changesSealed { try store.replaceEncryptedKey(sealed, for: id) }
+            try repository.savePreferences(AppPreferences(services: updated, activeServiceID: id))
+        } catch {
+            if changesSealed { try? store.replaceEncryptedKey(previousSealed, for: id) }
+            if changesLegacy, let previousLegacy { try? KeychainStore.save(key: previousLegacy, serviceID: id) }
+            if changesSealed || changesLegacy { sessionAPIKeys[id] = nil }
             throw error
         }
-        services = updated; activeServiceID = value.id
+        if let apiKey { sessionAPIKeys[id] = protected || apiKey.isEmpty ? nil : apiKey }
+        if changesSealed && protected { try? KeychainStore.delete(serviceID: id, allowAuthentication: false) }
+        services = updated; activeServiceID = id
     }
     func deleteService(_ id: UUID) throws {
         guard let repository else { throw BridgeError.message("本地存储不可用，无法删除服务。") }
         guard services.count > 1 else { throw BridgeError.message("至少保留一个翻译服务配置。") }
+        guard keyUnlocks[id] == nil else { throw BridgeError.message("请完成正在进行的 Touch ID 授权后再删除配置。") }
         let updated = services.filter { $0.id != id }
         let active = activeServiceID == id ? updated.first?.id : activeServiceID
-        let previousKey = try key(for: id)
-        try KeychainStore.delete(serviceID: id)
+        let store = DeepSeekCredentialStore(root: repository.root)
+        let protected = services.first(where: { $0.id == id }).map { usesTouchID(for: $0) } == true
+        let sealed = try store.encryptedKey(for: id)
+        let previousKey = protected ? "" : try legacyKey(for: id)
+        if protected { try store.replaceEncryptedKey(nil, for: id) }
+        else { try KeychainStore.delete(serviceID: id) }
+        sessionAPIKeys.removeValue(forKey: id)
         do { try repository.savePreferences(AppPreferences(services: updated, activeServiceID: active)) }
         catch {
-            if !previousKey.isEmpty { try? KeychainStore.save(key: previousKey, serviceID: id) }
+            if protected { try? store.replaceEncryptedKey(sealed, for: id) }
+            else if !previousKey.isEmpty { try? KeychainStore.save(key: previousKey, serviceID: id) }
             throw error
         }
+        if protected { try? KeychainStore.delete(serviceID: id, allowAuthentication: false) }
         services = updated; activeServiceID = active
     }
     private func replaceRecord(_ record: DocumentRecord) throws {

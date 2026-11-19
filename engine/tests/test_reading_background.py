@@ -155,6 +155,20 @@ class NativeBackgroundTests(unittest.TestCase):
         # OCR paragraph cannot be erased from a scanned source image.
         self.assertEqual(page.get('backgroundBlocks'), [])
 
+    def test_blank_glyph_box_on_paper_does_not_block_a_translated_paragraph(self):
+        path = self.root / 'blank-glyph.pdf'
+        with pymupdf.open() as pdf:
+            source = pdf.new_page(width=200, height=160)
+            source.insert_text((20, 35), 'Hello world', fontsize=12)
+            source.insert_text((90, 35), 'X', fontsize=12, color=(1, 1, 1))
+            pdf.save(path)
+        page = dict(pageNumber=1, width=200, height=160, blocks=[dict(
+            id='body', kind='text', sourceText='Hello world', translatedText='你好，世界', status='translated',
+            bbox=[10, 20, 105, 42], backgroundColor=[255, 255, 255])])
+        add_page_background(path, page)
+        self.assertEqual(page['backgroundBlocks'], ['body'])
+        self.assertIsNone(page.get('backgroundFillBlocks'))
+
     def test_unchanged_text_never_gets_erased_or_resized(self):
         path = self.make_source()
         page = self.metadata(path)

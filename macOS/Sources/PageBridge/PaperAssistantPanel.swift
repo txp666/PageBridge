@@ -10,7 +10,7 @@ struct PaperAssistantPanel: View {
     let service: ServiceConfiguration?
     let services: [ServiceConfiguration]
     @Binding var selectedServiceID: UUID?
-    let apiKey: (UUID) throws -> String
+    let apiKey: (ServiceConfiguration) async throws -> String
     let onNavigate: (Int) -> Void
     let onSaveNote: (String) -> Void
     /// Source-language glossary terms for a question asked in the target language.
@@ -225,7 +225,7 @@ struct PaperAssistantPanel: View {
     private func send(_ text: String) {
         guard let service, !model.isBusy else { return }
         let started = model.send(question: text, document: document, mode: mode, page: page, selection: selectionText,
-                   service: service, extraTerms: expansionTerms(text), apiKey: { try apiKey(service.id) })
+                   service: service, extraTerms: expansionTerms(text), apiKey: { try await apiKey(service) })
         if started { question = ""; notice = nil }
     }
     private func noteText(_ message: PaperAssistantMessage) -> String {

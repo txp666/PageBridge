@@ -34,6 +34,7 @@ struct PageBridgeApp: App {
             }
             CommandGroup(replacing: .appSettings) {
                 Button("翻译服务…") { model.settingsPresented = true }.keyboardShortcut(",")
+                Button("缓存…") { model.cacheSettingsPresented = true }.disabled(model.libraryDataRoot == nil)
                 Button("术语表…") { model.glossaryManagerPresented = true }
             }
             CommandGroup(after: .textEditing) {

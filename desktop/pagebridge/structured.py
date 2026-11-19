@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 
 import pymupdf
+from reading_assets import background_path, read_background, read_background_file, valid_background_digest, valid_png_header
 from reading_layout import estimated_font_size, saved_layouts
 
 from .core import AppError, _inside, _unredirected, atomic_file, sha256
@@ -67,16 +68,17 @@ def read_artifact(path, document):
                     if (type(inset) not in (int, float) or not math.isfinite(inset) or not bbox
                             or not 0 <= inset < bbox[2] - bbox[0]):
                         raise ValueError()
-            if "backgroundImage" in page:
-                encoded, positioned = page["backgroundImage"], page.get("backgroundBlocks")
-                if not isinstance(encoded, str) or not 44 <= len(encoded) <= 16 * 1024 * 1024:
-                    raise ValueError()
-                header = base64.b64decode(encoded[:44], validate=True)
-                if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-                    raise ValueError()
-                width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
-                if not width or not height or width * height > 16_000_000:
-                    raise ValueError()
+            has_background = "backgroundImage" in page or "backgroundSHA256" in page
+            if has_background:
+                if "backgroundSHA256" in page:
+                    if "backgroundImage" in page or not valid_background_digest(page["backgroundSHA256"]):
+                        raise ValueError()
+                else:
+                    encoded = page["backgroundImage"]
+                    if (not isinstance(encoded, str) or not 44 <= len(encoded) <= 16 * 1024 * 1024
+                            or not valid_png_header(base64.b64decode(encoded[:44], validate=True))):
+                        raise ValueError()
+                positioned = page.get("backgroundBlocks")
                 if (not isinstance(positioned, list) or any(not isinstance(x, str) for x in positioned)
                         or len(positioned) != len(set(positioned))
                         or not set(positioned).issubset({b["id"] for b in page["blocks"]})):
@@ -101,7 +103,7 @@ def read_artifact(path, document):
                         raise ValueError()
             if "backgroundFillBlocks" in page:
                 filled = page["backgroundFillBlocks"]
-                if ("backgroundImage" not in page or not isinstance(filled, list)
+                if (not has_background or not isinstance(filled, list)
                         or any(not isinstance(x, str) for x in filled)
                         or len(filled) != len(set(filled)) or not set(filled).issubset(page["backgroundBlocks"])):
                     raise ValueError()
@@ -163,9 +165,18 @@ def commit_reading(store, document_id, attempt_id, event):
             raise ValueError()
     except (OSError, ValueError, TypeError, AttributeError):
         raise AppError("对照阅读清单与当前任务不匹配。") from None
+    files = {"reading.json": (reading, digest)}
+    for page in artifact["pages"]:
+        if background_digest := page.get("backgroundSHA256"):
+            background = background_path(reading, page["pageNumber"])
+            try:
+                read_background_file(background, background_digest)
+            except (OSError, ValueError):
+                raise AppError(f"阅读稿第 {page['pageNumber']} 页背景文件不可用或校验失败。") from None
+            files[background.name] = (background, background_digest)
     blocks = [block for page in artifact["pages"] for block in page["blocks"]]
     source_language, target_language = artifact.get("sourceLanguage", "en"), artifact.get("targetLanguage", "zh")
-    return store.publish_result(document_id, attempt_id, manifest, {"reading.json": (reading, digest)},
+    return store.publish_result(document_id, attempt_id, manifest, files,
                                 lambda destination: dict(status=artifact["status"], last_error=None, reading_path=str(destination / "reading.json"),
                                                          reading_sha256=digest, reading_source_language=source_language,
                                                          reading_target_language=target_language,
@@ -184,13 +195,13 @@ def page_result(store, request):
     # The canvas and the original raster use the same rotated CropBox geometry,
     # including pages outside this translation's selection.
     blocks = copy.deepcopy(selected["blocks"]) if selected else []
+    background_image = _background_image(store, doc, selected) if selected else None
     with pymupdf.open(doc["input_path"]) as pdf:
         source = pdf[number]
         rect = source.rect
         _add_source_font_sizes(source, blocks)
-        edges, cells = saved_layouts(selected, source) if selected else ({}, {})
+        edges, cells = saved_layouts(selected, source, doc["reading_path"]) if selected else ({}, {})
     decoration_image, decoration_error = None, None
-    background_image = _background_image(store, doc, selected) if selected and selected.get("backgroundImage") else None
     if selected and selected.get("decorations") and not background_image:
         try:
             decoration_image = _decoration_image(store, doc, selected)
@@ -253,10 +264,20 @@ def _cached_preview(store, name):
 
 
 def _background_image(store, document, page):
+    reading = document["reading_path"]
+    if digest := page.get("backgroundSHA256"):
+        path = background_path(reading, page["pageNumber"])
+        try:
+            read_background_file(path, digest)
+        except (OSError, ValueError):
+            raise AppError(f"阅读稿第 {page['pageNumber']} 页背景文件不可用或校验失败。") from None
+        return str(path)
+    if not page.get("backgroundImage"):
+        return None
     key = hashlib.sha256((document["reading_sha256"] + str(page["pageNumber"])).encode()).hexdigest()
     target = _cached_preview(store, "reading-background-" + key + ".png")
     if not target.exists():
-        data = base64.b64decode(page["backgroundImage"], validate=True)
+        data = read_background(reading, page)
         atomic_file(target, lambda name: Path(name).write_bytes(data))
     return str(target)
 

@@ -11,14 +11,14 @@
 
 没有 PageBridge 账户或中转服务器，也没有本地 HTTP 服务。宿主为每个任务启动一个 worker 进程，向 stdin 写一行 JSON 请求，从 stdout 读取版本化 NDJSON 事件（`protocolVersion`、`jobId`、`attemptId`、递增 `sequence`、`type`）。API Key 只经该管道进入 worker 内存，不出现在命令行、环境变量或配置文件中。上游日志在文件描述符层被重定向，不会混入协议或成为用户可见的错误信息。协议细节见 [engine/README.md](../engine/README.md)。
 
-每次任务使用新的 attempt 目录；输出全部通过检查后才原子提交。失败或取消保留上次成功结果。取消时 Mac 回收 worker 进程组，Windows 用 Job Object 结束进程树；迟到的结果不会覆盖已接受的取消。
+每次任务使用独立的 attempt 目录，输出通过检查后原子提交。失败或取消保留上次成功结果。若已生成的译稿未能提交，任务目录保留稿件。取消时 Mac 回收 worker 进程组，Windows 用 Job Object 结束进程树，已接受的取消优先于迟到的结果。
 
 ## 原页版式阅读稿
 
-流程：**原 PDF → MinerU 逐页解析出带坐标的块 → 每个完整段落独立翻译 → `reading.json` + `manifest.json` → 原生页画布显示**。协议与产物格式见 [engine/STRUCTURED_READING.md](../engine/STRUCTURED_READING.md)。
+原 PDF 经过 MinerU 分页解析和段落翻译，生成 `reading.json`、清单及逐页背景 PNG，最后在原生页画布中显示。自动解析最多分配 3 个进程，手动上限为 8 个，实际值取决于 CPU 和可用内存。每个进程复用已加载的模型。协议与产物格式见 [engine/STRUCTURED_READING.md](../engine/STRUCTURED_READING.md)。
 
 - **解析：** 每个所选物理页在独立子进程中解析，单页失败继续处理其余页。子进程清除 Python 路径变量和名称像密钥的环境变量；推理只用本地模型。坐标为归一化的原页左上角 PDF 点（旋转后扣除页面原点），没有可靠坐标的块只在页旁入口显示。
-- **背景：** 有原生文字的页面，在内存副本中透明移除已翻译段落的原字形，得到保留照片、色块、水印和细线的 `backgroundImage`；只有 `backgroundBlocks` 列出的块在其上绘制译文。带图像文字和可搜索文字层的页面，若移除原生字形后原文仍在，只对外围为平色、剩余像素与原文字形掩模一致且不碰到未译区域的块，按采样颜色清理，并记为 `backgroundFillBlocks`；清理结果直接写入背景图，客户端不再填色。照片背景继续保留原像素。描边和填充形状的边界只用于恢复原页像素。
+- 对带原生文字的页面，在内存副本中移除位于已翻译段落的原字形，背景图保留原有照片、色块、水印和细线。逐页 PNG 与 `reading.json` 一起提交，界面按需读取。`backgroundBlocks` 列出可在该背景上绘制译文的块。带图像文字和可搜索文字层的页面，若移除原生字形后原文仍在，只对外围为平色、剩余像素与原文字形掩模一致且不碰到未译区域的块，按采样颜色清理，并记为 `backgroundFillBlocks`。清理结果直接写入背景图。照片背景保留原像素。描边和填充形状的边界只用于恢复原页像素。
 - **表格与公式：** 原生文字表格保留原数字与格线，文字标签作为独立的 `table_cell` 块按实际坐标翻译，只发送该标签本身。扫描表格保留原图，辅助译文在详情中查看。行内公式保留为原页裁图附件，模板中只有附件占位符；占位符缺失或重复只让该段回退原文。
 - **排版：** 页画布用同一排字器测量和绘制，在原框内适配字号（最小字号为正文 8 PDF 点、紧凑表格标签 6.5 点；原文更小的参考文献、脚注等小字最多缩到原字号的 85%，扫描页按区域面积和字数估算原字号），绘制裁在原框内，不扩大段落或增加页面。目录和列表按 PDF 原有文字行和字符坐标保持缩进、点引线和页码列。纯数字、点分序号、页码和代码块直接保留。
 - **对照滚动：** 左右两侧按物理页、页内相对位置和横向相对位置同步，缩放或改变布局后恢复锚点；可关闭同步分别滚动。
@@ -85,10 +85,12 @@ Windows 由 `desktop/pagebridge/literature.py` 和 `SciHubBrowserPanel` 实现�
 | | Mac | Windows |
 |---|---|---|
 | 用户数据 | `~/Library/Application Support/PageBridge/` | `%LOCALAPPDATA%\PageBridge` |
-| API Key | macOS 钥匙串 | Windows 凭据管理器 |
+| API Key | 支持 Touch ID 的 DeepSeek 配置使用安全隔区加密，其余配置使用 macOS 钥匙串 | Windows 凭据管理器 |
 | MinerU 运行环境 | `…/PageBridge/mineru/4.0.12/` | `%LOCALAPPDATA%\PageBridge\mineru\4.0.12\` |
 
 Mac 数据目录中：`documents.json`（文档记录）、`services.json`（不含密钥的服务配置）、`glossaries.json`（自建术语表）、`library.json`（分类）、`annotations/<文档 UUID>/original/<PDF 哈希>.json`、`assistant/<文档 UUID>.json`。每份文档有原始副本和各次翻译的输出目录（已提交的阅读稿在其中）。元数据都以原子方式写入 JSON。
+
+Mac 在当前进程中复用已授权读取的 API 密钥。支持 Touch ID 的 Mac 在 `credentials/` 保存用安全隔区密钥加密的 DeepSeek 凭据，首次解锁使用指纹。已有 DeepSeek 配置填入一次 API Key 即可登记到此存储。更换设备或更改已登记指纹后可重新登记密钥。
 
 测试日志和模型调试响应可能包含文档文字，不应公开。
 

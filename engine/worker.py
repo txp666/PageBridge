@@ -252,12 +252,14 @@ def parse_request(raw):
         value = require_text(request, key, 128)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise WorkerError(f"{key} 格式无效。")
-    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading", "reading_layout", "suggest_terms"):
+    if request.get("action") not in ("health", "probe", "translate", "prepare_reading", "export_reading", "reading_layout",
+                                     "rebuild_reading", "suggest_terms"):
         raise WorkerError("不支持此操作。")
     if request["action"] in ("probe", "translate", "suggest_terms"):
         request["service"] = normalized_service(request.get("service"))
     paths = {"translate": ("inputPath", "outputDirectory"),
              "reading_layout": ("inputPath", "readingPath"),
+             "rebuild_reading": ("inputPath", "readingPath", "outputDirectory"),
              "suggest_terms": ("inputPath",) + (("readingPath",) if request.get("readingPath") is not None else ()),
              "export_reading": ("inputPath", "readingPath", "outputPath")}.get(request["action"], ())
     for key in paths:
@@ -281,6 +283,11 @@ def parse_request(raw):
     if request["action"] == "translate":
         if "translateTables" in request and not isinstance(request["translateTables"], bool):
             raise WorkerError("表格翻译选项必须为布尔值。")
+        parse_workers = request.get("parseWorkers")
+        if parse_workers is not None:
+            from structured_reading import MAX_PARSE_WORKERS
+            if type(parse_workers) is not int or not 1 <= parse_workers <= MAX_PARSE_WORKERS:
+                raise WorkerError(f"MinerU 并行路数须介于 1 至 {MAX_PARSE_WORKERS} 之间。")
         for key, default in (("sourceLanguage", "en"), ("targetLanguage", "zh")):
             request.setdefault(key, default)
             if not isinstance(request[key], str) or not re.fullmatch(r"[a-zA-Z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?", request[key]):
@@ -322,12 +329,16 @@ class Events:
         self.sequence = 0
         self.terminal = False
         self.engine_version = None
+        self.parse_seconds = None
 
     def emit(self, event_type, **fields):
         if self.terminal:
             return
+        self.parse_seconds = fields.get("parseSeconds", self.parse_seconds)
         if event_type == "result" and self.engine_version is not None:
             fields.setdefault("engineVersion", self.engine_version)
+        if event_type == "result" and self.parse_seconds is not None:
+            fields.setdefault("parseSeconds", self.parse_seconds)
         self.sequence += 1
         event = {"protocolVersion": PROTOCOL_VERSION, "jobId": self.job_id,
                  "attemptId": self.attempt_id, "sequence": self.sequence, "type": event_type, **fields}
@@ -438,6 +449,9 @@ async def run(request, events, control_input=None):
     elif request["action"] == "export_reading":
         from reading_export import export
         await export(request, events)
+    elif request["action"] == "rebuild_reading":
+        from structured_reading import rebuild_reading
+        await rebuild_reading(request, events)
     elif request["action"] == "reading_layout":
         import pymupdf
         from reading_layout import saved_layouts
@@ -449,7 +463,7 @@ async def run(request, events, control_input=None):
                 has_cells = any(b.get("sourceType") == "table_cell" for b in page["blocks"])
                 if page.get("backgroundBlocks") and ("layoutRightEdges" not in page or has_cells and "cellLayouts" not in page):
                     number = page["pageNumber"]
-                    edges[str(number)], cells[str(number)] = saved_layouts(page, source[number - 1])
+                    edges[str(number)], cells[str(number)] = saved_layouts(page, source[number - 1], request["readingPath"])
                 await asyncio.sleep(0)
         events.emit("result", layoutRightEdges=edges, cellLayouts=cells)
     elif request["action"] == "suggest_terms":
@@ -491,7 +505,8 @@ def main():
         asyncio.run(run(request, events, control_input))
         return 0
     except (asyncio.CancelledError, KeyboardInterrupt):
-        events.emit("error", stage="cancelled", message="导出已取消。" if action == "export_reading" else "翻译已取消。")
+        message = {"export_reading": "导出已取消。", "rebuild_reading": "重新排版已取消。"}.get(action, "翻译已取消。")
+        events.emit("error", stage="cancelled", message=message)
         return 130
     except BaseException as error:
         message = safe_error(error)
